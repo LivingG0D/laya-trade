@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import List, Dict, Any, Optional, Callable
 import httpx
 import websockets
@@ -57,12 +58,20 @@ class MarketDataService:
         self.exchange = exchange
         self.rest_url = rest_url or (TOOBIT_REST_URL if exchange == "Toobit" else BINANCE_FUTURES_REST_URL)
         self.ws_url = ws_url or (TOOBIT_WS_URL if exchange == "Toobit" else BINANCE_FUTURES_WS_URL)
-        self._http_client = httpx.AsyncClient(timeout=10.0)
+        # Tight 5s timeout and connection pool to prevent request piling
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=3.0),
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20, keepalive_expiry=30.0)
+        )
         self._ws_task: Optional[asyncio.Task] = None
         self._subscribers: List[Callable[[Dict[str, Any]], Any]] = []
         self._running = False
         self.current_symbol = DEFAULT_SYMBOL
         self.current_interval = DEFAULT_TIMEFRAME
+
+        # High-performance In-Memory Caching (eliminates redundant REST queries)
+        self._klines_cache: Dict[str, tuple] = {}  # key -> (timestamp, List[Dict])
+        self._ticker_cache: Dict[str, tuple] = {}  # key -> (timestamp, Dict)
 
     async def close(self):
         self._running = False
@@ -78,16 +87,47 @@ class MarketDataService:
     ) -> List[Dict[str, Any]]:
         """
         Fetch historical klines from Toobit (primary) with Binance fallback.
-        Returns parsed list sorted from oldest to newest.
+        Returns parsed list sorted from oldest to newest with smart 3-second cache.
         """
+        sym_key = f"{symbol.upper()}_{interval}"
+        now = time.time()
+
+        # Check TTL cache (3 seconds)
+        if sym_key in self._klines_cache:
+            ts, cached_klines = self._klines_cache[sym_key]
+            if now - ts < 3.0 and len(cached_klines) >= min(limit, 100):
+                return cached_klines[-limit:]
+
+        klines = None
         if self.exchange == "Toobit":
             try:
-                return await self._fetch_toobit_klines(symbol, interval, limit)
+                klines = await self._fetch_toobit_klines(symbol, interval, limit)
             except Exception as e:
                 logger.warning(f"Toobit kline fetch failed ({e}), falling back to Binance Futures...")
-                return await self._fetch_binance_klines(symbol, interval, limit)
+                try:
+                    klines = await self._fetch_binance_klines(symbol, interval, limit)
+                except Exception as e2:
+                    logger.error(f"Binance fallback also failed ({e2})")
         else:
-            return await self._fetch_binance_klines(symbol, interval, limit)
+            try:
+                klines = await self._fetch_binance_klines(symbol, interval, limit)
+            except Exception as e:
+                logger.warning(f"Binance kline fetch failed ({e}), trying Toobit...")
+                try:
+                    klines = await self._fetch_toobit_klines(symbol, interval, limit)
+                except Exception as e2:
+                    logger.error(f"Toobit fallback also failed ({e2})")
+
+        if klines and len(klines) > 0:
+            self._klines_cache[sym_key] = (now, klines)
+            return klines[-limit:]
+
+        # If both failed, return existing cached data even if slightly stale
+        if sym_key in self._klines_cache:
+            logger.info(f"Serving stale kline cache for {sym_key} due to upstream network issue")
+            return self._klines_cache[sym_key][1][-limit:]
+
+        raise RuntimeError(f"Unable to fetch market klines for {symbol} ({interval}) from Toobit or Binance")
 
     async def _fetch_toobit_klines(self, symbol: str, interval: str, limit: int) -> List[Dict[str, Any]]:
         toobit_sym = to_toobit_symbol(symbol)
@@ -103,8 +143,6 @@ class MarketDataService:
 
         klines = []
         for item in raw_klines:
-            # Toobit format:
-            # [0: Open time ms, 1: Open, 2: High, 3: Low, 4: Close, 5: Volume, 6: Close time, 7: Quote volume, 8: Count, 9: Taker buy base, 10: Taker buy quote]
             open_time_sec = int(item[0] // 1000)
             klines.append({
                 "time": open_time_sec,
@@ -150,7 +188,16 @@ class MarketDataService:
         return klines
 
     async def fetch_ticker_24h(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
-        """Fetch 24h price stats from Toobit with Binance fallback."""
+        """Fetch 24h price stats from Toobit with Binance fallback (2s cache)."""
+        sym_key = symbol.upper()
+        now = time.time()
+
+        if sym_key in self._ticker_cache:
+            ts, cached_ticker = self._ticker_cache[sym_key]
+            if now - ts < 2.0:
+                return cached_ticker
+
+        ticker_res = None
         if self.exchange == "Toobit":
             try:
                 toobit_sym = to_toobit_symbol(symbol)
@@ -159,11 +206,8 @@ class MarketDataService:
                 resp = await self._http_client.get(url, params=params)
                 resp.raise_for_status()
                 data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    d = data[0]
-                else:
-                    d = data
-                return {
+                d = data[0] if isinstance(data, list) and len(data) > 0 else data
+                ticker_res = {
                     "symbol": symbol,
                     "exchange": "Toobit",
                     "last_price": float(d.get("c", 0)),
@@ -178,27 +222,37 @@ class MarketDataService:
                 logger.warning(f"Toobit 24h ticker failed ({e}), falling back to Binance...")
 
         # Binance fallback
-        try:
-            binance_sym = to_binance_symbol(symbol)
-            url = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/ticker/24hr"
-            params = {"symbol": binance_sym}
-            resp = await self._http_client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "symbol": symbol,
-                "exchange": "Binance",
-                "last_price": float(data.get("lastPrice", 0)),
-                "price_change": float(data.get("priceChange", 0)),
-                "price_change_percent": float(data.get("priceChangePercent", 0)),
-                "high_price": float(data.get("highPrice", 0)),
-                "low_price": float(data.get("lowPrice", 0)),
-                "volume": float(data.get("volume", 0)),
-                "quote_volume": float(data.get("quoteVolume", 0)),
-            }
-        except Exception as e:
-            logger.error(f"Error fetching 24h ticker for {symbol}: {e}")
-            return {}
+        if not ticker_res:
+            try:
+                binance_sym = to_binance_symbol(symbol)
+                url = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/ticker/24hr"
+                params = {"symbol": binance_sym}
+                resp = await self._http_client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                ticker_res = {
+                    "symbol": symbol,
+                    "exchange": "Binance",
+                    "last_price": float(data.get("lastPrice", 0)),
+                    "price_change": float(data.get("priceChange", 0)),
+                    "price_change_percent": float(data.get("priceChangePercent", 0)),
+                    "high_price": float(data.get("highPrice", 0)),
+                    "low_price": float(data.get("lowPrice", 0)),
+                    "volume": float(data.get("volume", 0)),
+                    "quote_volume": float(data.get("quoteVolume", 0)),
+                }
+            except Exception as e:
+                logger.error(f"Error fetching 24h ticker for {symbol}: {e}")
+
+        if ticker_res and ticker_res.get("last_price", 0) > 0:
+            self._ticker_cache[sym_key] = (now, ticker_res)
+            return ticker_res
+
+        # Fallback to last known ticker if available
+        if sym_key in self._ticker_cache:
+            return self._ticker_cache[sym_key][1]
+
+        return {}
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], Any]):
         """Subscribe to real-time candle tick updates."""
@@ -210,6 +264,40 @@ class MarketDataService:
             self._subscribers.remove(callback)
 
     async def _notify_subscribers(self, candle_update: Dict[str, Any]):
+        sym = candle_update.get("symbol", self.current_symbol).upper()
+        intv = candle_update.get("interval", self.current_interval)
+        sym_key = f"{sym}_{intv}"
+        
+        # Keep real-time candle updated in klines cache
+        if sym_key in self._klines_cache:
+            ts, klines = self._klines_cache[sym_key]
+            if klines and len(klines) > 0:
+                last_bar = klines[-1]
+                if last_bar["time"] == candle_update["time"]:
+                    last_bar["high"] = max(last_bar["high"], candle_update["high"])
+                    last_bar["low"] = min(last_bar["low"], candle_update["low"])
+                    last_bar["close"] = candle_update["close"]
+                    last_bar["volume"] = candle_update["volume"]
+                elif candle_update["time"] > last_bar["time"]:
+                    klines.append({
+                        "time": candle_update["time"],
+                        "open": candle_update["open"],
+                        "high": candle_update["high"],
+                        "low": candle_update["low"],
+                        "close": candle_update["close"],
+                        "volume": candle_update["volume"],
+                        "taker_buy_volume": candle_update.get("taker_buy_volume", 0.0),
+                        "trades": candle_update.get("trades", 0),
+                        "is_closed": candle_update.get("is_closed", False)
+                    })
+                    if len(klines) > 1000:
+                        klines.pop(0)
+
+        # Update last price in ticker cache
+        if sym in self._ticker_cache:
+            ts, t = self._ticker_cache[sym]
+            t["last_price"] = candle_update["close"]
+
         for sub in list(self._subscribers):
             try:
                 res = sub(candle_update)

@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e14">
+  <meta name="description" content="Laya AI — real-time crypto perpetual futures chart analyzer with Laya System-1 signals, position management and Toobit integration.">
   <title>Laya Crypto AI Trade Analyzer — 1000PEPEUSDT.P (Toobit)</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐸</text></svg>">
   
@@ -14,14 +17,24 @@
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
   
-  <!-- TradingView Lightweight Charts (v4.1.3) -->
-  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- TradingView Lightweight Charts (v4.1.3) Local with CDN Fallback -->
+  <script src="/static/lib/lightweight-charts.standalone.production.js"></script>
+  <script>
+    if (typeof LightweightCharts === 'undefined') {
+      document.write('<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"><\/script>');
+    }
+  </script>
+  <!-- Lucide Icons Local with CDN Fallback -->
+  <script src="/static/lib/lucide.min.js"></script>
+  <script>
+    if (typeof lucide === 'undefined') {
+      document.write('<script src="https://unpkg.com/lucide@latest"><\/script>');
+    }
+  </script>
 </head>
 <body class="dark-theme">
   <!-- Toast Feedback Notification Container -->
-  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+  <div id="toastContainer" class="toast-container" role="status" aria-live="polite"></div>
 
   <div class="app-layout">
     <!-- ============================================== -->
@@ -71,15 +84,15 @@
             <span class="metric-label">24h Change</span>
             <span id="priceChange" class="metric-value">--%</span>
           </div>
-          <div class="metric-item hide-on-compact">
+          <div class="metric-item nav-metric-secondary hide-on-compact">
             <span class="metric-label">24h High</span>
             <span id="high24h" class="metric-value">--</span>
           </div>
-          <div class="metric-item hide-on-compact">
+          <div class="metric-item nav-metric-secondary hide-on-compact">
             <span class="metric-label">24h Low</span>
             <span id="low24h" class="metric-value">--</span>
           </div>
-          <div class="metric-item hide-on-mobile">
+          <div class="metric-item nav-metric-secondary hide-on-mobile">
             <span class="metric-label">24h Vol (USDT)</span>
             <span id="volume24h" class="metric-value">--</span>
           </div>
@@ -88,12 +101,12 @@
 
       <div class="nav-right">
         <!-- Beginner vs Pro Mode Switcher -->
-        <div class="mode-switch-wrap" role="tablist">
-          <button class="mode-btn active" id="btnSimpleMode" role="tab" aria-selected="true" title="Switch to Beginner Simple Mode">
+        <div class="mode-switch-wrap" role="tablist" aria-label="Interface Mode">
+          <button class="mode-btn active" id="btnSimpleMode" role="tab" aria-selected="true" aria-controls="simpleModeContainer" title="Switch to Beginner Simple Mode">
             <span class="mode-icon">🌱</span>
             <span class="mode-text">Simple</span>
           </button>
-          <button class="mode-btn" id="btnProMode" role="tab" aria-selected="false" title="Switch to Pro Trader Mode">
+          <button class="mode-btn" id="btnProMode" role="tab" aria-selected="false" aria-controls="proModeContainer" title="Switch to Pro Trader Mode">
             <span class="mode-icon">⚡</span>
             <span class="mode-text">Pro</span>
           </button>
@@ -127,17 +140,17 @@
     </header>
 
     <!-- Mobile View Switcher (Only visible on screens < 900px) -->
-    <nav class="mobile-view-tabs" id="mobileViewTabs" role="tablist" aria-label="Mobile Navigation">
-      <button class="mobile-tab-btn active" data-tab="chart" role="tab" aria-selected="true">
+    <nav class="mobile-view-tabs" id="mobileViewTabs" aria-label="Mobile View Switcher">
+      <button class="mobile-tab-btn active" data-tab="chart" aria-pressed="true">
         <i data-lucide="line-chart"></i>
         <span>Chart</span>
       </button>
-      <button class="mobile-tab-btn" data-tab="signals" role="tab" aria-selected="false">
+      <button class="mobile-tab-btn" data-tab="signals" aria-pressed="false">
         <i data-lucide="bot"></i>
         <span>AI Signals</span>
         <span class="tab-signal-pill" id="mobileTabSignalPill">WAIT</span>
       </button>
-      <button class="mobile-tab-btn" data-tab="history" role="tab" aria-selected="false">
+      <button class="mobile-tab-btn" data-tab="history" aria-pressed="false">
         <i data-lucide="history"></i>
         <span>History</span>
         <span class="tab-count-badge" id="mobileTabHistoryCount">0</span>
@@ -147,7 +160,7 @@
     <!-- ============================================== -->
     <!-- MAIN WORKSPACE -->
     <!-- ============================================== -->
-    <main class="main-content" id="mainContent">
+    <main class="main-content" id="mainContent" data-active-tab="chart">
       <!-- Left Chart Section -->
       <section class="chart-section" id="chartSectionView">
         <!-- Chart HUD Bar -->
@@ -187,11 +200,11 @@
             </div>
 
             <div class="chart-action-buttons">
-              <button id="btnFitChart" class="chart-tool-btn" title="Auto-Fit / Reset Chart Zoom">
+              <button id="btnFitChart" class="chart-tool-btn" title="Auto-Fit / Reset Chart Zoom" aria-label="Auto-fit chart">
                 <i data-lucide="maximize-2"></i>
                 <span class="tool-label hide-on-mobile">Fit</span>
               </button>
-              <button id="btnFullscreenChart" class="chart-tool-btn" title="Toggle Fullscreen Chart Mode">
+              <button id="btnFullscreenChart" class="chart-tool-btn" title="Toggle Fullscreen Chart Mode" aria-label="Toggle fullscreen chart">
                 <i data-lucide="expand" id="fullscreenIcon"></i>
               </button>
             </div>
@@ -200,6 +213,12 @@
 
         <!-- TradingView Chart Mount Container -->
         <div id="chartContainer" class="chart-container"></div>
+
+        <!-- Chart Loading Overlay -->
+        <div id="chartLoading" class="chart-loading" role="status" aria-live="polite">
+          <span class="chart-loading-spinner" aria-hidden="true"></span>
+          <span>Loading market data…</span>
+        </div>
       </section>
 
       <!-- Right AI Intelligence Sidebar -->
@@ -208,7 +227,7 @@
         <!-- ============================================== -->
         <!-- SIMPLE MODE CONTAINER (FOR COMPLETE BEGINNERS) -->
         <!-- ============================================== -->
-        <div id="simpleModeContainer" class="simple-mode-panel">
+        <div id="simpleModeContainer" class="simple-mode-panel" role="tabpanel" aria-labelledby="btnSimpleMode">
           <!-- Hero Decision Box -->
           <div class="simple-hero-card" id="simpleHeroCard">
             <div class="simple-hero-top">
@@ -406,7 +425,7 @@
         <!-- ============================================== -->
         <!-- PRO MODE CONTAINER (FOR ADVANCED USERS) -->
         <!-- ============================================== -->
-        <div id="proModeContainer" class="pro-mode-panel" style="display: none;">
+        <div id="proModeContainer" class="pro-mode-panel" role="tabpanel" aria-labelledby="btnProMode" style="display: none;">
           <!-- Active Signal Banner -->
           <div class="signal-card" id="signalCard">
             <div class="signal-card-header">
@@ -672,11 +691,11 @@
             <button class="hist-filter-btn" data-filter="long">Longs</button>
             <button class="hist-filter-btn" data-filter="short">Shorts</button>
           </div>
-          <button id="btnExportHistory" class="hist-action-btn hide-on-compact" title="Export History as CSV">
+          <button id="btnExportHistory" class="hist-action-btn hide-on-compact" title="Export History as CSV" aria-label="Export signal history as CSV">
             <i data-lucide="download"></i>
             <span>CSV</span>
           </button>
-          <button id="btnClearHistory" class="hist-action-btn" title="Clear History Log">
+          <button id="btnClearHistory" class="hist-action-btn" title="Clear History Log" aria-label="Clear signal history">
             <i data-lucide="trash-2"></i>
           </button>
         </div>
@@ -743,17 +762,17 @@
         </div>
 
         <!-- Mode Toggle Tabs -->
-        <div class="modal-tabs" role="tablist">
-          <button class="modal-tab-btn active" id="tabModeLive" role="tab" aria-selected="true">
+        <div class="modal-tabs" role="tablist" aria-label="Account Mode">
+          <button class="modal-tab-btn active" id="tabModeLive" role="tab" aria-selected="true" aria-controls="tabContentLive">
             <i data-lucide="key"></i> Live API Keys
           </button>
-          <button class="modal-tab-btn" id="tabModeDemo" role="tab" aria-selected="false">
+          <button class="modal-tab-btn" id="tabModeDemo" role="tab" aria-selected="false" aria-controls="tabContentDemo">
             <i data-lucide="shield-check"></i> Demo Simulation
           </button>
         </div>
 
         <!-- Tab 1: Live API Form -->
-        <div id="tabContentLive" class="tab-content active">
+        <div id="tabContentLive" class="tab-content active" role="tabpanel" aria-labelledby="tabModeLive">
           <form id="toobitApiForm" class="toobit-form">
             <div class="form-group">
               <label for="toobitApiKey">Toobit API Key</label>
@@ -795,7 +814,7 @@
         </div>
 
         <!-- Tab 2: Demo Simulation Mode Details -->
-        <div id="tabContentDemo" class="tab-content hide">
+        <div id="tabContentDemo" class="tab-content hide" role="tabpanel" aria-labelledby="tabModeDemo">
           <div class="demo-explanation-box">
             <div class="demo-icon-wrap">
               <i data-lucide="sparkles"></i>

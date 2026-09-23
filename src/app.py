@@ -344,6 +344,8 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
     target_sym = symbol or market_service.current_symbol
     ticker = await market_service.fetch_ticker_24h(symbol=target_sym)
     current_price = float(ticker.get("last_price") or ticker.get("price", 0.0))
+    if current_price <= 0 and latest_analysis_cache.get("latest"):
+        current_price = float(latest_analysis_cache["latest"].get("price", 0.0))
 
     # Get active position
     positions = await toobit_client.get_positions(symbol=target_sym, current_market_price=current_price)

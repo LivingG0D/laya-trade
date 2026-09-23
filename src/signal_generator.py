@@ -117,6 +117,12 @@ class SignalGenerator:
             "stop_loss": fmt(stop_loss),
             "take_profit_1": fmt(tp1),
             "take_profit_2": fmt(tp2),
+            "targets": {
+                "entry": fmt(cur_price),
+                "stop_loss": fmt(stop_loss),
+                "take_profit_1": fmt(tp1),
+                "take_profit_2": fmt(tp2)
+            },
             "risk_reward_ratio": round(self.tp1_rr, 1),
             "confidence_pct": round(dir_prob * 100, 1),
             "confidence_score": laya_decision.get("confidence_score", 2),

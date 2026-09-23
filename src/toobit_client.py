@@ -23,7 +23,10 @@ class ToobitClient:
         self.api_secret = api_secret.strip()
         self.is_demo = is_demo
         self.base_url = TOOBIT_REST_URL
-        self._http_client = httpx.AsyncClient(timeout=10.0)
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=3.0),
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=10, keepalive_expiry=30.0)
+        )
 
         # Demo mode state storage
         self._demo_balance = 5000.0  # $5,000 USDT virtual starting margin
@@ -392,7 +395,7 @@ def generate_position_suggestion(
     sig = signal or {}
     laya = laya_decision or {}
     action = sig.get("action", laya.get("primary_action", "NEUTRAL")).upper()
-    confidence = sig.get("confidence", laya.get("confidence", 50))
+    confidence = sig.get("confidence_pct", sig.get("confidence", laya.get("confidence", 50)))
     probs = laya.get("probabilities", {})
     targets = sig.get("targets", {})
 
@@ -404,10 +407,26 @@ def generate_position_suggestion(
     p_scalp_short = probs.get("scalp_short", 0.2)
     p_bear = p_strong_short + p_scalp_short
 
+    # Helper formatter to prevent showing $0.000000
+    def fmt_p(val: float) -> str:
+        if not val or val <= 0:
+            return "--"
+        return f"${val:.6f}" if val < 0.1 else f"${val:.2f}"
+
+    # Determine baseline price
+    base_price = current_price
+    if base_price <= 0:
+        base_price = sig.get("entry_price") or 0.0
+
     # If user has no active position
     if not position:
-        tp1 = targets.get("take_profit_1", current_price * 1.015)
-        sl = targets.get("stop_loss", current_price * 0.985)
+        entry = sig.get("entry_price") or targets.get("entry", base_price)
+        if entry <= 0:
+            entry = base_price
+
+        tp1 = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * 1.015 if entry > 0 else 0.0))
+        sl = sig.get("stop_loss") or targets.get("stop_loss", (entry * 0.985 if entry > 0 else 0.0))
+
         if "LONG" in action:
             return {
                 "hasPosition": False,
@@ -416,17 +435,19 @@ def generate_position_suggestion(
                 "badgeText": "BULLISH SETUP 🟢",
                 "badgeClass": "badge-profit",
                 "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects bullish confluence ({confidence}% confidence). Recommended setup: Buy near ${targets.get('entry', current_price):.6f}, Target TP1 at ${tp1:.6f}, Protective SL at ${sl:.6f}.",
+                "suggestion": f"No active position. Laya System-1 detects bullish confluence ({confidence}% confidence). Recommended setup: Buy near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}.",
                 "steps": [
-                    f"Consider opening LONG near ${current_price:.6f}",
-                    f"Set Target Take Profit 1 at ${tp1:.6f}",
-                    f"Set Stop Loss at ${sl:.6f}"
+                    f"Consider opening LONG near {fmt_p(entry)}",
+                    f"Set Target Take Profit 1 at {fmt_p(tp1)}",
+                    f"Set Stop Loss at {fmt_p(sl)}"
                 ],
                 "canFlashClose": False,
                 "recommendedSl": sl,
                 "recommendedTp": tp1
             }
         elif "SHORT" in action:
+            tp1_s = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * 0.985 if entry > 0 else 0.0))
+            sl_s = sig.get("stop_loss") or targets.get("stop_loss", (entry * 1.015 if entry > 0 else 0.0))
             return {
                 "hasPosition": False,
                 "alignment": "NONE",
@@ -434,15 +455,15 @@ def generate_position_suggestion(
                 "badgeText": "BEARISH SETUP 🔴",
                 "badgeClass": "badge-danger",
                 "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects downward momentum ({confidence}% confidence). Recommended setup: Short near ${targets.get('entry', current_price):.6f}, Target TP1 at ${tp1:.6f}, Protective SL at ${sl:.6f}.",
+                "suggestion": f"No active position. Laya System-1 detects downward momentum ({confidence}% confidence). Recommended setup: Short near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1_s)}, Protective SL at {fmt_p(sl_s)}.",
                 "steps": [
-                    f"Consider opening SHORT near ${current_price:.6f}",
-                    f"Set Target Take Profit 1 at ${tp1:.6f}",
-                    f"Set Stop Loss at ${sl:.6f}"
+                    f"Consider opening SHORT near {fmt_p(entry)}",
+                    f"Set Target Take Profit 1 at {fmt_p(tp1_s)}",
+                    f"Set Stop Loss at {fmt_p(sl_s)}"
                 ],
                 "canFlashClose": False,
-                "recommendedSl": sl,
-                "recommendedTp": tp1
+                "recommendedSl": sl_s,
+                "recommendedTp": tp1_s
             }
         else:
             return {

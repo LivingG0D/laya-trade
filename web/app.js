@@ -40,6 +40,7 @@ const btnFullscreenChart = document.getElementById("btnFullscreenChart");
 const btnAudioToggle = document.getElementById("btnAudioToggle");
 const audioIcon = document.getElementById("audioIcon");
 const toastContainer = document.getElementById("toastContainer");
+const chartLoading = document.getElementById("chartLoading");
 
 // Mode Switch Elements
 const btnSimpleMode = document.getElementById("btnSimpleMode");
@@ -232,9 +233,17 @@ let toobitPollInterval = null;
 // --------------------------------------------------------
 function showToast(message, type = "info", duration = 2500) {
   if (!toastContainer) return;
+
+  // Keep at most 4 toasts on screen
+  while (toastContainer.children.length >= 4) {
+    toastContainer.firstChild.remove();
+  }
+
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
-  toast.innerHTML = `<span>${message}</span>`;
+  const span = document.createElement("span");
+  span.textContent = message;
+  toast.appendChild(span);
   toastContainer.appendChild(toast);
 
   setTimeout(() => {
@@ -441,7 +450,10 @@ function initChart() {
 // --------------------------------------------------------
 function formatPrice(val) {
   if (val === null || val === undefined || isNaN(val)) return "--";
-  if (val < 0.01) return Number(val).toFixed(7);
+  if (val < 0.01) {
+    // 7 decimals is what the chart uses; trim trailing zeros for readability
+    return Number(val).toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
+  }
   if (val < 1.0) return Number(val).toFixed(4);
   return Number(val).toFixed(2);
 }
@@ -502,6 +514,7 @@ function applyDeduplicatedMarkers(inputMarkers = null) {
 // Load Historical Klines & Indicators
 // --------------------------------------------------------
 async function loadKlines(symbol, interval) {
+  if (chartLoading) chartLoading.classList.remove("hide");
   try {
     if (hudSymbol) hudSymbol.textContent = symbol;
     if (hudInterval) hudInterval.textContent = interval;
@@ -511,7 +524,17 @@ async function loadKlines(symbol, interval) {
     const data = await resp.json();
 
     const series = data.series || [];
-    if (series.length === 0) return;
+    if (series.length === 0) throw new Error("Empty series");
+
+    // Deduplicate and ensure strict ascending order by timestamp for TradingView Lightweight Charts
+    const timeMap = new Map();
+    series.forEach((bar) => {
+      if (bar && typeof bar.time === "number" && !isNaN(bar.time)) {
+        timeMap.set(bar.time, bar);
+      }
+    });
+    const sortedSeries = Array.from(timeMap.values()).sort((a, b) => a.time - b.time);
+    if (sortedSeries.length === 0) throw new Error("No valid bars in series");
 
     // Separate series data
     const candles = [];
@@ -523,7 +546,7 @@ async function loadKlines(symbol, interval) {
     const bbLow = [];
     const bbMid = [];
 
-    series.forEach((bar) => {
+    sortedSeries.forEach((bar) => {
       candles.push({
         time: bar.time,
         open: bar.open,
@@ -539,30 +562,30 @@ async function loadKlines(symbol, interval) {
         color: bar.close >= bar.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
       });
 
-      if (bar.ema9 !== null) ema9.push({ time: bar.time, value: bar.ema9 });
-      if (bar.ema21 !== null) ema21.push({ time: bar.time, value: bar.ema21 });
-      if (bar.ema50 !== null) ema50.push({ time: bar.time, value: bar.ema50 });
+      if (bar.ema9 !== null && !isNaN(bar.ema9)) ema9.push({ time: bar.time, value: bar.ema9 });
+      if (bar.ema21 !== null && !isNaN(bar.ema21)) ema21.push({ time: bar.time, value: bar.ema21 });
+      if (bar.ema50 !== null && !isNaN(bar.ema50)) ema50.push({ time: bar.time, value: bar.ema50 });
 
-      if (bar.bb_upper !== null) bbUp.push({ time: bar.time, value: bar.bb_upper });
-      if (bar.bb_lower !== null) bbLow.push({ time: bar.time, value: bar.bb_lower });
-      if (bar.bb_middle !== null) bbMid.push({ time: bar.time, value: bar.bb_middle });
+      if (bar.bb_upper !== null && !isNaN(bar.bb_upper)) bbUp.push({ time: bar.time, value: bar.bb_upper });
+      if (bar.bb_lower !== null && !isNaN(bar.bb_lower)) bbLow.push({ time: bar.time, value: bar.bb_lower });
+      if (bar.bb_middle !== null && !isNaN(bar.bb_middle)) bbMid.push({ time: bar.time, value: bar.bb_middle });
     });
 
-    candleSeries.setData(candles);
-    volumeSeries.setData(volumes);
-    ema9Series.setData(ema9);
-    ema21Series.setData(ema21);
-    ema50Series.setData(ema50);
-    bbUpperSeries.setData(bbUp);
-    bbLowerSeries.setData(bbLow);
-    bbMiddleSeries.setData(bbMid);
+    if (candleSeries) candleSeries.setData(candles);
+    if (volumeSeries) volumeSeries.setData(volumes);
+    if (ema9Series) ema9Series.setData(ema9);
+    if (ema21Series) ema21Series.setData(ema21);
+    if (ema50Series) ema50Series.setData(ema50);
+    if (bbUpperSeries) bbUpperSeries.setData(bbUp);
+    if (bbLowerSeries) bbLowerSeries.setData(bbLow);
+    if (bbMiddleSeries) bbMiddleSeries.setData(bbMid);
 
     // Apply markers from history (Deduplicated & Cleaned)
     if (data.markers && data.markers.length > 0) {
       applyDeduplicatedMarkers(data.markers);
     } else {
       chartMarkers = [];
-      candleSeries.setMarkers([]);
+      if (candleSeries) candleSeries.setMarkers([]);
     }
 
     // Update Telemetry & HUD
@@ -572,10 +595,21 @@ async function loadKlines(symbol, interval) {
       updateLivePriceDisplay(data.latest.price, data.latest.change_pct);
     }
 
-    chart.timeScale().fitContent();
+    if (chart) {
+      chart.timeScale().fitContent();
+    }
     load24hTicker(symbol);
   } catch (err) {
     console.error("Error loading klines:", err);
+    showToast("Reconnecting to market data stream...", "warning");
+    if (!window._klineRetryTimeout) {
+      window._klineRetryTimeout = setTimeout(() => {
+        window._klineRetryTimeout = null;
+        loadKlines(symbol, interval);
+      }, 2500);
+    }
+  } finally {
+    if (chartLoading) chartLoading.classList.add("hide");
   }
 }
 
@@ -1081,8 +1115,12 @@ btnProMode.addEventListener("click", () => setMode("pro"));
 // --------------------------------------------------------
 mobileTabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
-    mobileTabButtons.forEach((b) => b.classList.remove("active"));
+    mobileTabButtons.forEach((b) => {
+      b.classList.remove("active");
+      b.setAttribute("aria-pressed", "false");
+    });
     btn.classList.add("active");
+    btn.setAttribute("aria-pressed", "true");
     const tab = btn.getAttribute("data-tab");
     mainContent.setAttribute("data-active-tab", tab);
 
@@ -1156,8 +1194,13 @@ function connectWebSocket() {
 // --------------------------------------------------------
 // API Actions
 // --------------------------------------------------------
+let analyzeInFlight = false;
+
 async function triggerAnalyze() {
+  if (analyzeInFlight) return;
+  analyzeInFlight = true;
   analyzeBtn.disabled = true;
+  analyzeBtn.setAttribute("aria-busy", "true");
   const originalText = analyzeBtn.innerHTML;
   analyzeBtn.innerHTML = `<span>Analyzing...</span>`;
 
@@ -1170,10 +1213,12 @@ async function triggerAnalyze() {
     showToast(`Laya Evaluated: ${data.signal.action} (${data.signal.confidence_pct}%)`, "success");
   } catch (err) {
     console.error("Analysis failed:", err);
-    showToast("Analysis request failed. Please check connection.", "info");
+    showToast("Analysis request failed. Please check connection.", "error");
   } finally {
+    analyzeInFlight = false;
     analyzeBtn.disabled = false;
-    analyzeBtn.innerHTML = originalText;
+    analyzeBtn.removeAttribute("aria-busy");
+    analyzeBtn.innerHTML = `<i data-lucide="sparkles"></i> <span>Analyze Market</span>`;
     lucide.createIcons();
   }
 }
@@ -1406,6 +1451,12 @@ btnAudioToggle?.addEventListener("click", () => {
 // Keyboard Shortcuts
 document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const modalOpen = toobitModal && !toobitModal.classList.contains("hide");
+
+  // While the modal is open only Escape is handled (below)
+  if (modalOpen && e.key !== "Escape") return;
 
   if (e.code === "Space") {
     e.preventDefault();
@@ -1427,6 +1478,7 @@ document.addEventListener("keydown", (e) => {
 function setupAutoAnalyze() {
   if (autoAnalyzeTimer) clearInterval(autoAnalyzeTimer);
   autoAnalyzeTimer = setInterval(() => {
+    if (document.hidden) return; // don't burn requests on a hidden tab
     load24hTicker(currentSymbol);
     if (toggleAutoAnalyze?.checked) {
       triggerAnalyze();
@@ -1438,23 +1490,52 @@ function setupAutoAnalyze() {
 // TOOBIT ACCOUNT & POSITION MANAGEMENT CONTROLLER
 // ========================================================
 
+let lastFocusedBeforeModal = null;
+
 function openToobitModal() {
   if (!toobitModal) return;
+  lastFocusedBeforeModal = document.activeElement;
   toobitModal.classList.remove("hide");
   toobitModal.style.display = "flex";
   fetchToobitStatus();
+  setTimeout(() => btnCloseToobitModal?.focus(), 50);
 }
 
 function closeToobitModal() {
-  if (!toobitModal) return;
+  if (!toobitModal || toobitModal.classList.contains("hide")) return;
   toobitModal.classList.add("hide");
   toobitModal.style.display = "none";
+  if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
+    lastFocusedBeforeModal.focus();
+  }
+  lastFocusedBeforeModal = null;
 }
+
+// Keep keyboard focus inside the open modal
+toobitModal?.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const focusables = Array.from(
+    toobitModal.querySelectorAll("button, input, select, textarea, a[href]")
+  ).filter((el) => !el.disabled && el.offsetParent !== null);
+  if (focusables.length === 0) return;
+
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 // Modal Tab Switcher
 tabModeLive?.addEventListener("click", () => {
   tabModeLive.classList.add("active");
+  tabModeLive.setAttribute("aria-selected", "true");
   tabModeDemo?.classList.remove("active");
+  tabModeDemo?.setAttribute("aria-selected", "false");
   tabContentLive?.classList.remove("hide");
   tabContentLive?.classList.add("active");
   tabContentDemo?.classList.add("hide");
@@ -1463,7 +1544,9 @@ tabModeLive?.addEventListener("click", () => {
 
 tabModeDemo?.addEventListener("click", () => {
   tabModeDemo.classList.add("active");
+  tabModeDemo.setAttribute("aria-selected", "true");
   tabModeLive?.classList.remove("active");
+  tabModeLive?.setAttribute("aria-selected", "false");
   tabContentDemo?.classList.remove("hide");
   tabContentDemo?.classList.add("active");
   tabContentLive?.classList.add("hide");
@@ -1832,13 +1915,14 @@ function initToobitManager() {
   btnProSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
   btnProSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
 
-  // Start periodic polling for positions (every 4 seconds)
+  // Start periodic polling for positions (every 8 seconds to prevent API flooding)
   fetchToobitStatus();
   fetchToobitPositions();
   if (toobitPollInterval) clearInterval(toobitPollInterval);
   toobitPollInterval = setInterval(() => {
+    if (document.hidden) return;
     fetchToobitPositions();
-  }, 4000);
+  }, 8000);
 }
 
 // --------------------------------------------------------

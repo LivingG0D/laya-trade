@@ -3,6 +3,8 @@
    ======================================================== */
 
 :root {
+  color-scheme: dark;
+
   --bg-main: #0b0e14;
   --bg-card: #131722;
   --bg-card-alt: #1a202c;
@@ -16,7 +18,7 @@
   --text-main: #f8fafc;
   --text-secondary: #cbd5e1;
   --text-muted: #94a3b8;
-  --text-dim: #64748b;
+  --text-dim: #7c8ba1;
 
   --green-up: #0ecb81;
   --green-glow: rgba(14, 203, 129, 0.25);
@@ -66,7 +68,20 @@ html, body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
   overflow: hidden;
+}
+
+/* Keyboard Focus Visibility (mouse clicks stay clean) */
+:where(button, a, summary, [tabindex]):focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+/* Keep the chart crosshair usable while focused */
+.chart-container:focus-visible,
+.chart-container canvas:focus-visible {
+  outline: none;
 }
 
 /* Accessibility SR only */
@@ -87,6 +102,7 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   position: relative;
@@ -169,7 +185,7 @@ html, body {
   font-weight: 600;
   font-family: var(--font-family);
   cursor: pointer;
-  outline: none;
+  outline: none; /* custom :focus ring below is the visible indicator */
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
@@ -207,6 +223,8 @@ html, body {
   color: var(--text-muted);
   border: none;
   padding: 4px 9px;
+  min-height: 24px;
+  min-width: 30px;
   font-size: 11px;
   font-weight: 600;
   border-radius: var(--radius-sm);
@@ -249,7 +267,7 @@ html, body {
 }
 
 .metric-label {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
   font-weight: 600;
@@ -326,6 +344,7 @@ html, body {
   color: var(--text-muted);
   border: none;
   padding: 4px 10px;
+  min-height: 30px;
   font-size: 11px;
   font-weight: 700;
   border-radius: var(--radius-sm);
@@ -421,6 +440,7 @@ html, body {
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.15);
   padding: 6px 14px;
+  min-height: 30px;
   font-size: 12px;
   font-weight: 700;
   border-radius: var(--radius-md);
@@ -442,6 +462,17 @@ html, body {
 
 .btn-primary:active {
   transform: translateY(0);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-primary.loading svg {
+  animation: spin 0.8s linear infinite;
 }
 
 .kbd-hint {
@@ -653,6 +684,41 @@ html, body {
   position: relative;
 }
 
+/* Chart Loading Overlay */
+.chart-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(11, 14, 20, 0.72);
+  backdrop-filter: blur(3px);
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  z-index: 5;
+  transition: opacity var(--transition-normal);
+}
+
+.chart-loading.hide {
+  display: none;
+}
+
+.chart-loading-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--blue-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Fullscreen Chart Mode */
 .chart-section.fullscreen-active {
   position: fixed;
@@ -660,6 +726,7 @@ html, body {
   left: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   z-index: 100;
   border: none;
 }
@@ -729,6 +796,19 @@ html, body {
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-weight: 600;
+}
+
+/* Live / Demo account badges */
+.badge-mini.badge-live {
+  background: var(--green-subtle);
+  border-color: rgba(14, 203, 129, 0.35);
+  color: var(--green-up);
+}
+
+.badge-mini.badge-demo {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: var(--yellow-accent);
 }
 
 /* ========================================================
@@ -972,7 +1052,7 @@ html, body {
 }
 
 .step-label {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1132,7 +1212,6 @@ html, body {
   display: flex;
   align-items: center;
   gap: 6px;
-  outline: none;
   user-select: none;
 }
 
@@ -1222,7 +1301,7 @@ html, body {
 
 .conf-label {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
 }
@@ -1258,7 +1337,7 @@ html, body {
 }
 
 .plan-label {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
 }
@@ -1456,7 +1535,7 @@ html, body {
 }
 
 .telem-title {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
 }
@@ -1679,6 +1758,7 @@ html, body {
   gap: 8px;
   z-index: 1000;
   pointer-events: none;
+  max-width: min(360px, calc(100vw - 24px));
 }
 
 .toast {
@@ -1686,10 +1766,13 @@ html, body {
   background: #1e293b;
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.15);
+  border-left-width: 3px;
   padding: 8px 14px;
   border-radius: var(--radius-md);
   font-size: 12px;
   font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
@@ -1703,6 +1786,14 @@ html, body {
 
 .toast.toast-info {
   border-color: var(--blue-accent);
+}
+
+.toast.toast-error {
+  border-color: var(--red-down);
+}
+
+.toast.toast-bull {
+  border-color: var(--yellow-accent);
 }
 
 @keyframes toastSlideIn {
@@ -1724,6 +1815,28 @@ html, body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
+}
+
+/* Firefox scrollbar parity */
+body,
+.sidebar-section,
+.table-wrap,
+.chart-header-hud,
+.modal-body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ========================================================
@@ -1880,6 +1993,7 @@ html, body {
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
+  min-height: 30px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
   background: rgba(26, 32, 44, 0.8);
@@ -2160,7 +2274,7 @@ html, body {
   text-align: left;
   padding: 5px 6px;
   color: var(--text-dim);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
@@ -2300,6 +2414,9 @@ html, body {
 .modal-card {
   width: 100%;
   max-width: 480px;
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl);
@@ -2325,6 +2442,7 @@ html, body {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-card-alt);
+  flex-shrink: 0;
 }
 
 .modal-title-wrap {
@@ -2370,6 +2488,8 @@ html, body {
 
 .modal-body {
   padding: 18px 20px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .account-status-banner {
@@ -2424,7 +2544,7 @@ html, body {
 }
 
 .status-banner-balance .bal-label {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-dim);
   text-transform: uppercase;
   display: block;
@@ -2682,5 +2802,125 @@ html, body {
 .btn-demo-prime:hover {
   box-shadow: 0 0 16px rgba(245, 158, 11, 0.4);
   transform: translateY(-1px);
+}
+
+/* ========================================================
+   UX POLISH: DISABLED STATES, TOUCH TARGETS, MOBILE FIXES
+   ======================================================== */
+
+/* Disabled / busy buttons */
+.btn-primary-modal:disabled,
+.btn-secondary-modal:disabled,
+.btn-demo-prime:disabled,
+.btn-demo-mini:disabled,
+.btn-flash-close:disabled,
+.btn-toobit-connect:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Comfortable hit areas on touch devices (WCAG 2.5.8) */
+@media (pointer: coarse) {
+  .tf-btn { min-height: 34px; min-width: 36px; }
+  .mode-btn { min-height: 34px; }
+  .icon-toggle-btn { width: 38px; height: 38px; }
+  .chart-tool-btn { min-height: 34px; min-width: 34px; }
+  .calc-chip { min-height: 32px; }
+  .hist-filter-btn { min-height: 30px; padding: 4px 10px; }
+  .hist-action-btn { min-height: 30px; min-width: 30px; }
+  .drawer-toggle-btn { width: 30px; height: 30px; }
+  .modal-close-btn { width: 40px; height: 40px; }
+  .btn-toggle-eye { width: 38px; height: 38px; right: 2px; }
+  .btn-demo-mini { min-height: 32px; }
+  .btn-flash-close { min-height: 30px; }
+  .btn-toobit-connect { min-height: 34px; }
+}
+
+/* ========================================================
+   NAV OVERFLOW GUARDS
+   The top bar needs ~1715px for its full content, so secondary
+   info is shed in tiers and the bar finally wraps instead of
+   ever pushing the Analyze button off-screen.
+   ======================================================== */
+@media (max-width: 1720px) {
+  .brand-title,
+  .exchange-badge,
+  .toobit-btn-text,
+  .kbd-hint,
+  .nav-metric-secondary {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1310px) {
+  .ws-label {
+    display: none !important;
+  }
+}
+
+/* Nav collapses into rows (page layout below stays two-column) */
+@media (max-width: 1390px) {
+  .top-nav {
+    height: auto;
+    min-height: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 6px;
+  }
+
+  .nav-left {
+    order: 1;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    min-width: 0;
+  }
+
+  .nav-center {
+    order: 2;
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-x: auto;
+    justify-content: flex-start;
+    padding-bottom: 2px;
+  }
+
+  .nav-right {
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: space-between;
+    margin-left: 0;
+    gap: 8px;
+  }
+}
+
+/* Mobile: respect notches + keep the bar breathing */
+@media (max-width: 900px) {
+  .app-layout {
+    height: 100dvh;
+  }
+
+  .top-nav {
+    padding: 6px max(10px, env(safe-area-inset-left)) 6px max(10px, env(safe-area-inset-right));
+  }
+
+  .history-drawer,
+  .sidebar-section {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Keep toasts clear of the top bar on small screens */
+@media (max-width: 600px) {
+  /* Keep toasts clear of the collapsed history drawer at the bottom */
+  .toast-container {
+    top: auto;
+    bottom: calc(48px + env(safe-area-inset-bottom));
+    left: 12px;
+    right: 12px;
+    max-width: none;
+  }
 }
 
