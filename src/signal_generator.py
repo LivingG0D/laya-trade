@@ -21,13 +21,22 @@ class SignalGenerator:
         laya_decision: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Merge market indicators with Laya decision to produce actionable trade setups.
+        Merge market indicators with Laya decision to produce institutional grade trade setups.
+        Applies strict confluence gating, break-even targets, and volatility adjustments.
         """
         cur_price = market_state.get("price", 0.0)
+        symbol = str(market_state.get("symbol", "1000PEPEUSDT.P")).upper()
+        interval = market_state.get("interval", "5m")
+        candle_time = market_state.get("time", int(time.time()))
+
         atr = market_state.get("atr", cur_price * 0.01)
+        atr_pct = market_state.get("atr_pct", 1.0)
         support = market_state.get("support", cur_price - atr)
         resistance = market_state.get("resistance", cur_price + atr)
-        candle_time = market_state.get("time", int(time.time()))
+
+        # High beta / meme coin volatility adjustment (prevent stop-hunts on PEPE, DOGE, SHIB)
+        is_meme_or_high_vol = any(k in symbol for k in ["PEPE", "SHIB", "DOGE", "FLOKI", "BONK"]) or atr_pct > 1.5
+        effective_atr_mult = self.atr_multiplier * 1.35 if is_meme_or_high_vol else self.atr_multiplier
 
         pos = laya_decision.get("position", "NEUTRAL_HOLD")
         probs = laya_decision.get("probabilities", {})
@@ -35,26 +44,76 @@ class SignalGenerator:
         is_long = "LONG" in pos
         is_short = "SHORT" in pos
 
-        # Calibrated probability for direction
+        # Extract macro context and institutional metrics
+        htf = market_state.get("htf") or {}
+        htf_trend = htf.get("trend", "NEUTRAL")
+        depth = market_state.get("depth") or {}
+        obi = depth.get("imbalance_pct", 0.0)
+        funding = market_state.get("funding") or {}
+        market_regime = market_state.get("market_regime", "CHOP_RANGE")
+        is_squeeze = market_state.get("is_squeeze", False)
+
+        raw_prob = probs.get(pos, laya_decision.get("long_prob" if is_long else "short_prob", 0.5))
+
+        # ========================================================
+        # STRICT CONFLUENCE GATEKEEPER (INSTITUTIONAL QUALITY FILTER)
+        # ========================================================
+        filter_reason = None
+
+        # 1. Reject counter-trend trades against strong 1H macro trend
+        if is_long and htf_trend == "STRONG_BEARISH":
+            filter_reason = "Long trade rejected: Opposed to 1H Strong Bearish Macro Trend (confluence failure)."
+        elif is_short and htf_trend == "STRONG_BULLISH":
+            filter_reason = "Short trade rejected: Opposed to 1H Strong Bullish Macro Trend (confluence failure)."
+
+        # 2. Strict Confidence Threshold Gate (Minimum 65% conviction required)
+        elif (is_long or is_short) and raw_prob < 0.65:
+            filter_reason = f"Trade rejected: Model conviction ({round(raw_prob * 100, 1)}%) below institutional threshold (65.0%)."
+
+        # 3. Chop Market Filter (Avoid whipsaws when ADX is dead unless in pre-squeeze compression)
+        elif (is_long or is_short) and market_regime == "CHOP_RANGE" and not is_squeeze and raw_prob < 0.72:
+            filter_reason = "Trade filtered: Low ADX range chop without squeeze expansion catalyst."
+
+        if filter_reason:
+            is_long = False
+            is_short = False
+            pos = "NEUTRAL_HOLD"
+
+        # Precision formatting
+        def fmt(val: float) -> float:
+            return round(val, 8 if cur_price < 0.1 else 4)
+
+        reasons = []
+
         if is_long:
             action = "LONG"
             direction = "BUY"
             color = "#0ecb81"
             shape = "arrowUp"
             marker_pos = "belowBar"
-            dir_prob = probs.get(pos, laya_decision.get("long_prob", 0.7))
+            dir_prob = raw_prob
             
-            # SL placed below entry by ATR or key support
-            sl_dist = max(atr * self.atr_multiplier, cur_price * 0.005)
-            # If support is reasonably close below entry, use support as SL anchor
+            # SL placed below entry by adjusted ATR or key structural support
+            sl_dist = max(atr * effective_atr_mult, cur_price * 0.006)
             if 0 < (cur_price - support) <= sl_dist * 1.5:
-                stop_loss = support - (atr * 0.2)
+                stop_loss = support - (atr * 0.25)
             else:
                 stop_loss = cur_price - sl_dist
 
             risk = cur_price - stop_loss
-            tp1 = cur_price + (risk * self.tp1_rr)
-            tp2 = cur_price + (risk * self.tp2_rr)
+            be_price = cur_price + (risk * 1.0) # +1.0R Break-Even
+            tp1 = cur_price + (risk * self.tp1_rr) # +1.5R (Take 50% profit)
+            tp2 = cur_price + (risk * self.tp2_rr) # +2.5R (Runner target)
+
+            reasons.append(f"Laya Decision: {pos} ({round(dir_prob * 100, 1)}% probability)")
+            if htf_trend != "NEUTRAL":
+                reasons.append(f"1H Macro Alignment: {htf_trend} (Trend Confluence Verified)")
+            if obi != 0:
+                reasons.append(f"Order Flow Depth: OBI {obi:+.1f}% ({'Bids' if obi > 0 else 'Asks'} dominate Toobit book)")
+            if is_squeeze:
+                reasons.append("TTM Squeeze Active: Volatility compression pending explosive expansion.")
+            reasons.append(f"Execution Rule: Move SL to Break-Even (${fmt(be_price)}) once +1.0R is reached.")
+            reasons.append(f"Take Profit Strategy: Scale out 50% at TP1 (${fmt(tp1)}); trail runner to TP2 (${fmt(tp2)}).")
 
         elif is_short:
             action = "SHORT"
@@ -62,18 +121,29 @@ class SignalGenerator:
             color = "#f6465d"
             shape = "arrowDown"
             marker_pos = "aboveBar"
-            dir_prob = probs.get(pos, laya_decision.get("short_prob", 0.7))
+            dir_prob = raw_prob
 
-            # SL placed above entry by ATR or key resistance
-            sl_dist = max(atr * self.atr_multiplier, cur_price * 0.005)
+            # SL placed above entry by adjusted ATR or key structural resistance
+            sl_dist = max(atr * effective_atr_mult, cur_price * 0.006)
             if 0 < (resistance - cur_price) <= sl_dist * 1.5:
-                stop_loss = resistance + (atr * 0.2)
+                stop_loss = resistance + (atr * 0.25)
             else:
                 stop_loss = cur_price + sl_dist
 
             risk = stop_loss - cur_price
-            tp1 = cur_price - (risk * self.tp1_rr)
-            tp2 = cur_price - (risk * self.tp2_rr)
+            be_price = cur_price - (risk * 1.0) # +1.0R Break-Even
+            tp1 = cur_price - (risk * self.tp1_rr) # +1.5R (Take 50% profit)
+            tp2 = cur_price - (risk * self.tp2_rr) # +2.5R (Runner target)
+
+            reasons.append(f"Laya Decision: {pos} ({round(dir_prob * 100, 1)}% probability)")
+            if htf_trend != "NEUTRAL":
+                reasons.append(f"1H Macro Alignment: {htf_trend} (Trend Confluence Verified)")
+            if obi != 0:
+                reasons.append(f"Order Flow Depth: OBI {obi:+.1f}% ({'Bids' if obi > 0 else 'Asks'} dominate Toobit book)")
+            if is_squeeze:
+                reasons.append("TTM Squeeze Active: Volatility compression pending explosive expansion.")
+            reasons.append(f"Execution Rule: Move SL to Break-Even (${fmt(be_price)}) once +1.0R is reached.")
+            reasons.append(f"Take Profit Strategy: Scale out 50% at TP1 (${fmt(tp1)}); trail runner to TP2 (${fmt(tp2)}).")
 
         else:
             action = "NEUTRAL"
@@ -83,43 +153,39 @@ class SignalGenerator:
             marker_pos = "aboveBar"
             dir_prob = probs.get("NEUTRAL_HOLD", laya_decision.get("hold_prob", 0.5))
             stop_loss = cur_price
+            be_price = cur_price
             tp1 = cur_price
             tp2 = cur_price
             risk = 0.0
 
-        # Build human-readable bullet points
-        reasons = []
-        reasons.append(f"Laya System 1: {pos} ({round(dir_prob * 100, 1)}% probability)")
-        if market_state.get("trend_state"):
-            reasons.append(f"Trend Structure: {market_state.get('trend_state')}")
-        if market_state.get("rsi"):
-            reasons.append(f"RSI (14): {market_state.get('rsi')}")
-        if market_state.get("macd_hist") is not None:
-            hist_str = "Positive/Bullish" if market_state.get("macd_hist") > 0 else "Negative/Bearish"
-            reasons.append(f"MACD Histogram: {hist_str}")
-        if market_state.get("vol_spike") and market_state.get("vol_spike") > 1.2:
-            reasons.append(f"Volume Surge: {market_state.get('vol_spike')}x above 20-period SMA")
+            if filter_reason:
+                reasons.append(f"Quality Filter: {filter_reason}")
+            else:
+                reasons.append("Market in chop/range or conflicting timeframes. Preserving capital.")
+            if htf_trend != "NEUTRAL":
+                reasons.append(f"1H Macro Trend: {htf_trend}")
+            if market_regime:
+                reasons.append(f"Market Regime: {market_regime}")
 
-        # Precision formatting
-        def fmt(val: float) -> float:
-            return round(val, 8 if cur_price < 0.1 else 4)
-
+        # Build signal setup object
         signal_obj = {
             "id": f"sig_{int(time.time() * 1000)}",
             "time": candle_time,
             "timestamp": int(time.time()),
-            "symbol": market_state.get("symbol", "1000PEPEUSDT.P"),
-            "interval": market_state.get("interval", "5m"),
+            "symbol": symbol,
+            "interval": interval,
             "action": action,
             "direction": direction,
             "signal_type": pos,
             "entry_price": fmt(cur_price),
             "stop_loss": fmt(stop_loss),
+            "break_even": fmt(be_price),
             "take_profit_1": fmt(tp1),
             "take_profit_2": fmt(tp2),
             "targets": {
                 "entry": fmt(cur_price),
                 "stop_loss": fmt(stop_loss),
+                "break_even": fmt(be_price),
                 "take_profit_1": fmt(tp1),
                 "take_profit_2": fmt(tp2)
             },

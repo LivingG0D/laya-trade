@@ -157,6 +157,116 @@ def find_support_resistance(highs: np.ndarray, lows: np.ndarray, window: int = 1
     resistance = float(np.max(recent_highs))
     return {"support": support, "resistance": resistance}
 
+
+def calculate_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> Dict[str, np.ndarray]:
+    """
+    Calculate Average Directional Index (ADX), +DI, and -DI using Wilder's smoothing.
+    """
+    n = len(close)
+    adx = np.full(n, 20.0, dtype=float)
+    plus_di = np.full(n, 20.0, dtype=float)
+    minus_di = np.full(n, 20.0, dtype=float)
+
+    if n <= period:
+        return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
+
+    tr = np.zeros(n, dtype=float)
+    plus_dm = np.zeros(n, dtype=float)
+    minus_dm = np.zeros(n, dtype=float)
+
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+
+        up_move = high[i] - high[i - 1]
+        down_move = low[i - 1] - low[i]
+
+        if up_move > down_move and up_move > 0:
+            plus_dm[i] = up_move
+        else:
+            plus_dm[i] = 0.0
+
+        if down_move > up_move and down_move > 0:
+            minus_dm[i] = down_move
+        else:
+            minus_dm[i] = 0.0
+
+    # Wilder's smoothing
+    smoothed_tr = np.zeros(n, dtype=float)
+    smoothed_plus_dm = np.zeros(n, dtype=float)
+    smoothed_minus_dm = np.zeros(n, dtype=float)
+
+    smoothed_tr[period] = np.sum(tr[1 : period + 1])
+    smoothed_plus_dm[period] = np.sum(plus_dm[1 : period + 1])
+    smoothed_minus_dm[period] = np.sum(minus_dm[1 : period + 1])
+
+    for i in range(period + 1, n):
+        smoothed_tr[i] = smoothed_tr[i - 1] - (smoothed_tr[i - 1] / period) + tr[i]
+        smoothed_plus_dm[i] = smoothed_plus_dm[i - 1] - (smoothed_plus_dm[i - 1] / period) + plus_dm[i]
+        smoothed_minus_dm[i] = smoothed_minus_dm[i - 1] - (smoothed_minus_dm[i - 1] / period) + minus_dm[i]
+
+    dx = np.zeros(n, dtype=float)
+    for i in range(period, n):
+        tr_val = smoothed_tr[i] if smoothed_tr[i] > 1e-8 else 1e-8
+        plus_di[i] = 100.0 * (smoothed_plus_dm[i] / tr_val)
+        minus_di[i] = 100.0 * (smoothed_minus_dm[i] / tr_val)
+        di_sum = plus_di[i] + minus_di[i]
+        dx[i] = 100.0 * (abs(plus_di[i] - minus_di[i]) / (di_sum if di_sum > 1e-8 else 1e-8))
+
+    # Calculate ADX as Wilder's smoothed DX
+    first_adx_idx = 2 * period
+    if n > first_adx_idx:
+        adx[first_adx_idx] = np.mean(dx[period : first_adx_idx + 1])
+        for i in range(first_adx_idx + 1, n):
+            adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period
+    else:
+        adx[period:] = dx[period:]
+
+    # Clean NaNs
+    adx[np.isnan(adx)] = 20.0
+    plus_di[np.isnan(plus_di)] = 20.0
+    minus_di[np.isnan(minus_di)] = 20.0
+
+    return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
+
+
+def calculate_keltner_channels(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 20, atr_mult: float = 1.5
+) -> Dict[str, np.ndarray]:
+    """Calculate Keltner Channels (EMA middle +/- ATR multiplier)."""
+    middle = calculate_ema(close, period)
+    atr = calculate_atr(high, low, close, period)
+    upper = middle + (atr_mult * atr)
+    lower = middle - (atr_mult * atr)
+    return {"middle": middle, "upper": upper, "lower": lower}
+
+
+def calculate_ttm_squeeze(
+    bb_upper: np.ndarray, bb_lower: np.ndarray, kc_upper: np.ndarray, kc_lower: np.ndarray
+) -> Dict[str, Any]:
+    """
+    Evaluate Bollinger Bands inside Keltner Channel to detect TTM Squeeze.
+    """
+    n = len(bb_upper)
+    if n == 0 or np.isnan(bb_upper[-1]) or np.isnan(kc_upper[-1]):
+        return {"is_squeeze": False, "status": "NO_SQUEEZE"}
+
+    is_squeeze = bool(bb_upper[-1] < kc_upper[-1] and bb_lower[-1] > kc_lower[-1])
+    prev_squeeze = bool(n > 1 and not np.isnan(bb_upper[-2]) and not np.isnan(kc_upper[-2]) and bb_upper[-2] < kc_upper[-2] and bb_lower[-2] > kc_lower[-2])
+
+    if is_squeeze:
+        status = "SQUEEZE_ON"
+    elif prev_squeeze and not is_squeeze:
+        status = "SQUEEZE_FIRED"
+    else:
+        status = "EXPANDING"
+
+    return {"is_squeeze": is_squeeze, "status": status}
+
+
 def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Compute full technical indicator suite on klines.
@@ -172,7 +282,7 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
     opens = np.array([k["open"] for k in klines], dtype=float)
     volumes = np.array([k.get("volume", 0.0) for k in klines], dtype=float)
 
-    # Compute Indicators
+    # Compute Core Indicators
     ema9 = calculate_ema(closes, 9)
     ema21 = calculate_ema(closes, 21)
     ema50 = calculate_ema(closes, 50)
@@ -183,6 +293,11 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
     bb_res = calculate_bollinger_bands(closes, 20, 2.0)
     atr = calculate_atr(highs, lows, closes, 14)
     vol_sma = calculate_sma(volumes, 20)
+
+    # Advanced Quant & Regime Indicators
+    adx_res = calculate_adx(highs, lows, closes, 14)
+    kc_res = calculate_keltner_channels(highs, lows, closes, 20, 1.5)
+    squeeze_res = calculate_ttm_squeeze(bb_res["upper"], bb_res["lower"], kc_res["upper"], kc_res["lower"])
 
     # Decorate klines with indicators for frontend lightweight charts
     decorated_series = []
@@ -208,6 +323,7 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
             "bb_middle": None if np.isnan(bb_res["middle"][i]) else round(float(bb_res["middle"][i]), 8),
             "bb_lower": None if np.isnan(bb_res["lower"][i]) else round(float(bb_res["lower"][i]), 8),
             "atr": None if np.isnan(atr[i]) else round(float(atr[i]), 8),
+            "adx": round(float(adx_res["adx"][i]), 1),
         }
         decorated_series.append(item)
 
@@ -232,6 +348,9 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
         elif cur_price < ema9[last_idx] < ema21[last_idx]:
             trend_state = "STRONG_BEARISH" if (not np.isnan(ema50[last_idx]) and ema21[last_idx] < ema50[last_idx]) else "BEARISH"
 
+    latest_adx = float(adx_res["adx"][last_idx])
+    market_regime = "STRONG_TREND" if latest_adx >= 25 else ("CHOP_RANGE" if latest_adx < 20 else "MODERATE_TREND")
+
     latest_telemetry = {
         "price": float(cur_price),
         "change_pct": round(float(price_change_pct), 3),
@@ -251,6 +370,13 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
         "ema200": round(float(ema200[last_idx]), 8) if not np.isnan(ema200[last_idx]) else None,
         "volume": float(cur_vol),
         "vol_spike": round(float(vol_spike), 2),
+        "rvol": round(float(vol_spike), 2),
+        "adx": round(latest_adx, 1),
+        "plus_di": round(float(adx_res["plus_di"][last_idx]), 1),
+        "minus_di": round(float(adx_res["minus_di"][last_idx]), 1),
+        "market_regime": market_regime,
+        "squeeze_status": squeeze_res["status"],
+        "is_squeeze": squeeze_res["is_squeeze"],
         "support": levels["support"],
         "resistance": levels["resistance"],
         "trend_state": trend_state

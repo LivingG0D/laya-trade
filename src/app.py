@@ -175,6 +175,23 @@ async def get_klines(
                 marker_map[m["time"]] = m
         active_markers = sorted(marker_map.values(), key=lambda x: x["time"])
 
+        # Asynchronously fetch institutional metrics (HTF, depth, funding) to enrich latest telemetry
+        try:
+            htf_ctx, depth_ctx, funding_ctx = await asyncio.gather(
+                market_service.fetch_htf_context(symbol),
+                market_service.fetch_order_book_depth(symbol),
+                market_service.fetch_funding_rate(symbol),
+                return_exceptions=True
+            )
+            if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
+                calculated["latest"]["htf"] = htf_ctx
+            if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
+                calculated["latest"]["depth"] = depth_ctx
+            if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
+                calculated["latest"]["funding"] = funding_ctx
+        except Exception as e:
+            logger.debug(f"Non-critical institutional enrichment in klines: {e}")
+
         return {
             "symbol": symbol.upper(),
             "interval": interval,
@@ -191,7 +208,7 @@ async def trigger_analysis(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query(DEFAULT_TIMEFRAME)
 ):
-    """Run full technical calculation and Laya System 1 probabilistic decision."""
+    """Run full technical calculation and Laya System 1 probabilistic decision with multi-factor confluence."""
     try:
         raw_klines = await market_service.fetch_klines(symbol=symbol, interval=interval, limit=200)
         calc = compute_all_indicators(raw_klines)
@@ -200,10 +217,27 @@ async def trigger_analysis(
         latest["interval"] = interval
         latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
 
-        # Laya inference
+        # Concurrent fetch of institutional intelligence: 1h HTF Macro Trend, Order Book Depth (OBI), and Funding Rate
+        try:
+            htf_ctx, depth_ctx, funding_ctx = await asyncio.gather(
+                market_service.fetch_htf_context(symbol),
+                market_service.fetch_order_book_depth(symbol),
+                market_service.fetch_funding_rate(symbol),
+                return_exceptions=True
+            )
+            if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
+                latest["htf"] = htf_ctx
+            if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
+                latest["depth"] = depth_ctx
+            if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
+                latest["funding"] = funding_ctx
+        except Exception as e:
+            logger.warning(f"Error gathering institutional intelligence in analyze: {e}")
+
+        # Laya inference with enriched multi-factor context
         laya_decision = await laya_engine.decide(latest)
 
-        # Generate trade setup
+        # Generate institutional grade trade setup with strict confluence gating
         signal = signal_generator.generate_signal(latest, laya_decision)
 
         # Cache for fast AI position suggestion evaluation

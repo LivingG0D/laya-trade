@@ -201,15 +201,29 @@ class LayaEngine:
             }
         }
 
+        # Extract enriched institutional context
+        htf = market_state.get("htf") or {}
+        depth = market_state.get("depth") or {}
+        funding = market_state.get("funding") or {}
+
+        htf_str = f"1H Trend: {htf.get('trend', 'NEUTRAL')} (1H EMA50: {htf.get('ema50', 'N/A')}, 1H EMA200: {htf.get('ema200', 'N/A')}, 1H RSI: {htf.get('rsi', 'N/A')})"
+        regime_str = f"Regime: {market_state.get('market_regime', 'CHOP_RANGE')} | Wilder ADX(14): {market_state.get('adx', 20.0)} (+DI: {market_state.get('plus_di', 20.0)}, -DI: {market_state.get('minus_di', 20.0)})"
+        squeeze_str = f"TTM Squeeze: {market_state.get('squeeze_status', 'NORMAL')} (Compressed: {market_state.get('is_squeeze', False)})"
+        depth_str = f"Order Book Imbalance (OBI): {depth.get('imbalance_pct', 0.0)}% | Bid/Ask Ratio: {depth.get('bid_ask_ratio', 1.0)} (Bids: {depth.get('bid_volume', 0.0)}, Asks: {depth.get('ask_volume', 0.0)})"
+        funding_str = f"Perp Funding Rate: {funding.get('funding_rate_pct', 0.0)}% (Rate: {funding.get('funding_rate', 0.0)})"
+
         # Format state as rich contextual document for Laya System 1 encoder
         summary_text = (
-            f"Asset: {market_state.get('symbol', '1000PEPEUSDT')} | Timeframe: {market_state.get('interval', '5m')}\n"
+            f"Asset: {market_state.get('symbol', '1000PEPEUSDT')} | Micro TF: {market_state.get('interval', '5m')}\n"
             f"Current Price: {market_state.get('price')} (24h Change: {market_state.get('change_pct')}%)\n"
-            f"Trend Regime: {market_state.get('trend_state')}\n"
-            f"Key Moving Averages: EMA9={market_state.get('ema9')}, EMA21={market_state.get('ema21')}, EMA50={market_state.get('ema50')}, EMA200={market_state.get('ema200')}\n"
+            f"Macro Confluence: {htf_str}\n"
+            f"Market Dynamics: {regime_str} | {squeeze_str}\n"
+            f"Order Flow & Liquidity: {depth_str} | {funding_str}\n"
+            f"Local Trend State: {market_state.get('trend_state')}\n"
+            f"Moving Averages (Micro): EMA9={market_state.get('ema9')}, EMA21={market_state.get('ema21')}, EMA50={market_state.get('ema50')}, EMA200={market_state.get('ema200')}\n"
             f"Momentum Oscillators: RSI={market_state.get('rsi')} | MACD={market_state.get('macd')} (Signal: {market_state.get('macd_signal')}, Hist: {market_state.get('macd_hist')})\n"
             f"Bollinger Bands: Upper={market_state.get('bb_upper')}, Lower={market_state.get('bb_lower')}, %B={market_state.get('bb_pct_b')}\n"
-            f"Volatility & Volume: ATR={market_state.get('atr')} ({market_state.get('atr_pct')}%) | Volume Spike Factor={market_state.get('vol_spike')}x\n"
+            f"Volatility & Volume: ATR={market_state.get('atr')} ({market_state.get('atr_pct')}%) | RVOL={market_state.get('rvol', 1.0)}x | Vol Surge={market_state.get('vol_spike')}x\n"
             f"Key Structural Levels: Nearest Support={market_state.get('support')}, Nearest Resistance={market_state.get('resistance')}"
         )
 
@@ -295,63 +309,130 @@ class LayaEngine:
 
     def _fallback_decision(self, market_state: Dict[str, Any], latency_ms: float) -> Dict[str, Any]:
         """
-        Calibrated mathematical decision synthesizer.
-        Evaluates confluence of RSI, MACD, EMAs, and Bollinger %B.
+        Institutional-grade calibrated mathematical decision synthesizer.
+        Evaluates confluence of:
+        1. 1H Macro Trend Confluence (HTF Filter)
+        2. Market Regime & Trend Strength (Wilder's ADX 14 & DI)
+        3. TTM Squeeze Volatility State
+        4. Order Book Imbalance (OBI) & Bid/Ask Ratio
+        5. Micro Momentum (RSI, MACD, EMAs, Bollinger %B)
         """
         rsi = market_state.get("rsi", 50.0)
         macd_hist = market_state.get("macd_hist", 0.0)
         trend = market_state.get("trend_state", "NEUTRAL")
         bb_pct_b = market_state.get("bb_pct_b", 0.5)
         vol_spike = market_state.get("vol_spike", 1.0)
+        adx = market_state.get("adx", 20.0)
+        plus_di = market_state.get("plus_di", 20.0)
+        minus_di = market_state.get("minus_di", 20.0)
+        is_squeeze = market_state.get("is_squeeze", False)
+        
+        # HTF Macro Context
+        htf = market_state.get("htf") or {}
+        htf_trend = htf.get("trend", "NEUTRAL")
 
-        # Bullish and Bearish confluence scoring
+        # Order Book & Funding
+        depth = market_state.get("depth") or {}
+        obi = depth.get("imbalance_pct", 0.0)
+        funding = market_state.get("funding") or {}
+        funding_rate = funding.get("funding_rate", 0.0)
+
+        # Base scoring
         bull_score = 0.0
         bear_score = 0.0
+        hold_score = 0.2
 
-        if trend == "STRONG_BULLISH":
-            bull_score += 0.4
-        elif trend == "BULLISH":
-            bull_score += 0.25
-        elif trend == "STRONG_BEARISH":
-            bear_score += 0.4
-        elif trend == "BEARISH":
-            bear_score += 0.25
-
-        if macd_hist > 0:
-            bull_score += 0.25
+        # 1. 1H Macro Trend Alignment (High Confluence Weight)
+        if htf_trend == "STRONG_BULLISH":
+            bull_score += 0.45
+            bear_score -= 0.30
+        elif htf_trend == "BULLISH":
+            bull_score += 0.30
+            bear_score -= 0.15
+        elif htf_trend == "STRONG_BEARISH":
+            bear_score += 0.45
+            bull_score -= 0.30
+        elif htf_trend == "BEARISH":
+            bear_score += 0.30
+            bull_score -= 0.15
         else:
-            bear_score += 0.25
+            hold_score += 0.15
 
-        if rsi < 35:
-            bull_score += 0.2  # Oversold bounce
-        elif rsi > 65:
-            bear_score += 0.2  # Overbought rejection
-        elif 50 <= rsi <= 60:
-            bull_score += 0.15 # Bullish momentum
-        elif 40 <= rsi < 50:
-            bear_score += 0.15 # Bearish momentum
+        # 2. Local Trend (5m)
+        if trend == "STRONG_BULLISH":
+            bull_score += 0.35
+        elif trend == "BULLISH":
+            bull_score += 0.20
+        elif trend == "STRONG_BEARISH":
+            bear_score += 0.35
+        elif trend == "BEARISH":
+            bear_score += 0.20
 
-        if bb_pct_b < 0.1:
-            bull_score += 0.15 # Rebound from lower band
-        elif bb_pct_b > 0.9:
-            bear_score += 0.15 # Rebound from upper band
+        # 3. Market Regime & Trend Strength (Wilder's ADX 14)
+        if adx < 18.0:
+            # Low ADX indicates chop range / whipsaw market
+            hold_score += 0.40
+            bull_score *= 0.65
+            bear_score *= 0.65
+        elif adx >= 25.0:
+            # Strong trending market
+            if plus_di > minus_di + 5:
+                bull_score += 0.25
+            elif minus_di > plus_di + 5:
+                bear_score += 0.25
 
-        if vol_spike > 1.5:
+        # 4. Order Book Imbalance (OBI)
+        if obi > 20.0:
+            bull_score += min(0.30, (obi / 100.0) * 0.45)
+        elif obi < -20.0:
+            bear_score += min(0.30, (abs(obi) / 100.0) * 0.45)
+
+        # 5. Funding Rate Overcrowding Shield
+        if funding_rate > 0.0003: # > +0.03% (crowded longs)
+            bull_score -= 0.20
+        elif funding_rate < -0.0003: # < -0.03% (crowded shorts)
+            bear_score -= 0.20
+
+        # 6. Micro Momentum (MACD & RSI)
+        if macd_hist > 0:
+            bull_score += 0.20
+        else:
+            bear_score += 0.20
+
+        if rsi < 32:
+            bull_score += 0.25  # Oversold bounce
+        elif rsi > 68:
+            bear_score += 0.25  # Overbought rejection
+        elif 52 <= rsi <= 65:
+            bull_score += 0.15  # Healthy bullish continuation
+        elif 35 <= rsi < 48:
+            bear_score += 0.15  # Bearish continuation
+
+        if bb_pct_b < 0.05:
+            bull_score += 0.15
+        elif bb_pct_b > 0.95:
+            bear_score += 0.15
+
+        if vol_spike > 1.3:
             if bull_score > bear_score:
-                bull_score += 0.15
+                bull_score += 0.20
             else:
-                bear_score += 0.15
+                bear_score += 0.20
 
-        # Normalize probabilities via softmax
+        # Floor at 0.0
+        bull_score = max(0.0, bull_score)
+        bear_score = max(0.0, bear_score)
+
+        # Build candidate vector
         scores = np.array([
-            bull_score if bull_score > 0.6 else bull_score * 0.5, # STRONG_LONG
-            bull_score * 0.7,                                     # SCALP_LONG
-            max(0.2, 1.0 - (bull_score + bear_score) * 0.7),      # NEUTRAL_HOLD
-            bear_score * 0.7,                                     # SCALP_SHORT
-            bear_score if bear_score > 0.6 else bear_score * 0.5  # STRONG_SHORT
+            bull_score if bull_score > 0.65 else bull_score * 0.5, # STRONG_LONG
+            bull_score * 0.75,                                     # SCALP_LONG
+            hold_score + max(0.1, 1.0 - (bull_score + bear_score) * 0.5), # NEUTRAL_HOLD
+            bear_score * 0.75,                                     # SCALP_SHORT
+            bear_score if bear_score > 0.65 else bear_score * 0.5  # STRONG_SHORT
         ])
-        import numpy as np
-        exp_s = np.exp(scores * 2.5)
+
+        exp_s = np.exp(scores * 2.8)
         probs = exp_s / np.sum(exp_s)
 
         choices = ["STRONG_LONG", "SCALP_LONG", "NEUTRAL_HOLD", "SCALP_SHORT", "STRONG_SHORT"]
@@ -377,6 +458,9 @@ class LayaEngine:
         short_agg = prob_dict["STRONG_SHORT"] + prob_dict["SCALP_SHORT"]
         hold_agg = prob_dict["NEUTRAL_HOLD"]
 
+        # Squeeze risk calculation
+        sq_risk = 0.75 if is_squeeze else min(0.9, vol_spike * 0.25)
+
         return {
             "position": best_choice,
             "probabilities": prob_dict,
@@ -385,7 +469,7 @@ class LayaEngine:
             "hold_prob": round(hold_agg, 3),
             "confidence_score": conf_score,
             "confidence_prob": round(confidence_prob, 3),
-            "squeeze_risk": round(min(0.9, vol_spike * 0.25), 2),
+            "squeeze_risk": round(sq_risk, 2),
             "time_horizon": "SWING" if "STRONG" in best_choice else ("SCALP" if "SCALP" in best_choice else "WAIT"),
             "latency_ms": latency_ms,
             "engine": "calibrated_system1"

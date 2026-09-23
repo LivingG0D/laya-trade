@@ -177,6 +177,22 @@
             <span class="hud-item hud-ema21 hide-on-mobile">EMA21: <strong id="hudEma21">--</strong></span>
             <span class="hud-item hud-ema50 hide-on-compact">EMA50: <strong id="hudEma50">--</strong></span>
             <span class="hud-item hud-rsi hide-on-compact">RSI: <strong id="hudRsi">--</strong></span>
+            <!-- Institutional Confluence Pills -->
+            <div class="hud-inst-strip" id="hudInstStrip">
+              <span class="inst-pill" id="hudHtfPill" title="1-Hour Macro Trend Confluence">
+                <span class="inst-pill-dot neutral" id="hudHtfDot"></span>
+                <span id="hudHtfVal">1H: --</span>
+              </span>
+              <span class="inst-pill" id="hudRegimePill" title="Wilder ADX(14) Market Regime & TTM Squeeze">
+                <span id="hudRegimeVal">Regime: --</span>
+              </span>
+              <span class="inst-pill" id="hudObiPill" title="Toobit Live Order Book Depth Imbalance">
+                <span id="hudObiVal">OBI: --%</span>
+              </span>
+              <span class="inst-pill hide-on-compact" id="hudFundingPill" title="Perpetual Funding Rate">
+                <span id="hudFundingVal">Funding: --%</span>
+              </span>
+            </div>
           </div>
 
           <div class="chart-controls-group">
@@ -192,6 +208,10 @@
               <label class="toggle-control" title="Toggle Target Entry, SL, TP Horizontal Lines">
                 <input type="checkbox" id="toggleTargetLines" checked>
                 <span>Target Lines</span>
+              </label>
+              <label class="toggle-control" title="Toggle Open Position Lines & HUD on Chart">
+                <input type="checkbox" id="togglePositionLines" checked>
+                <span>Position</span>
               </label>
               <label class="toggle-control" title="Auto evaluate on candle close">
                 <input type="checkbox" id="toggleAutoAnalyze" checked>
@@ -213,6 +233,27 @@
 
         <!-- TradingView Chart Mount Container -->
         <div id="chartContainer" class="chart-container"></div>
+
+        <!-- On-Chart Floating Active Position Overlay (HUD) -->
+        <div id="chartPositionBadge" class="chart-pos-hud hide" role="region" aria-label="Open Position HUD">
+          <div class="pos-hud-left">
+            <span class="pos-hud-side long" id="posHudSide">LONG 10x</span>
+            <div class="pos-hud-info">
+              <span class="pos-hud-sym" id="posHudSymbol">1000PEPEUSDT.P</span>
+              <span class="pos-hud-entry" id="posHudEntry">Entry: $0.004180</span>
+            </div>
+          </div>
+          <div class="pos-hud-metrics">
+            <div class="pos-hud-pnl pnl-green" id="posHudPnl">+$0.00 (+0.0%)</div>
+            <div class="pos-hud-liq" id="posHudLiq">Liq: --</div>
+          </div>
+          <div class="pos-hud-actions">
+            <button id="btnHudFlashClose" class="pos-hud-flash-btn" title="Instant Market Flash Close">
+              <i data-lucide="zap"></i>
+              <span>Flash Close</span>
+            </button>
+          </div>
+        </div>
 
         <!-- Chart Loading Overlay -->
         <div id="chartLoading" class="chart-loading" role="status" aria-live="polite">
@@ -259,7 +300,6 @@
               <div class="simple-card-title">
                 <i data-lucide="shield-alert"></i>
                 <span id="simplePosCardTitle">Your Active Trade</span>
-                <span class="pos-badge long" id="simplePosBadge">LONG (Demo)</span>
               </div>
               <button id="btnSimpleFlashClose" class="btn-flash-close" title="Instantly close trade at market price">
                 <i data-lucide="zap-off"></i>
@@ -267,20 +307,74 @@
               </button>
             </div>
 
-            <!-- Position Summary Grid -->
-            <div class="simple-pos-grid" id="simplePosGrid">
-              <div class="pos-stat-item">
-                <span class="pos-stat-label">Position</span>
-                <span class="pos-stat-val" id="simplePosQty">100,000 PEPE</span>
+            <!-- Live Position Summary -->
+            <div class="pos-live" data-pos="live">
+              <div class="pos-identity">
+                <span class="pos-symbol" data-pos="symbol">1000PEPE</span>
+                <span class="pos-badge long" id="simplePosBadge" data-pos="side">LONG (Demo)</span>
+                <span class="badge-mini badge-demo" id="simplePosModeBadge" data-pos="mode">Demo</span>
               </div>
-              <div class="pos-stat-item">
-                <span class="pos-stat-label">Entry Price</span>
-                <span class="pos-stat-val" id="simplePosEntry">$0.004180</span>
+
+              <div class="pos-hero">
+                <div class="pos-hero-block">
+                  <span class="pos-hero-label">Unrealized PnL</span>
+                  <span class="pos-hero-pnl pnl-green" data-pos="pnl">+$6.50</span>
+                </div>
+                <div class="pos-hero-block pos-hero-block-right">
+                  <span class="pos-hero-label">Return on Margin</span>
+                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+15.5%</span>
+                </div>
               </div>
-              <div class="pos-stat-item">
-                <span class="pos-stat-label">Live Profit/Loss</span>
-                <span class="pos-stat-val pnl-green" id="simplePosPnl">+$6.50 (+15.5%)</span>
+
+              <div class="pos-risk">
+                <div class="pos-risk-head">
+                  <span class="pos-risk-title">Liquidation Distance</span>
+                  <span class="pos-risk-val" data-pos="liqDist">8.6% away</span>
+                </div>
+                <div class="pos-risk-track" role="img" aria-label="Price position between liquidation and break-even">
+                  <div class="pos-risk-danger"></div>
+                  <div class="pos-risk-breakeven"></div>
+                  <div class="pos-risk-pin safe" data-pos="pin" style="left: 50%;"></div>
+                </div>
+                <div class="pos-risk-scale">
+                  <span>Liq <strong data-pos="liq">$0.003780</strong></span>
+                  <span>Break-even <strong data-pos="entry">$0.004180</strong></span>
+                </div>
               </div>
+
+              <div class="pos-stats">
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Size</span>
+                  <span class="pos-stat-val" data-pos="qty">100,000</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Notional</span>
+                  <span class="pos-stat-val" data-pos="notional">$424.50</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Margin</span>
+                  <span class="pos-stat-val" data-pos="margin">$41.80</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Leverage</span>
+                  <span class="pos-stat-val" data-pos="lev">10x</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Entry Price</span>
+                  <span class="pos-stat-val" data-pos="entryStat">$0.004180</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Mark Price</span>
+                  <span class="pos-stat-val" data-pos="mark">$0.004245</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty Position State -->
+            <div class="pos-empty hide" data-pos="empty">
+              <i data-lucide="package-open"></i>
+              <p class="pos-empty-title">No open position</p>
+              <p class="pos-empty-sub">Simulate a trade below to test Laya AI advice.</p>
             </div>
 
             <!-- AI Suggestion Box -->
@@ -339,6 +433,15 @@
                   <span class="step-label">TAKE PROFIT (Target Goal)</span>
                   <span class="step-value" id="simpleTakeProfit">--</span>
                   <span class="step-desc" id="simpleTpDesc">Sell here to lock in your profit!</span>
+                </div>
+              </div>
+
+              <div class="simple-step-item be-step">
+                <div class="step-num">🛡️</div>
+                <div class="step-info">
+                  <span class="step-label">BREAK-EVEN SHIELD (+1.0R)</span>
+                  <span class="step-value" id="simpleBreakEven">--</span>
+                  <span class="step-desc" id="simpleBeDesc">When price hits here, move Stop Loss to Entry for a 100% Risk-Free trade!</span>
                 </div>
               </div>
 
@@ -453,11 +556,15 @@
                 <span class="plan-val sl-val" id="targetSL">--</span>
               </div>
               <div class="plan-item">
-                <span class="plan-label">Take Profit 1</span>
+                <span class="plan-label">Break-Even (+1.0R)</span>
+                <span class="plan-val be-val" id="targetBE">--</span>
+              </div>
+              <div class="plan-item">
+                <span class="plan-label">Take Profit 1 (1.5R)</span>
                 <span class="plan-val tp-val" id="targetTP1">--</span>
               </div>
               <div class="plan-item">
-                <span class="plan-label">Take Profit 2</span>
+                <span class="plan-label">Take Profit 2 (2.5R)</span>
                 <span class="plan-val tp-val" id="targetTP2">--</span>
               </div>
             </div>
@@ -480,7 +587,6 @@
             <div class="panel-header">
               <div class="panel-header-left">
                 <h3><i data-lucide="wallet"></i> Toobit Position & AI Advice</h3>
-                <span class="badge-mini badge-live" id="proPosModeBadge">Demo Account</span>
               </div>
               <button id="btnProFlashClose" class="btn-flash-close" title="Execute Toobit flashClose market order">
                 <i data-lucide="zap-off"></i>
@@ -488,32 +594,74 @@
               </button>
             </div>
 
-            <!-- Position Table / Summary -->
-            <div class="pro-pos-table-wrap">
-              <table class="pro-pos-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>Size</th>
-                    <th>Entry</th>
-                    <th>Mark</th>
-                    <th>PnL (USDT)</th>
-                    <th>Liq. Price</th>
-                  </tr>
-                </thead>
-                <tbody id="proPosTableBody">
-                  <tr>
-                    <td id="proPosSym">1000PEPE</td>
-                    <td><span class="pos-badge long" id="proPosSideBadge">LONG 10x</span></td>
-                    <td id="proPosQty">100,000</td>
-                    <td id="proPosEntry">$0.004180</td>
-                    <td id="proPosMark">$0.004245</td>
-                    <td class="pnl-green" id="proPosPnl">+$6.50 (+15.5%)</td>
-                    <td id="proPosLiq">$0.003780</td>
-                  </tr>
-                </tbody>
-              </table>
+            <!-- Position Summary -->
+            <div class="pos-live" data-pos="live">
+              <div class="pos-identity">
+                <span class="pos-symbol" id="proPosSym" data-pos="symbol">1000PEPE</span>
+                <span class="pos-badge long" id="proPosSideBadge" data-pos="side">LONG 10x</span>
+                <span class="badge-mini badge-demo" id="proPosModeBadge" data-pos="mode">Demo</span>
+              </div>
+
+              <div class="pos-hero">
+                <div class="pos-hero-block">
+                  <span class="pos-hero-label">Unrealized PnL</span>
+                  <span class="pos-hero-pnl pnl-green" data-pos="pnl">+$6.50</span>
+                </div>
+                <div class="pos-hero-block pos-hero-block-right">
+                  <span class="pos-hero-label">Return on Margin</span>
+                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+15.5%</span>
+                </div>
+              </div>
+
+              <div class="pos-risk">
+                <div class="pos-risk-head">
+                  <span class="pos-risk-title">Liquidation Distance</span>
+                  <span class="pos-risk-val" data-pos="liqDist">8.6% away</span>
+                </div>
+                <div class="pos-risk-track" role="img" aria-label="Price position between liquidation and break-even">
+                  <div class="pos-risk-danger"></div>
+                  <div class="pos-risk-breakeven"></div>
+                  <div class="pos-risk-pin safe" data-pos="pin" style="left: 50%;"></div>
+                </div>
+                <div class="pos-risk-scale">
+                  <span>Liq <strong data-pos="liq">$0.003780</strong></span>
+                  <span>Break-even <strong data-pos="entry">$0.004180</strong></span>
+                </div>
+              </div>
+
+              <div class="pos-stats">
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Size</span>
+                  <span class="pos-stat-val" data-pos="qty">100,000</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Notional</span>
+                  <span class="pos-stat-val" data-pos="notional">$424.50</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Margin</span>
+                  <span class="pos-stat-val" data-pos="margin">$41.80</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Leverage</span>
+                  <span class="pos-stat-val" data-pos="lev">10x</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Entry Price</span>
+                  <span class="pos-stat-val" data-pos="entryStat">$0.004180</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Mark Price</span>
+                  <span class="pos-stat-val" data-pos="mark">$0.004245</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty Position State -->
+            <div class="pos-empty hide" data-pos="empty">
+              <i data-lucide="package-open"></i>
+              <p class="pos-empty-title">No open position</p>
+              <p class="pos-empty-sub">Simulate a contract below to test Laya AI advice.</p>
             </div>
 
             <!-- AI Position Advice Box -->
@@ -663,6 +811,26 @@
                 <span class="telem-value" id="telemResistance">--</span>
                 <span class="telem-state">Key Pivot High</span>
               </div>
+              <div class="telem-box">
+                <span class="telem-title">Wilder ADX (14)</span>
+                <span class="telem-value" id="telemAdx">--</span>
+                <span class="telem-state" id="telemRegimeState">Market Regime</span>
+              </div>
+              <div class="telem-box">
+                <span class="telem-title">TTM Squeeze</span>
+                <span class="telem-value" id="telemSqueeze">--</span>
+                <span class="telem-state" id="telemSqueezeState">Compression</span>
+              </div>
+              <div class="telem-box">
+                <span class="telem-title">Order Book Depth</span>
+                <span class="telem-value" id="telemObi">--%</span>
+                <span class="telem-state" id="telemObiState">Bid/Ask Ratio</span>
+              </div>
+              <div class="telem-box">
+                <span class="telem-title">1H Macro Confluence</span>
+                <span class="telem-value" id="telemHtf">--</span>
+                <span class="telem-state" id="telemHtfState">HTF Trend</span>
+              </div>
             </div>
           </div>
         </div>
@@ -773,6 +941,17 @@
 
         <!-- Tab 1: Live API Form -->
         <div id="tabContentLive" class="tab-content active" role="tabpanel" aria-labelledby="tabModeLive">
+          <!-- Live API Validation Error Notice -->
+          <div id="toobitConnectError" class="modal-error-box hide" role="alert">
+            <div class="modal-error-icon">
+              <i data-lucide="alert-triangle"></i>
+            </div>
+            <div class="modal-error-body">
+              <div class="modal-error-title">Connection Failed</div>
+              <div class="modal-error-desc" id="toobitConnectErrorText"></div>
+            </div>
+          </div>
+
           <form id="toobitApiForm" class="toobit-form">
             <div class="form-group">
               <label for="toobitApiKey">Toobit API Key</label>

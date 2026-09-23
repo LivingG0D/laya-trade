@@ -34,6 +34,7 @@ const analyzeBtn = document.getElementById("analyzeBtn");
 const toggleEMA = document.getElementById("toggleEMA");
 const toggleBB = document.getElementById("toggleBB");
 const toggleTargetLines = document.getElementById("toggleTargetLines");
+const togglePositionLines = document.getElementById("togglePositionLines");
 const toggleAutoAnalyze = document.getElementById("toggleAutoAnalyze");
 const btnFitChart = document.getElementById("btnFitChart");
 const btnFullscreenChart = document.getElementById("btnFullscreenChart");
@@ -41,6 +42,15 @@ const btnAudioToggle = document.getElementById("btnAudioToggle");
 const audioIcon = document.getElementById("audioIcon");
 const toastContainer = document.getElementById("toastContainer");
 const chartLoading = document.getElementById("chartLoading");
+
+// On-Chart Floating Position HUD Elements
+const chartPositionBadge = document.getElementById("chartPositionBadge");
+const posHudSide = document.getElementById("posHudSide");
+const posHudSymbol = document.getElementById("posHudSymbol");
+const posHudEntry = document.getElementById("posHudEntry");
+const posHudPnl = document.getElementById("posHudPnl");
+const posHudLiq = document.getElementById("posHudLiq");
+const btnHudFlashClose = document.getElementById("btnHudFlashClose");
 
 // Mode Switch Elements
 const btnSimpleMode = document.getElementById("btnSimpleMode");
@@ -107,12 +117,24 @@ const confidenceVal = document.getElementById("confidenceVal");
 const signalSubtext = document.getElementById("signalSubtext");
 const targetEntry = document.getElementById("targetEntry");
 const targetSL = document.getElementById("targetSL");
+const targetBE = document.getElementById("targetBE");
 const targetTP1 = document.getElementById("targetTP1");
 const targetTP2 = document.getElementById("targetTP2");
 const targetRRR = document.getElementById("targetRRR");
 const targetHorizon = document.getElementById("targetHorizon");
 const reasonsList = document.getElementById("reasonsList");
 const latencyBadge = document.getElementById("latencyBadge");
+
+// Simple Mode Break-Even Element
+const simpleBreakEven = document.getElementById("simpleBreakEven");
+const simpleBeDesc = document.getElementById("simpleBeDesc");
+
+// Institutional Confluence HUD Strip Elements
+const hudHtfVal = document.getElementById("hudHtfVal");
+const hudHtfDot = document.getElementById("hudHtfDot");
+const hudRegimeVal = document.getElementById("hudRegimeVal");
+const hudObiVal = document.getElementById("hudObiVal");
+const hudFundingVal = document.getElementById("hudFundingVal");
 
 // Probabilities Elements
 const probStrongLong = document.getElementById("probStrongLong");
@@ -138,6 +160,14 @@ const telemVolSpike = document.getElementById("telemVolSpike");
 const telemVolState = document.getElementById("telemVolState");
 const telemSupport = document.getElementById("telemSupport");
 const telemResistance = document.getElementById("telemResistance");
+const telemAdx = document.getElementById("telemAdx");
+const telemRegimeState = document.getElementById("telemRegimeState");
+const telemSqueeze = document.getElementById("telemSqueeze");
+const telemSqueezeState = document.getElementById("telemSqueezeState");
+const telemObi = document.getElementById("telemObi");
+const telemObiState = document.getElementById("telemObiState");
+const telemHtf = document.getElementById("telemHtf");
+const telemHtfState = document.getElementById("telemHtfState");
 const gaugeSupport = document.getElementById("gaugeSupport");
 const gaugePrice = document.getElementById("gaugePrice");
 const gaugeResistance = document.getElementById("gaugeResistance");
@@ -184,13 +214,11 @@ const eyeIcon = document.getElementById("eyeIcon");
 const btnSaveToobitKeys = document.getElementById("btnSaveToobitKeys");
 const btnDisconnectToobit = document.getElementById("btnDisconnectToobit");
 const btnActivateDemoMode = document.getElementById("btnActivateDemoMode");
+const toobitConnectError = document.getElementById("toobitConnectError");
+const toobitConnectErrorText = document.getElementById("toobitConnectErrorText");
 
 // Simple Mode Position Elements
 const simplePositionCard = document.getElementById("simplePositionCard");
-const simplePosBadge = document.getElementById("simplePosBadge");
-const simplePosQty = document.getElementById("simplePosQty");
-const simplePosEntry = document.getElementById("simplePosEntry");
-const simplePosPnl = document.getElementById("simplePosPnl");
 const btnSimpleFlashClose = document.getElementById("btnSimpleFlashClose");
 const simpleAiSuggestionBox = document.getElementById("simpleAiSuggestionBox");
 const simpleSugBadge = document.getElementById("simpleSugBadge");
@@ -203,14 +231,6 @@ const btnSimpleSimShort = document.getElementById("btnSimpleSimShort");
 const proPositionCard = document.getElementById("proPositionCard");
 const proPosModeBadge = document.getElementById("proPosModeBadge");
 const btnProFlashClose = document.getElementById("btnProFlashClose");
-const proPosTableBody = document.getElementById("proPosTableBody");
-const proPosSym = document.getElementById("proPosSym");
-const proPosSideBadge = document.getElementById("proPosSideBadge");
-const proPosQty = document.getElementById("proPosQty");
-const proPosEntry = document.getElementById("proPosEntry");
-const proPosMark = document.getElementById("proPosMark");
-const proPosPnl = document.getElementById("proPosPnl");
-const proPosLiq = document.getElementById("proPosLiq");
 const proSugBadge = document.getElementById("proSugBadge");
 const proAlignmentPill = document.getElementById("proAlignmentPill");
 const proSugSl = document.getElementById("proSugSl");
@@ -231,8 +251,9 @@ let toobitPollInterval = null;
 // --------------------------------------------------------
 // Toast Alert Notification System
 // --------------------------------------------------------
-function showToast(message, type = "info", duration = 2500) {
+function showToast(message, type = "info", duration = null) {
   if (!toastContainer) return;
+  const timeoutMs = duration !== null ? duration : (type === "error" ? 5000 : 2500);
 
   // Keep at most 4 toasts on screen
   while (toastContainer.children.length >= 4) {
@@ -251,7 +272,7 @@ function showToast(message, type = "info", duration = 2500) {
     toast.style.transform = "translateY(-10px)";
     toast.style.transition = "all 0.3s ease";
     setTimeout(() => toast.remove(), 300);
-  }, duration);
+  }, timeoutMs);
 }
 
 // --------------------------------------------------------
@@ -676,6 +697,70 @@ function updateTelemetry(latest) {
   if (telemSupport) telemSupport.textContent = formatPrice(latest.support);
   if (telemResistance) telemResistance.textContent = formatPrice(latest.resistance);
 
+  // Institutional ADX & Regime
+  if (telemAdx) telemAdx.textContent = latest.adx !== undefined ? latest.adx.toFixed(1) : "--";
+  if (telemRegimeState) {
+    telemRegimeState.textContent = latest.market_regime ? latest.market_regime.replace("_", " ") : "Regime";
+    telemRegimeState.style.color = latest.market_regime === "TRENDING" ? "var(--green-up)" : "var(--yellow-accent)";
+  }
+
+  // TTM Squeeze
+  if (telemSqueeze) telemSqueeze.textContent = latest.squeeze_status ? latest.squeeze_status.replace("_", " ") : "Normal";
+  if (telemSqueezeState) {
+    telemSqueezeState.textContent = latest.is_squeeze ? "COMPRESSED 🟡" : (latest.squeeze_status === "SQUEEZE_FIRED" ? "FIRED 🚀" : "Normal Vol");
+    telemSqueezeState.style.color = latest.is_squeeze ? "var(--yellow-accent)" : (latest.squeeze_status === "SQUEEZE_FIRED" ? "var(--green-up)" : "var(--text-muted)");
+  }
+
+  // Order Book Imbalance (OBI)
+  if (telemObi) {
+    const obiVal = latest.depth && latest.depth.imbalance_pct !== undefined ? latest.depth.imbalance_pct : 0;
+    telemObi.textContent = (obiVal > 0 ? "+" : "") + obiVal.toFixed(1) + "%";
+    telemObi.style.color = obiVal > 15 ? "var(--green-up)" : (obiVal < -15 ? "var(--red-down)" : "var(--text-main)");
+  }
+  if (telemObiState) {
+    telemObiState.textContent = latest.depth ? (latest.depth.status ? latest.depth.status.replace("_", " ") : "Ratio " + (latest.depth.bid_ask_ratio || 1.0)) : "Order Flow";
+  }
+
+  // 1H Macro Trend Confluence
+  if (telemHtf) {
+    telemHtf.textContent = latest.htf && (latest.htf.trend || latest.htf.htf_trend) ? (latest.htf.trend || latest.htf.htf_trend).replace("_", " ") : "--";
+    const htfTr = latest.htf && (latest.htf.trend || latest.htf.htf_trend);
+    if (htfTr) {
+      telemHtf.style.color = htfTr.includes("BULLISH") ? "var(--green-up)" : (htfTr.includes("BEARISH") ? "var(--red-down)" : "var(--text-main)");
+    }
+  }
+  if (telemHtfState) {
+    telemHtfState.textContent = latest.htf && latest.htf.rsi ? `1H RSI: ${latest.htf.rsi}` : "HTF Alignment";
+  }
+
+  // Top Chart HUD Confluence Strip
+  if (hudHtfVal && latest.htf) {
+    const tr = latest.htf.trend || latest.htf.htf_trend || "NEUTRAL";
+    hudHtfVal.textContent = "1H: " + tr.replace("STRONG_", "").replace("_", " ");
+    if (hudHtfDot) {
+      hudHtfDot.className = "inst-pill-dot " + (tr.includes("BULLISH") ? "bullish" : tr.includes("BEARISH") ? "bearish" : "neutral");
+    }
+  }
+  if (hudRegimeVal) {
+    const reg = latest.market_regime ? latest.market_regime.replace("_", " ") : "Regime";
+    const adxStr = latest.adx !== undefined ? ` (${latest.adx.toFixed(0)})` : "";
+    hudRegimeVal.textContent = reg + adxStr;
+    const regimePill = document.getElementById("hudRegimePill");
+    if (regimePill) {
+      if (latest.is_squeeze) regimePill.classList.add("active-squeeze");
+      else regimePill.classList.remove("active-squeeze");
+    }
+  }
+  if (hudObiVal && latest.depth) {
+    const obi = latest.depth.imbalance_pct !== undefined ? latest.depth.imbalance_pct : 0;
+    hudObiVal.textContent = "OBI: " + (obi > 0 ? "+" : "") + obi.toFixed(0) + "%";
+    hudObiVal.style.color = obi > 15 ? "var(--green-up)" : (obi < -15 ? "var(--red-down)" : "inherit");
+  }
+  if (hudFundingVal && latest.funding) {
+    const fPct = latest.funding.funding_rate_pct !== undefined ? latest.funding.funding_rate_pct : 0;
+    hudFundingVal.textContent = "Funding: " + (fPct > 0 ? "+" : "") + fPct.toFixed(4) + "%";
+  }
+
   // Update Pro Pivot Range Gauge
   if (gaugeSupport) gaugeSupport.textContent = formatPrice(latest.support);
   if (gaugePrice) gaugePrice.textContent = formatPrice(latest.price);
@@ -759,6 +844,10 @@ function applySignal(signal, latest, laya) {
   // 3. Targets
   targetEntry.textContent = formatPrice(signal.entry_price);
   targetSL.textContent = formatPrice(signal.stop_loss);
+  if (targetBE) {
+    const beVal = signal.break_even || (signal.targets && signal.targets.break_even);
+    targetBE.textContent = beVal ? formatPrice(beVal) : "--";
+  }
   targetTP1.textContent = formatPrice(signal.take_profit_1);
   targetTP2.textContent = formatPrice(signal.take_profit_2);
   targetRRR.textContent = "1 : " + signal.risk_reward_ratio;
@@ -883,6 +972,142 @@ function clearPriceLines() {
 }
 
 // --------------------------------------------------------
+// Open Position Price Lines & On-Chart HUD
+// --------------------------------------------------------
+let activePositionLines = [];
+
+function clearPositionLines() {
+  if (candleSeries && activePositionLines.length > 0) {
+    activePositionLines.forEach((line) => {
+      try {
+        candleSeries.removePriceLine(line);
+      } catch (e) {}
+    });
+  }
+  activePositionLines = [];
+}
+
+function updateChartPositionLines(positions, suggestion) {
+  clearPositionLines();
+
+  const isEnabled = !togglePositionLines || togglePositionLines.checked;
+  const activePos = positions && positions.length > 0 ? positions[0] : null;
+
+  if (!isEnabled || !activePos || !activePos.entryPrice || Number(activePos.entryPrice) <= 0 || !candleSeries) {
+    if (chartPositionBadge) chartPositionBadge.classList.add("hide");
+    return;
+  }
+
+  const isLong = String(activePos.side || "LONG").toUpperCase() === "LONG";
+  const entry = Number(activePos.entryPrice);
+  const mark = Number(activePos.markPrice) || Number(lastKnownPrice) || entry;
+  const liq = Number(activePos.liquidationPrice) || 0;
+  const qty = Number(activePos.quantity) || 0;
+  const leverage = Number(activePos.leverage) || 10;
+  const margin = Number(activePos.margin) || (leverage > 0 ? (qty * entry) / leverage : 0);
+
+  // Real-time PnL calculation
+  let pnl = Number(activePos.unrealizedPnl);
+  if (isNaN(pnl) || (pnl === 0 && mark !== entry)) {
+    pnl = isLong ? (mark - entry) * qty : (entry - mark) * qty;
+  }
+  const pnlPct = margin > 0 ? (pnl / margin) * 100 : 0;
+  const pnlSign = pnl >= 0 ? "+" : "-";
+  const pnlAbs = Math.abs(pnl).toFixed(2);
+  const pctAbs = Math.abs(pnlPct).toFixed(1);
+  const distPct = mark > 0 && liq > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
+
+  // 1. Position Entry Price Line (Solid, prominent)
+  const posColor = isLong ? "#10b981" : "#ef4444";
+  const entryTitle = `POS ${isLong ? "LONG" : "SHORT"} ${leverage ? leverage + "x" : ""} (${pnlSign}$${pnlAbs} / ${pnlSign}${pctAbs}%)`;
+
+  try {
+    const entryLine = candleSeries.createPriceLine({
+      price: entry,
+      color: posColor,
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true,
+      title: entryTitle,
+    });
+    activePositionLines.push(entryLine);
+  } catch (e) {
+    console.warn("Failed to create entry price line:", e);
+  }
+
+  // 2. Liquidation Price Line (Warning orange/amber dashed)
+  if (liq > 0) {
+    try {
+      const liqLine = candleSeries.createPriceLine({
+        price: liq,
+        color: "#f59e0b",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `LIQ @ $${formatPrice(liq)} (${distPct.toFixed(1)}% away)`,
+      });
+      activePositionLines.push(liqLine);
+    } catch (e) {
+      console.warn("Failed to create liq price line:", e);
+    }
+  }
+
+  // 3. Recommended SL / TP lines if available
+  if (suggestion) {
+    if (suggestion.recommendedTp && Number(suggestion.recommendedTp) > 0) {
+      try {
+        const tpLine = candleSeries.createPriceLine({
+          price: Number(suggestion.recommendedTp),
+          color: "rgba(16, 185, 129, 0.8)",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: "POS TP",
+        });
+        activePositionLines.push(tpLine);
+      } catch (e) {}
+    }
+
+    if (suggestion.recommendedSl && Number(suggestion.recommendedSl) > 0) {
+      try {
+        const slLine = candleSeries.createPriceLine({
+          price: Number(suggestion.recommendedSl),
+          color: "rgba(239, 68, 68, 0.8)",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: "POS SL",
+        });
+        activePositionLines.push(slLine);
+      } catch (e) {}
+    }
+  }
+
+  // 4. Update On-Chart Floating HUD
+  if (chartPositionBadge) {
+    chartPositionBadge.classList.remove("hide");
+    chartPositionBadge.classList.toggle("short-pos", !isLong);
+    if (posHudSide) {
+      posHudSide.textContent = `${isLong ? "LONG" : "SHORT"} ${leverage ? leverage + "x" : ""}`;
+      posHudSide.className = `pos-hud-side ${isLong ? "long" : "short"}`;
+    }
+    if (posHudSymbol) {
+      posHudSymbol.textContent = activePos.displaySymbol || activePos.symbol || currentSymbol;
+    }
+    if (posHudEntry) {
+      posHudEntry.textContent = `Entry: $${formatPrice(entry)}`;
+    }
+    if (posHudPnl) {
+      posHudPnl.textContent = `${pnlSign}$${pnlAbs} (${pnlSign}${pctAbs}%)`;
+      posHudPnl.className = `pos-hud-pnl ${pnl >= 0 ? "pnl-green" : "pnl-red"}`;
+    }
+    if (posHudLiq) {
+      posHudLiq.textContent = liq > 0 ? `Liq: $${formatPrice(liq)} (${distPct.toFixed(1)}% away)` : "Liq: N/A";
+    }
+  }
+}
+
+// --------------------------------------------------------
 // Simple Mode Logic & UI Updater
 // --------------------------------------------------------
 function updateSimpleModeUI(signal, latest, laya) {
@@ -938,16 +1163,26 @@ function updateSimpleModeUI(signal, latest, laya) {
   simpleTakeProfit.textContent = "$" + formatPrice(signal.take_profit_1);
   simpleStopLoss.textContent = "$" + formatPrice(signal.stop_loss);
 
+  const bePrice = signal.break_even || (signal.targets && signal.targets.break_even);
+  if (simpleBreakEven) {
+    simpleBreakEven.textContent = bePrice ? "$" + formatPrice(bePrice) : "--";
+  }
+
   // Gain & Loss percentage calculations
   const entry = Number(signal.entry_price);
   const tp = Number(signal.take_profit_1);
   const sl = Number(signal.stop_loss);
+  const be = Number(bePrice);
 
   if (entry > 0 && tp > 0 && sl > 0) {
     const gainPct = isLong ? (((tp - entry) / entry) * 100).toFixed(2) : (((entry - tp) / entry) * 100).toFixed(2);
     const lossPct = isLong ? (((entry - sl) / entry) * 100).toFixed(2) : (((sl - entry) / entry) * 100).toFixed(2);
     simpleTpDesc.textContent = `Sell here to lock in +${gainPct}% profit!`;
     simpleSlDesc.textContent = `Safety stop to cap max loss at -${lossPct}%`;
+    if (simpleBeDesc && be > 0) {
+      const bePct = isLong ? (((be - entry) / entry) * 100).toFixed(2) : (((entry - be) / entry) * 100).toFixed(2);
+      simpleBeDesc.textContent = `At +${bePct}% (+1.0R), move Stop Loss to Entry ($${formatPrice(entry)}) to eliminate risk!`;
+    }
 
     // Visual Risk/Reward bar
     if (rrGainLabel && rrRiskLabel && rrGainFill && rrRiskFill) {
@@ -1166,6 +1401,12 @@ function connectWebSocket() {
 
           updateLivePriceDisplay(c.close);
 
+          // Live real-time update for open position lines & HUD
+          if (activeToobitPositions && activeToobitPositions.length > 0) {
+            activeToobitPositions[0].markPrice = c.close;
+            updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
+          }
+
           if (c.is_closed && toggleAutoAnalyze?.checked && c.time !== lastAnalyzedCandleTime) {
             lastAnalyzedCandleTime = c.time;
             triggerAnalyze();
@@ -1369,10 +1610,13 @@ if (btnExportHistory) {
 symbolSelect.addEventListener("change", async (e) => {
   currentSymbol = e.target.value;
   clearPriceLines();
+  clearPositionLines();
+  if (chartPositionBadge) chartPositionBadge.classList.add("hide");
   chartMarkers = [];
   candleSeries?.setMarkers([]);
   await fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" });
   await loadKlines(currentSymbol, currentInterval);
+  fetchToobitPositions();
   triggerAnalyze();
 });
 
@@ -1492,8 +1736,24 @@ function setupAutoAnalyze() {
 
 let lastFocusedBeforeModal = null;
 
+function showToobitConnectError(message) {
+  if (!toobitConnectError || !toobitConnectErrorText) return;
+  toobitConnectErrorText.textContent = message;
+  toobitConnectError.classList.remove("hide");
+  if (typeof lucide !== "undefined" && lucide.createIcons) {
+    lucide.createIcons();
+  }
+}
+
+function hideToobitConnectError() {
+  if (!toobitConnectError) return;
+  toobitConnectError.classList.add("hide");
+  if (toobitConnectErrorText) toobitConnectErrorText.textContent = "";
+}
+
 function openToobitModal() {
   if (!toobitModal) return;
+  hideToobitConnectError();
   lastFocusedBeforeModal = document.activeElement;
   toobitModal.classList.remove("hide");
   toobitModal.style.display = "flex";
@@ -1503,6 +1763,7 @@ function openToobitModal() {
 
 function closeToobitModal() {
   if (!toobitModal || toobitModal.classList.contains("hide")) return;
+  hideToobitConnectError();
   toobitModal.classList.add("hide");
   toobitModal.style.display = "none";
   if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
@@ -1532,6 +1793,7 @@ toobitModal?.addEventListener("keydown", (e) => {
 
 // Modal Tab Switcher
 tabModeLive?.addEventListener("click", () => {
+  hideToobitConnectError();
   tabModeLive.classList.add("active");
   tabModeLive.setAttribute("aria-selected", "true");
   tabModeDemo?.classList.remove("active");
@@ -1543,6 +1805,7 @@ tabModeLive?.addEventListener("click", () => {
 });
 
 tabModeDemo?.addEventListener("click", () => {
+  hideToobitConnectError();
   tabModeDemo.classList.add("active");
   tabModeDemo.setAttribute("aria-selected", "true");
   tabModeLive?.classList.remove("active");
@@ -1602,7 +1865,7 @@ async function fetchToobitStatus() {
     }
 
     if (proPosModeBadge) {
-      proPosModeBadge.textContent = data.mode === "live" ? "Live Account" : "Demo Account";
+      proPosModeBadge.textContent = data.mode === "live" ? "Live" : "Demo";
       proPosModeBadge.className = `badge-mini ${data.mode === "live" ? "badge-live" : "badge-demo"}`;
     }
   } catch (e) {
@@ -1637,46 +1900,113 @@ async function fetchToobitPositions() {
   }
 }
 
+// Fill one position card (Simple or Pro) from a Toobit position, or show its empty state
+function fillPositionCard(card, pos) {
+  if (!card) return;
+  const field = (name) => card.querySelector(`[data-pos="${name}"]`);
+  const live = field("live");
+  const empty = field("empty");
+  const flashClose = card.querySelector(".btn-flash-close");
+
+  if (!pos) {
+    live?.classList.add("hide");
+    empty?.classList.remove("hide");
+    if (flashClose) flashClose.style.display = "none";
+    return;
+  }
+
+  live?.classList.remove("hide");
+  empty?.classList.add("hide");
+  if (flashClose) flashClose.style.display = "inline-flex";
+
+  const isLong = String(pos.side || "LONG").toUpperCase() === "LONG";
+  const entry = Number(pos.entryPrice) || 0;
+  const mark = Number(pos.markPrice) || Number(lastKnownPrice) || entry;
+  const liq = Number(pos.liquidationPrice) || 0;
+  const qty = Number(pos.quantity) || 0;
+  const margin = Number(pos.margin) || 0;
+  const leverage = Number(pos.leverage) || 0;
+  const pnl = Number(pos.unrealizedPnl) || 0;
+  const pnlPct = Number(pos.pnlPercentage) || 0;
+  const profitable = pnl >= 0;
+  const money = (v) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const set = (name, text) => {
+    const el = field(name);
+    if (el) el.textContent = text;
+  };
+  const setPnl = (name, base, text) => {
+    const el = field(name);
+    if (el) {
+      el.textContent = text;
+      el.className = `${base} ${profitable ? "pnl-green" : "pnl-red"}`;
+    }
+  };
+
+  // Identity
+  set("symbol", pos.displaySymbol || pos.symbol || currentSymbol);
+  const sideEl = field("side");
+  if (sideEl) {
+    sideEl.textContent = leverage > 0 ? `${isLong ? "LONG" : "SHORT"} ${leverage}x` : isLong ? "LONG" : "SHORT";
+    sideEl.className = `pos-badge ${isLong ? "long" : "short"}`;
+  }
+  const modeEl = field("mode");
+  if (modeEl) {
+    const isLive = toobitAccountStatus.mode === "live";
+    modeEl.textContent = isLive ? "Live" : "Demo";
+    modeEl.className = `badge-mini ${isLive ? "badge-live" : "badge-demo"}`;
+  }
+
+  // PnL hero
+  const pnlAbs = Math.abs(pnl).toFixed(2);
+  const pctAbs = Math.abs(pnlPct).toFixed(1);
+  setPnl("pnl", "pos-hero-pnl", pnlAbs === "0.00" ? "$0.00" : `${pnl < 0 ? "-" : "+"}$${pnlAbs}`);
+  setPnl("pnlPct", "pos-hero-pct", pctAbs === "0.0" ? "0.0%" : `${pnlPct < 0 ? "-" : "+"}${pctAbs}%`);
+
+  // Stats
+  set("qty", qty.toLocaleString());
+  set("notional", money(qty * mark));
+  set("margin", money(margin));
+  set("lev", leverage > 0 ? `${leverage}x` : "--");
+  set("entryStat", entry > 0 ? `$${formatPrice(entry)}` : "--");
+  set("mark", mark > 0 ? `$${formatPrice(mark)}` : "--");
+  set("entry", entry > 0 ? `$${formatPrice(entry)}` : "--");
+  set("liq", liq > 0 ? `$${formatPrice(liq)}` : "--");
+
+  // Liquidation distance bar: liq sits at 0%, twice the entry distance at 100% (break-even at 50%)
+  const pin = field("pin");
+  const liqVal = field("liqDist");
+  if (liq > 0 && entry > 0) {
+    const span = Math.abs(2 * entry - liq - liq) || 1;
+    const rawPct = isLong ? ((mark - liq) / span) * 100 : ((liq - mark) / span) * 100;
+    const pct = Math.max(0, Math.min(100, rawPct));
+    if (pin) {
+      pin.style.left = `${pct}%`;
+      pin.className = `pos-risk-pin ${pct < 15 ? "danger" : pct < 50 ? "warn" : "safe"}`;
+    }
+    const distPct = mark > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
+    if (liqVal) {
+      liqVal.textContent = `${distPct.toFixed(1)}% away`;
+      // Colour tracks the price's position on the track, not the raw distance
+      // (a fresh 10x position always starts ~9% from liquidation)
+      liqVal.className = `pos-risk-val${pct < 15 ? " danger" : pct < 50 ? " warn" : ""}`;
+    }
+  } else {
+    if (pin) pin.style.left = "50%";
+    if (liqVal) {
+      liqVal.textContent = "n/a";
+      liqVal.className = "pos-risk-val";
+    }
+  }
+}
+
 // Render Positions in Simple & Pro Mode
 function renderToobitPositions(positions, suggestion) {
   const activePos = positions && positions.length > 0 ? positions[0] : null;
 
   // --- SIMPLE MODE RENDERING ---
   if (simplePositionCard) {
-    if (activePos) {
-      const isLong = activePos.side === "LONG";
-      if (simplePosBadge) {
-        simplePosBadge.textContent = `${activePos.side} (${toobitAccountStatus.mode === "live" ? "Live" : "Demo"})`;
-        simplePosBadge.className = `pos-badge ${isLong ? "long" : "short"}`;
-      }
-      if (simplePosQty) simplePosQty.textContent = `${Number(activePos.quantity).toLocaleString()} PEPE`;
-      if (simplePosEntry) simplePosEntry.textContent = `$${activePos.entryPrice.toFixed(6)}`;
-      
-      const pnl = Number(activePos.unrealizedPnl || 0);
-      const pnlPct = Number(activePos.pnlPercentage || 0);
-      const isProfitable = pnl >= 0;
-      if (simplePosPnl) {
-        simplePosPnl.textContent = `${isProfitable ? "+" : ""}$${pnl.toFixed(2)} (${isProfitable ? "+" : ""}${pnlPct.toFixed(1)}%)`;
-        simplePosPnl.className = `pos-stat-val ${isProfitable ? "pnl-green" : "pnl-red"}`;
-      }
-      if (btnSimpleFlashClose) {
-        btnSimpleFlashClose.style.display = "inline-flex";
-      }
-    } else {
-      if (simplePosBadge) {
-        simplePosBadge.textContent = "NO OPEN TRADE";
-        simplePosBadge.className = "pos-badge none";
-      }
-      if (simplePosQty) simplePosQty.textContent = "None";
-      if (simplePosEntry) simplePosEntry.textContent = "--";
-      if (simplePosPnl) {
-        simplePosPnl.textContent = "$0.00 (0.0%)";
-        simplePosPnl.className = "pos-stat-val";
-      }
-      if (btnSimpleFlashClose) {
-        btnSimpleFlashClose.style.display = "none";
-      }
-    }
+    fillPositionCard(simplePositionCard, activePos);
 
     // Simple Mode AI Suggestion
     if (suggestion) {
@@ -1691,42 +2021,7 @@ function renderToobitPositions(positions, suggestion) {
 
   // --- PRO MODE RENDERING ---
   if (proPositionCard) {
-    if (activePos) {
-      const isLong = activePos.side === "LONG";
-      if (proPosSym) proPosSym.textContent = activePos.displaySymbol || activePos.symbol || currentSymbol;
-      if (proPosSideBadge) {
-        proPosSideBadge.textContent = `${activePos.side} ${activePos.leverage}x`;
-        proPosSideBadge.className = `pos-badge ${isLong ? "long" : "short"}`;
-      }
-      if (proPosQty) proPosQty.textContent = Number(activePos.quantity).toLocaleString();
-      if (proPosEntry) proPosEntry.textContent = `$${activePos.entryPrice.toFixed(6)}`;
-      if (proPosMark) proPosMark.textContent = `$${(activePos.markPrice || lastKnownPrice || activePos.entryPrice).toFixed(6)}`;
-      
-      const pnl = Number(activePos.unrealizedPnl || 0);
-      const pnlPct = Number(activePos.pnlPercentage || 0);
-      const isProfitable = pnl >= 0;
-      if (proPosPnl) {
-        proPosPnl.textContent = `${isProfitable ? "+" : ""}$${pnl.toFixed(2)} (${isProfitable ? "+" : ""}${pnlPct.toFixed(1)}%)`;
-        proPosPnl.className = isProfitable ? "pnl-green" : "pnl-red";
-      }
-      if (proPosLiq) proPosLiq.textContent = activePos.liquidationPrice ? `$${activePos.liquidationPrice.toFixed(6)}` : "--";
-      if (btnProFlashClose) btnProFlashClose.style.display = "inline-flex";
-    } else {
-      if (proPosSym) proPosSym.textContent = currentSymbol;
-      if (proPosSideBadge) {
-        proPosSideBadge.textContent = "FLAT";
-        proPosSideBadge.className = "pos-badge none";
-      }
-      if (proPosQty) proPosQty.textContent = "0";
-      if (proPosEntry) proPosEntry.textContent = "--";
-      if (proPosMark) proPosMark.textContent = lastKnownPrice ? `$${lastKnownPrice.toFixed(6)}` : "--";
-      if (proPosPnl) {
-        proPosPnl.textContent = "$0.00 (0.0%)";
-        proPosPnl.className = "";
-      }
-      if (proPosLiq) proPosLiq.textContent = "--";
-      if (btnProFlashClose) btnProFlashClose.style.display = "none";
-    }
+    fillPositionCard(proPositionCard, activePos);
 
     // Pro Mode AI Suggestion
     if (suggestion) {
@@ -1757,6 +2052,9 @@ function renderToobitPositions(positions, suggestion) {
       }
     }
   }
+
+  // --- CHART POSITION LINES & FLOATING HUD ---
+  updateChartPositionLines(positions, suggestion);
 }
 
 // Flash Close Execution
@@ -1775,6 +2073,8 @@ async function executeFlashClose() {
     if (data.success) {
       showToast(data.message || `Position ${symbolToClose} successfully Flash Closed!`, "bull");
       playSignalChime(true);
+      clearPositionLines();
+      if (chartPositionBadge) chartPositionBadge.classList.add("hide");
     } else {
       showToast(data.message || data.error || "Flash close failed", "error");
     }
@@ -1818,10 +2118,12 @@ async function saveToobitCredentials(e) {
   const apiSecret = toobitApiSecret?.value.trim();
 
   if (!apiKey || !apiSecret) {
+    showToobitConnectError("Please enter both Toobit API Key and Secret Key.");
     showToast("Please enter both API Key and Secret Key.", "error");
     return;
   }
 
+  hideToobitConnectError();
   showToast("Validating API credentials with Toobit...", "info");
   if (btnSaveToobitKeys) {
     btnSaveToobitKeys.disabled = true;
@@ -1841,15 +2143,20 @@ async function saveToobitCredentials(e) {
     const data = await res.json();
 
     if (data.success) {
+      hideToobitConnectError();
       showToast("Toobit Futures API Connected Successfully!", "bull");
       closeToobitModal();
       await fetchToobitStatus();
       await fetchToobitPositions();
     } else {
-      showToast(data.message || "Failed to validate Toobit API keys.", "error");
+      const errorMsg = data.message || data.error || data.detail || "Failed to validate Toobit API keys.";
+      showToobitConnectError(errorMsg);
+      showToast("Authentication Failed — see details in dialog", "error", 6000);
     }
   } catch (err) {
-    showToast(`Connection error: ${err.message}`, "error");
+    const errorMsg = `Connection error: ${err.message}`;
+    showToobitConnectError(errorMsg);
+    showToast(errorMsg, "error", 6000);
   } finally {
     if (btnSaveToobitKeys) {
       btnSaveToobitKeys.disabled = false;
@@ -1864,6 +2171,7 @@ async function disconnectToobit() {
   try {
     const res = await fetch("/api/toobit/disconnect", { method: "POST" });
     const data = await res.json();
+    hideToobitConnectError();
     showToast("Disconnected from Toobit.", "info");
     if (toobitApiKey) toobitApiKey.value = "";
     if (toobitApiSecret) toobitApiSecret.value = "";
@@ -1883,6 +2191,7 @@ async function activateDemoMode() {
       body: JSON.stringify({ isDemo: true })
     });
     const data = await res.json();
+    hideToobitConnectError();
     showToast("Demo Simulation Mode Activated ($5,000 USDT)!", "bull");
     closeToobitModal();
     await fetchToobitStatus();
@@ -1901,6 +2210,8 @@ function initToobitManager() {
     if (e.target === toobitModal) closeToobitModal();
   });
 
+  toobitApiKey?.addEventListener("input", hideToobitConnectError);
+  toobitApiSecret?.addEventListener("input", hideToobitConnectError);
   toobitApiForm?.addEventListener("submit", saveToobitCredentials);
   btnDisconnectToobit?.addEventListener("click", disconnectToobit);
   btnActivateDemoMode?.addEventListener("click", activateDemoMode);
@@ -1908,6 +2219,12 @@ function initToobitManager() {
   // Flash Close Listeners
   btnSimpleFlashClose?.addEventListener("click", executeFlashClose);
   btnProFlashClose?.addEventListener("click", executeFlashClose);
+  btnHudFlashClose?.addEventListener("click", executeFlashClose);
+
+  // Position Overlay Toggle Listener
+  togglePositionLines?.addEventListener("change", () => {
+    updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
+  });
 
   // Simulation Listeners
   btnSimpleSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));

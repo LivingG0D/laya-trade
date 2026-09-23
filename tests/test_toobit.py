@@ -110,6 +110,23 @@ async def run_tests():
     print(f"Generated HMAC SHA-256 signature ({len(sig)} chars): {sig[:16]}...")
     assert len(sig) == 64, "HMAC-SHA256 signature should be 64 hex characters"
 
+    # Regression guard: Toobit signs the exact query string that is sent, in the
+    # order it is sent (never sorted). Verified against the documented example at
+    # https://api-docs.toobit.com/api/spot-example.html
+    doc_secret = "30lfjDT51iOG1kYZnDoLNynOyMdIcmQyO1XYfxzYOmQfx9tjiI98Pzio4uhZ0Uk2"
+    doc_params = {
+        "symbol": "BTCUSDT", "side": "SELL", "type": "LIMIT", "timeInForce": "GTC",
+        "quantity": 1, "price": 400, "recvWindow": 100000, "timestamp": 1668481902307,
+    }
+    doc_client = ToobitClient("k", doc_secret, is_demo=False)
+    doc_sig = doc_client._generate_signature(doc_params)
+    assert doc_sig == "8420e499e71cce4a00946db16543198b6bcae01791bdb75a06b5a7098b156468", (
+        "Signature must match Toobit's documented vector - params are signed in "
+        f"sent order, not sorted. Got {doc_sig}"
+    )
+    print("Signature matches Toobit documented vector (order-preserving):", doc_sig[:16], "...")
+    await doc_client.close()
+
     await client.close()
     await auth_client.close()
     print("\n>>> ALL TESTS PASSED SUCCESSFULLY! <<<")

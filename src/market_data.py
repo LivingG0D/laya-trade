@@ -72,6 +72,9 @@ class MarketDataService:
         # High-performance In-Memory Caching (eliminates redundant REST queries)
         self._klines_cache: Dict[str, tuple] = {}  # key -> (timestamp, List[Dict])
         self._ticker_cache: Dict[str, tuple] = {}  # key -> (timestamp, Dict)
+        self._depth_cache: Dict[str, tuple] = {}   # key -> (timestamp, Dict)
+        self._funding_cache: Dict[str, tuple] = {} # key -> (timestamp, float)
+        self._htf_cache: Dict[str, tuple] = {}     # key -> (timestamp, Dict)
 
     async def close(self):
         self._running = False
@@ -253,6 +256,159 @@ class MarketDataService:
             return self._ticker_cache[sym_key][1]
 
         return {}
+
+    async def fetch_order_book_depth(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
+        """
+        Fetch order book depth (top 20 bids/asks) to compute order book imbalance.
+        Positive imbalance = Bid heavy (buying pressure).
+        Negative imbalance = Ask heavy (selling pressure).
+        """
+        now = time.time()
+        sym_key = symbol.upper()
+        if sym_key in self._depth_cache:
+            ts, cached = self._depth_cache[sym_key]
+            if now - ts < 2.0:
+                return cached
+
+        toobit_sym = to_toobit_symbol(symbol)
+        url = f"{TOOBIT_REST_URL}/quote/v1/depth"
+        params = {"symbol": toobit_sym, "limit": 20}
+        try:
+            resp = await self._http_client.get(url, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                bids = data.get("b", [])
+                asks = data.get("a", [])
+                bid_vol = sum(float(b[1]) for b in bids if len(b) >= 2)
+                ask_vol = sum(float(a[1]) for a in asks if len(a) >= 2)
+                total_vol = bid_vol + ask_vol
+                imbalance_pct = ((bid_vol - ask_vol) / total_vol * 100.0) if total_vol > 0 else 0.0
+                ratio = (bid_vol / ask_vol) if ask_vol > 0 else 1.0
+                res = {
+                    "bid_volume": round(bid_vol, 2),
+                    "ask_volume": round(ask_vol, 2),
+                    "imbalance_pct": round(imbalance_pct, 1),
+                    "bid_ask_ratio": round(ratio, 2),
+                    "status": "BID_HEAVY" if imbalance_pct > 15 else ("ASK_HEAVY" if imbalance_pct < -15 else "BALANCED")
+                }
+                self._depth_cache[sym_key] = (now, res)
+                return res
+        except Exception as e:
+            logger.debug(f"Depth fetch error for {symbol}: {e}")
+
+        # Fallback neutral
+        return {
+            "bid_volume": 0.0,
+            "ask_volume": 0.0,
+            "imbalance_pct": 0.0,
+            "bid_ask_ratio": 1.0,
+            "status": "BALANCED"
+        }
+
+    async def fetch_funding_rate(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
+        """
+        Fetch live perpetual funding rate from Binance / Toobit index.
+        Returns structured dictionary with decimal and percentage formats.
+        """
+        now = time.time()
+        sym_key = symbol.upper()
+        if sym_key in self._funding_cache:
+            ts, cached = self._funding_cache[sym_key]
+            if now - ts < 30.0:
+                return cached
+
+        binance_sym = to_binance_symbol(symbol)
+        url = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/premiumIndex"
+        params = {"symbol": binance_sym}
+        try:
+            resp = await self._http_client.get(url, params=params)
+            if resp.status_code == 200:
+                rate = float(resp.json().get("lastFundingRate", 0.0001))
+                res = {
+                    "funding_rate": rate,
+                    "funding_rate_pct": round(rate * 100.0, 4)
+                }
+                self._funding_cache[sym_key] = (now, res)
+                return res
+        except Exception as e:
+            logger.debug(f"Funding rate fetch error for {symbol}: {e}")
+
+        default_res = {
+            "funding_rate": 0.0001,
+            "funding_rate_pct": 0.01
+        }
+        return default_res
+
+    async def fetch_htf_context(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
+        """
+        Fetch 1-Hour klines to evaluate macro trend structure (EMA50, EMA200, 1h RSI).
+        """
+        now = time.time()
+        sym_key = symbol.upper()
+        if sym_key in self._htf_cache:
+            ts, cached = self._htf_cache[sym_key]
+            if now - ts < 15.0:
+                return cached
+
+        try:
+            htf_klines = await self.fetch_klines(symbol=symbol, interval="1h", limit=100)
+            if len(htf_klines) >= 20:
+                import numpy as np
+                from .indicators import calculate_ema, calculate_rsi
+                c = np.array([k["close"] for k in htf_klines], dtype=float)
+                ema50 = calculate_ema(c, 50)
+                ema200 = calculate_ema(c, 200) if len(c) >= 200 else calculate_ema(c, len(c))
+                rsi14 = calculate_rsi(c, 14)
+
+                cur_p = c[-1]
+                e50 = ema50[-1] if not np.isnan(ema50[-1]) else cur_p
+                e200 = ema200[-1] if not np.isnan(ema200[-1]) else e50
+                r14 = rsi14[-1] if not np.isnan(rsi14[-1]) else 50.0
+
+                if cur_p > e50 > e200:
+                    trend = "STRONG_BULLISH"
+                elif cur_p > e50:
+                    trend = "BULLISH"
+                elif cur_p < e50 < e200:
+                    trend = "STRONG_BEARISH"
+                elif cur_p < e50:
+                    trend = "BEARISH"
+                else:
+                    trend = "NEUTRAL"
+
+                res = {
+                    "interval": "1h",
+                    "htf_interval": "1h",
+                    "trend": trend,
+                    "htf_trend": trend,
+                    "rsi": round(float(r14), 1),
+                    "htf_rsi": round(float(r14), 1),
+                    "ema50": round(float(e50), 6),
+                    "htf_ema50": round(float(e50), 6),
+                    "ema200": round(float(e200), 6),
+                    "htf_ema200": round(float(e200), 6),
+                    "is_bullish": "BULLISH" in trend,
+                    "is_bearish": "BEARISH" in trend,
+                }
+                self._htf_cache[sym_key] = (now, res)
+                return res
+        except Exception as e:
+            logger.debug(f"HTF context fetch error for {symbol}: {e}")
+
+        return {
+            "interval": "1h",
+            "htf_interval": "1h",
+            "trend": "NEUTRAL",
+            "htf_trend": "NEUTRAL",
+            "rsi": 50.0,
+            "htf_rsi": 50.0,
+            "ema50": 0.0,
+            "htf_ema50": 0.0,
+            "ema200": 0.0,
+            "htf_ema200": 0.0,
+            "is_bullish": False,
+            "is_bearish": False,
+        }
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], Any]):
         """Subscribe to real-time candle tick updates."""
