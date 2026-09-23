@@ -1,0 +1,1858 @@
+// ========================================================
+// LAYA CRYPTO TRADINGVIEW CHART ANALYZER — APP.JS (CLEAN & DEDUPLICATED)
+// ========================================================
+
+let chart = null;
+let candleSeries = null;
+let volumeSeries = null;
+let ema9Series = null;
+let ema21Series = null;
+let ema50Series = null;
+let bbUpperSeries = null;
+let bbLowerSeries = null;
+let bbMiddleSeries = null;
+
+let currentSymbol = "1000PEPEUSDT.P";
+let currentInterval = "5m";
+let ws = null;
+let autoAnalyzeTimer = null;
+let activePriceLines = [];
+let chartMarkers = [];
+let lastAnalyzedCandleTime = 0;
+let lastKnownPrice = null;
+let currentSignal = null;
+let currentLatestTelemetry = null;
+let audioEnabled = true;
+let currentCalcAmount = 500;
+let rawSignalHistory = [];
+let activeHistoryFilter = "all";
+
+// DOM Elements — Top Nav
+const symbolSelect = document.getElementById("symbolSelect");
+const tfButtons = document.querySelectorAll(".tf-btn");
+const analyzeBtn = document.getElementById("analyzeBtn");
+const toggleEMA = document.getElementById("toggleEMA");
+const toggleBB = document.getElementById("toggleBB");
+const toggleTargetLines = document.getElementById("toggleTargetLines");
+const toggleAutoAnalyze = document.getElementById("toggleAutoAnalyze");
+const btnFitChart = document.getElementById("btnFitChart");
+const btnFullscreenChart = document.getElementById("btnFullscreenChart");
+const btnAudioToggle = document.getElementById("btnAudioToggle");
+const audioIcon = document.getElementById("audioIcon");
+const toastContainer = document.getElementById("toastContainer");
+
+// Mode Switch Elements
+const btnSimpleMode = document.getElementById("btnSimpleMode");
+const btnProMode = document.getElementById("btnProMode");
+const simpleModeContainer = document.getElementById("simpleModeContainer");
+const proModeContainer = document.getElementById("proModeContainer");
+let currentMode = localStorage.getItem("laya_mode") || "simple";
+
+// Ticker Elements
+const livePriceEl = document.getElementById("livePrice");
+const priceChangeEl = document.getElementById("priceChange");
+const high24hEl = document.getElementById("high24h");
+const low24hEl = document.getElementById("low24h");
+const volume24hEl = document.getElementById("volume24h");
+const wsStatusText = document.getElementById("wsStatusText");
+const statusDot = document.querySelector(".status-dot");
+const priceFlash = document.getElementById("priceFlash");
+
+// HUD Elements
+const hudSymbol = document.getElementById("hudSymbol");
+const hudInterval = document.getElementById("hudInterval");
+const hudO = document.getElementById("hudO");
+const hudH = document.getElementById("hudH");
+const hudL = document.getElementById("hudL");
+const hudC = document.getElementById("hudC");
+const hudV = document.getElementById("hudV");
+const hudEma9 = document.getElementById("hudEma9");
+const hudEma21 = document.getElementById("hudEma21");
+const hudEma50 = document.getElementById("hudEma50");
+const hudRsi = document.getElementById("hudRsi");
+
+// Simple Mode Elements
+const simpleHeroCard = document.getElementById("simpleHeroCard");
+const simpleHeroBadge = document.getElementById("simpleHeroBadge");
+const simpleHeroIcon = document.getElementById("simpleHeroIcon");
+const simpleHeroAction = document.getElementById("simpleHeroAction");
+const simpleHeroSub = document.getElementById("simpleHeroSub");
+const simpleConfidenceText = document.getElementById("simpleConfidenceText");
+const simpleMeterBar = document.getElementById("simpleMeterBar");
+const simpleRiskBadge = document.getElementById("simpleRiskBadge");
+
+const simpleEntryPrice = document.getElementById("simpleEntryPrice");
+const simpleTakeProfit = document.getElementById("simpleTakeProfit");
+const simpleStopLoss = document.getElementById("simpleStopLoss");
+const simpleTpDesc = document.getElementById("simpleTpDesc");
+const simpleSlDesc = document.getElementById("simpleSlDesc");
+const simpleReasonsList = document.getElementById("simpleReasonsList");
+const btnCopyTradePlan = document.getElementById("btnCopyTradePlan");
+const rrGainLabel = document.getElementById("rrGainLabel");
+const rrRiskLabel = document.getElementById("rrRiskLabel");
+const rrGainFill = document.getElementById("rrGainFill");
+const rrRiskFill = document.getElementById("rrRiskFill");
+
+// Position Calculator Elements
+const calcPresetGroup = document.getElementById("calcPresetGroup");
+const calcWinVal = document.getElementById("calcWinVal");
+const calcLossVal = document.getElementById("calcLossVal");
+
+// Pro Mode Signal Card Elements
+const signalCard = document.getElementById("signalCard");
+const signalBadge = document.getElementById("signalBadge");
+const signalAction = document.getElementById("signalAction");
+const confidenceVal = document.getElementById("confidenceVal");
+const signalSubtext = document.getElementById("signalSubtext");
+const targetEntry = document.getElementById("targetEntry");
+const targetSL = document.getElementById("targetSL");
+const targetTP1 = document.getElementById("targetTP1");
+const targetTP2 = document.getElementById("targetTP2");
+const targetRRR = document.getElementById("targetRRR");
+const targetHorizon = document.getElementById("targetHorizon");
+const reasonsList = document.getElementById("reasonsList");
+const latencyBadge = document.getElementById("latencyBadge");
+
+// Probabilities Elements
+const probStrongLong = document.getElementById("probStrongLong");
+const probScalpLong = document.getElementById("probScalpLong");
+const probNeutral = document.getElementById("probNeutral");
+const probScalpShort = document.getElementById("probScalpShort");
+const probStrongShort = document.getElementById("probStrongShort");
+const barStrongLong = document.getElementById("barStrongLong");
+const barScalpLong = document.getElementById("barScalpLong");
+const barNeutral = document.getElementById("barNeutral");
+const barScalpShort = document.getElementById("barScalpShort");
+const barStrongShort = document.getElementById("barStrongShort");
+const squeezeRiskVal = document.getElementById("squeezeRiskVal");
+
+// Telemetry & Gauge Elements
+const telemRsi = document.getElementById("telemRsi");
+const telemRsiState = document.getElementById("telemRsiState");
+const telemTrend = document.getElementById("telemTrend");
+const telemTrendState = document.getElementById("telemTrendState");
+const telemMacd = document.getElementById("telemMacd");
+const telemMacdState = document.getElementById("telemMacdState");
+const telemVolSpike = document.getElementById("telemVolSpike");
+const telemVolState = document.getElementById("telemVolState");
+const telemSupport = document.getElementById("telemSupport");
+const telemResistance = document.getElementById("telemResistance");
+const gaugeSupport = document.getElementById("gaugeSupport");
+const gaugePrice = document.getElementById("gaugePrice");
+const gaugeResistance = document.getElementById("gaugeResistance");
+const pivotGaugePin = document.getElementById("pivotGaugePin");
+
+// History Drawer Elements
+const historyDrawer = document.getElementById("historyDrawer");
+const historyDrawerHeader = document.getElementById("historyDrawerHeader");
+const drawerToggleBtn = document.getElementById("drawerToggleBtn");
+const drawerChevron = document.getElementById("drawerChevron");
+const historyTableBody = document.getElementById("historyTableBody");
+const historyCount = document.getElementById("historyCount");
+const btnExportHistory = document.getElementById("btnExportHistory");
+const btnClearHistory = document.getElementById("btnClearHistory");
+const histFilterButtons = document.querySelectorAll(".hist-filter-btn");
+
+// Mobile Elements
+const mainContent = document.getElementById("mainContent");
+const mobileViewTabs = document.getElementById("mobileViewTabs");
+const mobileTabButtons = document.querySelectorAll(".mobile-tab-btn");
+const mobileTabSignalPill = document.getElementById("mobileTabSignalPill");
+const mobileTabHistoryCount = document.getElementById("mobileTabHistoryCount");
+
+// ========================================================
+// Toobit & Positions Elements
+// ========================================================
+const btnToobitConnect = document.getElementById("btnToobitConnect");
+const toobitNavStatus = document.getElementById("toobitNavStatus");
+const toobitModal = document.getElementById("toobitModal");
+const btnCloseToobitModal = document.getElementById("btnCloseToobitModal");
+const modalStatusDot = document.getElementById("modalStatusDot");
+const modalStatusText = document.getElementById("modalStatusText");
+const modalStatusSub = document.getElementById("modalStatusSub");
+const modalAvailableBal = document.getElementById("modalAvailableBal");
+const tabModeLive = document.getElementById("tabModeLive");
+const tabModeDemo = document.getElementById("tabModeDemo");
+const tabContentLive = document.getElementById("tabContentLive");
+const tabContentDemo = document.getElementById("tabContentDemo");
+const toobitApiForm = document.getElementById("toobitApiForm");
+const toobitApiKey = document.getElementById("toobitApiKey");
+const toobitApiSecret = document.getElementById("toobitApiSecret");
+const btnToggleSecret = document.getElementById("btnToggleSecret");
+const eyeIcon = document.getElementById("eyeIcon");
+const btnSaveToobitKeys = document.getElementById("btnSaveToobitKeys");
+const btnDisconnectToobit = document.getElementById("btnDisconnectToobit");
+const btnActivateDemoMode = document.getElementById("btnActivateDemoMode");
+
+// Simple Mode Position Elements
+const simplePositionCard = document.getElementById("simplePositionCard");
+const simplePosBadge = document.getElementById("simplePosBadge");
+const simplePosQty = document.getElementById("simplePosQty");
+const simplePosEntry = document.getElementById("simplePosEntry");
+const simplePosPnl = document.getElementById("simplePosPnl");
+const btnSimpleFlashClose = document.getElementById("btnSimpleFlashClose");
+const simpleAiSuggestionBox = document.getElementById("simpleAiSuggestionBox");
+const simpleSugBadge = document.getElementById("simpleSugBadge");
+const simpleSugHeadline = document.getElementById("simpleSugHeadline");
+const simpleSugText = document.getElementById("simpleSugText");
+const btnSimpleSimLong = document.getElementById("btnSimpleSimLong");
+const btnSimpleSimShort = document.getElementById("btnSimpleSimShort");
+
+// Pro Mode Position Elements
+const proPositionCard = document.getElementById("proPositionCard");
+const proPosModeBadge = document.getElementById("proPosModeBadge");
+const btnProFlashClose = document.getElementById("btnProFlashClose");
+const proPosTableBody = document.getElementById("proPosTableBody");
+const proPosSym = document.getElementById("proPosSym");
+const proPosSideBadge = document.getElementById("proPosSideBadge");
+const proPosQty = document.getElementById("proPosQty");
+const proPosEntry = document.getElementById("proPosEntry");
+const proPosMark = document.getElementById("proPosMark");
+const proPosPnl = document.getElementById("proPosPnl");
+const proPosLiq = document.getElementById("proPosLiq");
+const proSugBadge = document.getElementById("proSugBadge");
+const proAlignmentPill = document.getElementById("proAlignmentPill");
+const proSugSl = document.getElementById("proSugSl");
+const proSugTp = document.getElementById("proSugTp");
+const proSugText = document.getElementById("proSugText");
+const btnProSimLong = document.getElementById("btnProSimLong");
+const btnProSimShort = document.getElementById("btnProSimShort");
+
+let toobitAccountStatus = {
+  connected: false,
+  mode: "demo",
+  balance: {}
+};
+let activeToobitPositions = [];
+let currentPositionSuggestion = null;
+let toobitPollInterval = null;
+
+// --------------------------------------------------------
+// Toast Alert Notification System
+// --------------------------------------------------------
+function showToast(message, type = "info", duration = 2500) {
+  if (!toastContainer) return;
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span>${message}</span>`;
+  toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(-10px)";
+    toast.style.transition = "all 0.3s ease";
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// --------------------------------------------------------
+// Audio Synthesizer Chimes
+// --------------------------------------------------------
+function playSignalChime(isLong) {
+  if (!audioEnabled) return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    const now = ctx.currentTime;
+
+    if (isLong) {
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      osc.frequency.exponentialRampToValueAtTime(880.0, now + 0.15); // A5
+    } else {
+      osc.frequency.setValueAtTime(659.25, now); // E5
+      osc.frequency.exponentialRampToValueAtTime(440.0, now + 0.15); // A4
+    }
+
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } catch (e) {}
+}
+
+// --------------------------------------------------------
+// Initialize TradingView Lightweight Chart
+// --------------------------------------------------------
+function initChart() {
+  const container = document.getElementById("chartContainer");
+  if (!container) return;
+  container.innerHTML = "";
+
+  chart = LightweightCharts.createChart(container, {
+    layout: {
+      background: { type: "solid", color: "#0b0e14" },
+      textColor: "#94a3b8",
+      fontSize: 11,
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+    },
+    grid: {
+      vertLines: { color: "rgba(255, 255, 255, 0.03)" },
+      horzLines: { color: "rgba(255, 255, 255, 0.03)" },
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: "#3b82f6", width: 1, style: 3, labelBackgroundColor: "#1e293b" },
+      horzLine: { color: "#3b82f6", width: 1, style: 3, labelBackgroundColor: "#1e293b" },
+    },
+    rightPriceScale: {
+      borderColor: "#242b3b",
+      autoScale: true,
+      alignLabels: true,
+      scaleMargins: {
+        top: 0.1,    // 10% breathing room at the top
+        bottom: 0.25, // 25% room at the bottom so candles stay ABOVE volume and markers
+      },
+    },
+    timeScale: {
+      borderColor: "#242b3b",
+      timeVisible: true,
+      secondsVisible: false,
+    },
+  });
+
+  // Candlestick Series
+  candleSeries = chart.addCandlestickSeries({
+    upColor: "#0ecb81",
+    downColor: "#f6465d",
+    borderVisible: false,
+    wickUpColor: "#0ecb81",
+    wickDownColor: "#f6465d",
+    priceFormat: {
+      type: "price",
+      precision: currentSymbol.includes("PEPE") ? 7 : 4,
+      minMove: currentSymbol.includes("PEPE") ? 0.0000001 : 0.0001,
+    },
+  });
+
+  // Volume Series on its own isolated scale strictly at bottom 15%
+  volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: "volume" },
+    priceScaleId: "volume_scale",
+  });
+
+  chart.priceScale("volume_scale").applyOptions({
+    scaleMargins: {
+      top: 0.85, // Volume is restricted to the bottom 15% of chart
+      bottom: 0,
+    },
+    visible: false,
+  });
+
+  // Technical EMA Lines (Thin 1px lines, clean and subtle)
+  ema9Series = chart.addLineSeries({
+    color: "rgba(240, 185, 11, 0.75)",
+    lineWidth: 1,
+    title: "EMA 9",
+    priceScaleId: "right",
+    visible: currentMode === "pro",
+  });
+
+  ema21Series = chart.addLineSeries({
+    color: "rgba(0, 230, 118, 0.75)",
+    lineWidth: 1,
+    title: "EMA 21",
+    priceScaleId: "right",
+    visible: currentMode === "pro",
+  });
+
+  ema50Series = chart.addLineSeries({
+    color: "rgba(0, 176, 255, 0.6)",
+    lineWidth: 1,
+    lineStyle: 2,
+    title: "EMA 50",
+    priceScaleId: "right",
+    visible: false, // Off by default to avoid visual clutter
+  });
+
+  // Bollinger Bands (Off by default to eliminate clutter)
+  bbUpperSeries = chart.addLineSeries({
+    color: "rgba(168, 85, 247, 0.5)",
+    lineWidth: 1,
+    lineStyle: 2,
+    title: "BB Upper",
+    priceScaleId: "right",
+    visible: false,
+  });
+
+  bbLowerSeries = chart.addLineSeries({
+    color: "rgba(168, 85, 247, 0.5)",
+    lineWidth: 1,
+    lineStyle: 2,
+    title: "BB Lower",
+    priceScaleId: "right",
+    visible: false,
+  });
+
+  bbMiddleSeries = chart.addLineSeries({
+    color: "rgba(168, 85, 247, 0.3)",
+    lineWidth: 1,
+    lineStyle: 3,
+    title: "BB Mid",
+    priceScaleId: "right",
+    visible: false,
+  });
+
+  // Resize Observer
+  const resizeObserver = new ResizeObserver((entries) => {
+    if (!entries || entries.length === 0) return;
+    const { width, height } = entries[0].contentRect;
+    if (width > 0 && height > 0 && chart) {
+      chart.applyOptions({ width, height });
+    }
+  });
+  resizeObserver.observe(container);
+
+  // Crosshair move listener to update HUD
+  chart.subscribeCrosshairMove((param) => {
+    if (!param.time || !param.seriesData) return;
+    const candle = param.seriesData.get(candleSeries);
+    const vol = param.seriesData.get(volumeSeries);
+    const e9 = param.seriesData.get(ema9Series);
+    const e21 = param.seriesData.get(ema21Series);
+    const e50 = param.seriesData.get(ema50Series);
+
+    if (candle) {
+      if (hudO) hudO.textContent = formatPrice(candle.open);
+      if (hudH) hudH.textContent = formatPrice(candle.high);
+      if (hudL) hudL.textContent = formatPrice(candle.low);
+      if (hudC) {
+        hudC.textContent = formatPrice(candle.close);
+        hudC.className = candle.close >= candle.open ? "price-up" : "price-down";
+      }
+    }
+    if (vol && hudV) {
+      hudV.textContent = formatCompact(vol.value);
+    }
+    if (e9 && hudEma9) hudEma9.textContent = formatPrice(e9.value);
+    if (e21 && hudEma21) hudEma21.textContent = formatPrice(e21.value);
+    if (e50 && hudEma50) hudEma50.textContent = formatPrice(e50.value);
+  });
+}
+
+// --------------------------------------------------------
+// Formatters
+// --------------------------------------------------------
+function formatPrice(val) {
+  if (val === null || val === undefined || isNaN(val)) return "--";
+  if (val < 0.01) return Number(val).toFixed(7);
+  if (val < 1.0) return Number(val).toFixed(4);
+  return Number(val).toFixed(2);
+}
+
+function formatCompact(val) {
+  if (!val) return "0";
+  if (val >= 1e9) return (val / 1e9).toFixed(2) + "B";
+  if (val >= 1e6) return (val / 1e6).toFixed(2) + "M";
+  if (val >= 1e3) return (val / 1e3).toFixed(2) + "K";
+  return Number(val).toFixed(0);
+}
+
+function formatTimestamp(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+// --------------------------------------------------------
+// Clean Deduplicated Marker Manager
+// --------------------------------------------------------
+function applyDeduplicatedMarkers(inputMarkers = null) {
+  if (!candleSeries) return;
+
+  if (Array.isArray(inputMarkers)) {
+    chartMarkers = inputMarkers.slice();
+  } else if (inputMarkers && typeof inputMarkers === "object") {
+    chartMarkers.push(inputMarkers);
+  }
+
+  // Deduplicate strictly by candle timestamp: only ONE marker per candle bar!
+  const markerMap = new Map();
+  chartMarkers.forEach((m) => {
+    if (m && m.time) {
+      const isLong = (m.shape === "arrowUp") || (m.text && m.text.includes("LONG")) || (m.text && m.text.includes("BUY"));
+      markerMap.set(m.time, {
+        time: m.time,
+        position: isLong ? "belowBar" : "aboveBar",
+        color: isLong ? "#0ecb81" : "#f6465d",
+        shape: isLong ? "arrowUp" : "arrowDown",
+        text: isLong ? "BUY" : "SELL",
+        size: 1, // Compact, sharp size
+      });
+    }
+  });
+
+  // Sort strictly ascending by time (MANDATORY for TradingView Lightweight Charts)
+  chartMarkers = Array.from(markerMap.values()).sort((a, b) => a.time - b.time);
+
+  // Keep at most the last 8 markers so the chart never gets crowded
+  if (chartMarkers.length > 8) {
+    chartMarkers = chartMarkers.slice(-8);
+  }
+
+  candleSeries.setMarkers(chartMarkers);
+}
+
+// --------------------------------------------------------
+// Load Historical Klines & Indicators
+// --------------------------------------------------------
+async function loadKlines(symbol, interval) {
+  try {
+    if (hudSymbol) hudSymbol.textContent = symbol;
+    if (hudInterval) hudInterval.textContent = interval;
+
+    const resp = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=350`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    const series = data.series || [];
+    if (series.length === 0) return;
+
+    // Separate series data
+    const candles = [];
+    const volumes = [];
+    const ema9 = [];
+    const ema21 = [];
+    const ema50 = [];
+    const bbUp = [];
+    const bbLow = [];
+    const bbMid = [];
+
+    series.forEach((bar) => {
+      candles.push({
+        time: bar.time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      });
+
+      // Subtle translucent volume bars (20% opacity) that never obstruct candles
+      volumes.push({
+        time: bar.time,
+        value: bar.volume,
+        color: bar.close >= bar.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
+      });
+
+      if (bar.ema9 !== null) ema9.push({ time: bar.time, value: bar.ema9 });
+      if (bar.ema21 !== null) ema21.push({ time: bar.time, value: bar.ema21 });
+      if (bar.ema50 !== null) ema50.push({ time: bar.time, value: bar.ema50 });
+
+      if (bar.bb_upper !== null) bbUp.push({ time: bar.time, value: bar.bb_upper });
+      if (bar.bb_lower !== null) bbLow.push({ time: bar.time, value: bar.bb_lower });
+      if (bar.bb_middle !== null) bbMid.push({ time: bar.time, value: bar.bb_middle });
+    });
+
+    candleSeries.setData(candles);
+    volumeSeries.setData(volumes);
+    ema9Series.setData(ema9);
+    ema21Series.setData(ema21);
+    ema50Series.setData(ema50);
+    bbUpperSeries.setData(bbUp);
+    bbLowerSeries.setData(bbLow);
+    bbMiddleSeries.setData(bbMid);
+
+    // Apply markers from history (Deduplicated & Cleaned)
+    if (data.markers && data.markers.length > 0) {
+      applyDeduplicatedMarkers(data.markers);
+    } else {
+      chartMarkers = [];
+      candleSeries.setMarkers([]);
+    }
+
+    // Update Telemetry & HUD
+    if (data.latest) {
+      currentLatestTelemetry = data.latest;
+      updateTelemetry(data.latest);
+      updateLivePriceDisplay(data.latest.price, data.latest.change_pct);
+    }
+
+    chart.timeScale().fitContent();
+    load24hTicker(symbol);
+  } catch (err) {
+    console.error("Error loading klines:", err);
+  }
+}
+
+// --------------------------------------------------------
+// Fetch 24h Ticker Stats
+// --------------------------------------------------------
+async function load24hTicker(symbol) {
+  try {
+    const resp = await fetch(`/api/ticker?symbol=${encodeURIComponent(symbol)}`);
+    if (!resp.ok) return;
+    const t = await resp.json();
+    if (t.last_price !== undefined) {
+      updateLivePriceDisplay(t.last_price, t.price_change_percent);
+    }
+    if (t.high_price !== undefined && high24hEl) {
+      high24hEl.textContent = formatPrice(t.high_price);
+    }
+    if (t.low_price !== undefined && low24hEl) {
+      low24hEl.textContent = formatPrice(t.low_price);
+    }
+    if (t.quote_volume && volume24hEl) {
+      volume24hEl.textContent = "$" + formatCompact(t.quote_volume);
+    } else if (t.volume && volume24hEl) {
+      volume24hEl.textContent = formatCompact(t.volume);
+    }
+  } catch (e) {
+    console.warn("Ticker fetch error:", e);
+  }
+}
+
+// --------------------------------------------------------
+// Update Telemetry HUD & Pivot Range Gauge
+// --------------------------------------------------------
+function updateTelemetry(latest) {
+  if (!latest) return;
+  if (telemRsi) telemRsi.textContent = latest.rsi ? latest.rsi.toFixed(1) : "--";
+  if (hudRsi) hudRsi.textContent = latest.rsi ? latest.rsi.toFixed(1) : "--";
+
+  if (telemRsiState) {
+    if (latest.rsi > 70) {
+      telemRsiState.textContent = "Overbought";
+      telemRsiState.style.color = "var(--red-down)";
+    } else if (latest.rsi < 30) {
+      telemRsiState.textContent = "Oversold";
+      telemRsiState.style.color = "var(--green-up)";
+    } else if (latest.rsi >= 50) {
+      telemRsiState.textContent = "Bullish Tilt";
+      telemRsiState.style.color = "var(--cyan-accent)";
+    } else {
+      telemRsiState.textContent = "Bearish Tilt";
+      telemRsiState.style.color = "var(--yellow-accent)";
+    }
+  }
+
+  if (telemTrend) telemTrend.textContent = latest.trend_state || "NEUTRAL";
+  if (telemTrendState) telemTrendState.textContent = latest.trend_state ? latest.trend_state.replace("_", " ") : "Consolidation";
+
+  if (telemMacd) telemMacd.textContent = latest.macd_hist ? (latest.macd_hist > 0 ? "+" : "") + latest.macd_hist.toFixed(6) : "0.0";
+  if (telemMacdState) telemMacdState.textContent = latest.macd_hist > 0 ? "Bullish Exp" : "Bearish Exp";
+
+  if (telemVolSpike) telemVolSpike.textContent = latest.vol_spike ? latest.vol_spike.toFixed(2) + "x" : "1.0x";
+  if (telemVolState) telemVolState.textContent = latest.vol_spike > 1.3 ? "Elevated Surge" : "Normal Flow";
+
+  if (telemSupport) telemSupport.textContent = formatPrice(latest.support);
+  if (telemResistance) telemResistance.textContent = formatPrice(latest.resistance);
+
+  // Update Pro Pivot Range Gauge
+  if (gaugeSupport) gaugeSupport.textContent = formatPrice(latest.support);
+  if (gaugePrice) gaugePrice.textContent = formatPrice(latest.price);
+  if (gaugeResistance) gaugeResistance.textContent = formatPrice(latest.resistance);
+
+  if (pivotGaugePin && latest.support && latest.resistance && latest.price) {
+    const range = latest.resistance - latest.support;
+    if (range > 0) {
+      let pct = ((latest.price - latest.support) / range) * 100;
+      pct = Math.max(5, Math.min(95, pct));
+      pivotGaugePin.style.left = `${pct}%`;
+    }
+  }
+}
+
+function updateLivePriceDisplay(price, changePct) {
+  if (price === undefined || price === null) return;
+  const numPrice = Number(price);
+
+  if (lastKnownPrice !== null && lastKnownPrice !== numPrice) {
+    if (numPrice > lastKnownPrice) {
+      livePriceEl.classList.remove("flash-down");
+      livePriceEl.classList.add("flash-up");
+      setTimeout(() => livePriceEl.classList.remove("flash-up"), 800);
+    } else if (numPrice < lastKnownPrice) {
+      livePriceEl.classList.remove("flash-up");
+      livePriceEl.classList.add("flash-down");
+      setTimeout(() => livePriceEl.classList.remove("flash-down"), 800);
+    }
+  }
+  lastKnownPrice = numPrice;
+
+  livePriceEl.textContent = formatPrice(numPrice);
+
+  if (changePct !== undefined) {
+    const isUp = changePct >= 0;
+    priceChangeEl.textContent = (isUp ? "+" : "") + changePct.toFixed(2) + "%";
+    priceChangeEl.className = "metric-value " + (isUp ? "price-up" : "price-down");
+  }
+}
+
+// --------------------------------------------------------
+// Apply Signal to Dashboard & Chart
+// --------------------------------------------------------
+function applySignal(signal, latest, laya) {
+  if (!signal) return;
+  currentSignal = signal;
+  if (latest) currentLatestTelemetry = latest;
+
+  const isLong = signal.action === "LONG";
+  const isShort = signal.action === "SHORT";
+
+  // Play audio chime if active
+  if (isLong || isShort) {
+    playSignalChime(isLong);
+  }
+
+  // Update Mobile Header Pill
+  if (mobileTabSignalPill) {
+    mobileTabSignalPill.textContent = signal.action;
+    mobileTabSignalPill.style.background = isLong ? "var(--green-up)" : isShort ? "var(--red-down)" : "var(--bg-hover)";
+    mobileTabSignalPill.style.color = isLong ? "#000" : "#fff";
+  }
+
+  // 1. Update Simple Mode UI
+  updateSimpleModeUI(signal, latest, laya);
+
+  // 2. Update Pro Signal Badge
+  signalBadge.className = "signal-badge " + (isLong ? "long" : isShort ? "short" : "neutral");
+  signalAction.textContent = signal.action;
+  confidenceVal.textContent = signal.confidence_pct + "%";
+
+  signalCard.className = "signal-card " + (isLong ? "long-glow" : isShort ? "short-glow" : "");
+
+  signalSubtext.textContent = isLong
+    ? `Strong Bullish Setup (${signal.signal_type}) with favorable Risk/Reward.`
+    : isShort
+    ? `High Conviction Bearish Setup (${signal.signal_type}) with invalidation anchor.`
+    : "Market in chop/consolidation. Waiting for cleaner structure.";
+
+  // 3. Targets
+  targetEntry.textContent = formatPrice(signal.entry_price);
+  targetSL.textContent = formatPrice(signal.stop_loss);
+  targetTP1.textContent = formatPrice(signal.take_profit_1);
+  targetTP2.textContent = formatPrice(signal.take_profit_2);
+  targetRRR.textContent = "1 : " + signal.risk_reward_ratio;
+  targetHorizon.textContent = signal.time_horizon ? signal.time_horizon : "Scalp";
+
+  // 4. Confluence Reasons
+  reasonsList.innerHTML = "";
+  if (signal.reasons && signal.reasons.length > 0) {
+    signal.reasons.forEach((r) => {
+      const li = document.createElement("li");
+      li.textContent = r;
+      reasonsList.appendChild(li);
+    });
+  }
+
+  // 5. Probabilities Bars
+  if (laya && laya.probabilities) {
+    const p = laya.probabilities;
+    const sl = Math.round((p.STRONG_LONG || 0) * 100);
+    const scl = Math.round((p.SCALP_LONG || 0) * 100);
+    const nh = Math.round((p.NEUTRAL_HOLD || 0) * 100);
+    const scs = Math.round((p.SCALP_SHORT || 0) * 100);
+    const ss = Math.round((p.STRONG_SHORT || 0) * 100);
+
+    probStrongLong.textContent = sl + "%";
+    barStrongLong.style.width = sl + "%";
+
+    probScalpLong.textContent = scl + "%";
+    barScalpLong.style.width = scl + "%";
+
+    probNeutral.textContent = nh + "%";
+    barNeutral.style.width = nh + "%";
+
+    probScalpShort.textContent = scs + "%";
+    barScalpShort.style.width = scs + "%";
+
+    probStrongShort.textContent = ss + "%";
+    barStrongShort.style.width = ss + "%";
+
+    latencyBadge.textContent = `⚡ ${laya.latency_ms || 25} ms`;
+
+    // Squeeze Risk
+    const sq = Math.round((laya.squeeze_risk || 0.1) * 100);
+    const sqRating = sq > 60 ? "High Whipsaw" : sq > 30 ? "Moderate" : "Low Risk";
+    squeezeRiskVal.textContent = `${sqRating} (${sq}%)`;
+    squeezeRiskVal.style.color = sq > 60 ? "var(--red-down)" : sq > 30 ? "var(--yellow-accent)" : "var(--green-up)";
+  }
+
+  // 6. Draw Horizontal Price Target Lines on Chart (Only in Pro Mode)
+  updateChartPriceLines(signal);
+
+  // 7. Add Clean Deduplicated Chart Marker
+  if (signal.marker) {
+    applyDeduplicatedMarkers(signal.marker);
+  }
+
+  // 8. Insert to History Table
+  if (signal.action !== "NEUTRAL") {
+    addSignalToHistory(signal);
+  }
+}
+
+// --------------------------------------------------------
+// Price Target Horizontal Lines Management (Minimalist)
+// --------------------------------------------------------
+function updateChartPriceLines(signal) {
+  clearPriceLines();
+
+  // In Simple Mode, keep the chart completely clean without lines
+  if (currentMode === "simple") return;
+  if (!toggleTargetLines || !toggleTargetLines.checked) return;
+  if (!signal || signal.action === "NEUTRAL") return;
+
+  // Thin, clean, professional lines
+  if (signal.entry_price) {
+    activePriceLines.push(
+      candleSeries.createPriceLine({
+        price: signal.entry_price,
+        color: "rgba(59, 130, 246, 0.75)",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: "ENTRY",
+      })
+    );
+  }
+
+  if (signal.stop_loss) {
+    activePriceLines.push(
+      candleSeries.createPriceLine({
+        price: signal.stop_loss,
+        color: "rgba(246, 70, 93, 0.75)",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "SL",
+      })
+    );
+  }
+
+  if (signal.take_profit_1) {
+    activePriceLines.push(
+      candleSeries.createPriceLine({
+        price: signal.take_profit_1,
+        color: "rgba(14, 203, 129, 0.75)",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "TP",
+      })
+    );
+  }
+}
+
+function clearPriceLines() {
+  activePriceLines.forEach((line) => {
+    try {
+      candleSeries.removePriceLine(line);
+    } catch (e) {}
+  });
+  activePriceLines = [];
+}
+
+// --------------------------------------------------------
+// Simple Mode Logic & UI Updater
+// --------------------------------------------------------
+function updateSimpleModeUI(signal, latest, laya) {
+  const isLong = signal.action === "LONG";
+  const isShort = signal.action === "SHORT";
+
+  // 1. Hero Decision Card
+  simpleHeroCard.className = "simple-hero-card " + (isLong ? "buy-active" : isShort ? "sell-active" : "");
+  simpleHeroBadge.className = "simple-hero-badge " + (isLong ? "buy" : isShort ? "sell" : "neutral");
+
+  if (isLong) {
+    simpleHeroIcon.textContent = "🟢";
+    simpleHeroAction.textContent = "BUY NOW (LONG)";
+    simpleHeroSub.textContent = "Market is rising. AI detects upward momentum with favorable odds.";
+  } else if (isShort) {
+    simpleHeroIcon.textContent = "🔴";
+    simpleHeroAction.textContent = "SELL NOW (SHORT)";
+    simpleHeroSub.textContent = "Market is falling. AI detects downward pressure. Be cautious holding.";
+  } else {
+    simpleHeroIcon.textContent = "⚪";
+    simpleHeroAction.textContent = "WAIT & RELAX";
+    simpleHeroSub.textContent = "Market is moving sideways. Wait for a clear move before risking capital.";
+  }
+
+  // Squeeze Risk Badge in Simple Mode
+  if (simpleRiskBadge) {
+    const sq = Math.round((laya?.squeeze_risk || 0.1) * 100);
+    if (sq > 60) {
+      simpleRiskBadge.className = "risk-badge high";
+      simpleRiskBadge.textContent = "⚠️ High Whipsaw Risk";
+    } else if (sq > 30) {
+      simpleRiskBadge.className = "risk-badge medium";
+      simpleRiskBadge.textContent = "⚡ Moderate Risk";
+    } else {
+      simpleRiskBadge.className = "risk-badge low";
+      simpleRiskBadge.textContent = "🛡️ Safe Zone";
+    }
+  }
+
+  // 2. Win Chance Meter
+  const conf = Math.round(signal.confidence_pct || 50);
+  const confRating = conf >= 70 ? "High Win Chance" : conf >= 50 ? "Good Opportunity" : "Moderate Chance";
+  simpleConfidenceText.textContent = `${confRating} (${conf}%)`;
+  simpleMeterBar.style.width = `${Math.min(100, Math.max(15, conf))}%`;
+  simpleMeterBar.style.background = isLong
+    ? "linear-gradient(90deg, #3b82f6, #0ecb81)"
+    : isShort
+    ? "linear-gradient(90deg, #f97316, #f6465d)"
+    : "linear-gradient(90deg, #64748b, #94a3b8)";
+
+  // 3. 3-Step Plan
+  simpleEntryPrice.textContent = "$" + formatPrice(signal.entry_price);
+  simpleTakeProfit.textContent = "$" + formatPrice(signal.take_profit_1);
+  simpleStopLoss.textContent = "$" + formatPrice(signal.stop_loss);
+
+  // Gain & Loss percentage calculations
+  const entry = Number(signal.entry_price);
+  const tp = Number(signal.take_profit_1);
+  const sl = Number(signal.stop_loss);
+
+  if (entry > 0 && tp > 0 && sl > 0) {
+    const gainPct = isLong ? (((tp - entry) / entry) * 100).toFixed(2) : (((entry - tp) / entry) * 100).toFixed(2);
+    const lossPct = isLong ? (((entry - sl) / entry) * 100).toFixed(2) : (((sl - entry) / entry) * 100).toFixed(2);
+    simpleTpDesc.textContent = `Sell here to lock in +${gainPct}% profit!`;
+    simpleSlDesc.textContent = `Safety stop to cap max loss at -${lossPct}%`;
+
+    // Visual Risk/Reward bar
+    if (rrGainLabel && rrRiskLabel && rrGainFill && rrRiskFill) {
+      rrGainLabel.textContent = `Target Win: +${gainPct}%`;
+      rrRiskLabel.textContent = `Safety SL: -${lossPct}%`;
+      const ratio = Number(gainPct) / (Number(gainPct) + Number(lossPct) || 1);
+      rrGainFill.style.width = `${Math.round(ratio * 100)}%`;
+      rrRiskFill.style.width = `${100 - Math.round(ratio * 100)}%`;
+    }
+
+    // Update Position Demo Calculator
+    updateDemoCalculator(Number(gainPct), Number(lossPct));
+  }
+
+  // 4. Plain English Reasons
+  simpleReasonsList.innerHTML = "";
+  const reasons = [];
+  reasons.push(`🤖 <strong>Laya AI Recommendation:</strong> Calibrated setup with <strong>${conf}%</strong> confidence.`);
+
+  if (latest) {
+    if (latest.rsi < 35) {
+      reasons.push("🏷️ <strong>Bargain Discount:</strong> Price reached an oversold floor, inviting buyers.");
+    } else if (latest.rsi > 65) {
+      reasons.push("🚀 <strong>Hot Momentum:</strong> Strong buying surge in progress.");
+    } else {
+      reasons.push("⚖️ <strong>Balanced Flow:</strong> Price action is stable without overextension.");
+    }
+
+    if (isLong) {
+      reasons.push("📈 <strong>Upward Tide:</strong> Buyers are dominant above moving averages.");
+    } else if (isShort) {
+      reasons.push("📉 <strong>Downward Tide:</strong> Selling pressure is dominant below key support.");
+    } else {
+      reasons.push("⏸️ <strong>Tight Range:</strong> Price is oscillating in consolidation.");
+    }
+
+    if (latest.vol_spike && latest.vol_spike > 1.2) {
+      reasons.push(`🔥 <strong>High Activity:</strong> Volume is ${latest.vol_spike}x above average.`);
+    }
+  }
+
+  reasons.forEach((r) => {
+    const li = document.createElement("li");
+    li.innerHTML = r;
+    simpleReasonsList.appendChild(li);
+  });
+}
+
+// --------------------------------------------------------
+// Demo Position Return Calculator
+// --------------------------------------------------------
+function updateDemoCalculator(gainPct, lossPct) {
+  if (!calcWinVal || !calcLossVal) return;
+  const win = ((currentCalcAmount * gainPct) / 100).toFixed(2);
+  const loss = ((currentCalcAmount * lossPct) / 100).toFixed(2);
+  calcWinVal.textContent = `+$${win}`;
+  calcLossVal.textContent = `-$${loss}`;
+}
+
+if (calcPresetGroup) {
+  calcPresetGroup.addEventListener("click", (e) => {
+    const btn = e.target.closest(".calc-chip");
+    if (!btn) return;
+    calcPresetGroup.querySelectorAll(".calc-chip").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentCalcAmount = Number(btn.getAttribute("data-amount")) || 500;
+    if (currentSignal) {
+      const entry = Number(currentSignal.entry_price);
+      const tp = Number(currentSignal.take_profit_1);
+      const sl = Number(currentSignal.stop_loss);
+      if (entry > 0 && tp > 0 && sl > 0) {
+        const isLong = currentSignal.action === "LONG";
+        const gainPct = isLong ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
+        const lossPct = isLong ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
+        updateDemoCalculator(gainPct, lossPct);
+      }
+    }
+  });
+}
+
+// --------------------------------------------------------
+// Copy Trade Plan to Clipboard
+// --------------------------------------------------------
+if (btnCopyTradePlan) {
+  btnCopyTradePlan.addEventListener("click", () => {
+    if (!currentSignal || currentSignal.action === "NEUTRAL") {
+      showToast("No active trade plan right now. Run analysis first.", "info");
+      return;
+    }
+    const sig = currentSignal;
+    const text = `🐸 ${sig.symbol} (${sig.interval}) AI Trade Setup:
+Action: ${sig.action} (${sig.signal_type})
+Entry: $${formatPrice(sig.entry_price)}
+Take Profit: $${formatPrice(sig.take_profit_1)}
+Stop Loss: $${formatPrice(sig.stop_loss)}
+Risk/Reward: 1 : ${sig.risk_reward_ratio}
+Win Confidence: ${sig.confidence_pct}%
+AI Engine: Laya System-1 GPU`;
+
+    navigator.clipboard.writeText(text).then(
+      () => showToast("Trade Plan Copied to Clipboard! 📋", "success"),
+      () => showToast("Could not copy to clipboard", "info")
+    );
+  });
+}
+
+// --------------------------------------------------------
+// Mode Switching (Simple vs Pro)
+// --------------------------------------------------------
+function setMode(mode) {
+  currentMode = mode;
+  localStorage.setItem("laya_mode", mode);
+
+  if (mode === "simple") {
+    btnSimpleMode.classList.add("active");
+    btnSimpleMode.setAttribute("aria-selected", "true");
+    btnProMode.classList.remove("active");
+    btnProMode.setAttribute("aria-selected", "false");
+
+    simpleModeContainer.style.display = "flex";
+    proModeContainer.style.display = "none";
+
+    // 100% clean chart for beginners: HIDE ALL INDICATORS AND TARGET LINES
+    ema9Series.applyOptions({ visible: false });
+    ema21Series.applyOptions({ visible: false });
+    ema50Series.applyOptions({ visible: false });
+    bbUpperSeries.applyOptions({ visible: false });
+    bbLowerSeries.applyOptions({ visible: false });
+    bbMiddleSeries.applyOptions({ visible: false });
+    clearPriceLines();
+
+    if (toggleEMA) toggleEMA.checked = false;
+    if (toggleBB) toggleBB.checked = false;
+  } else {
+    btnProMode.classList.add("active");
+    btnProMode.setAttribute("aria-selected", "true");
+    btnSimpleMode.classList.remove("active");
+    btnSimpleMode.setAttribute("aria-selected", "false");
+
+    proModeContainer.style.display = "flex";
+    simpleModeContainer.style.display = "none";
+
+    // In Pro Mode: Only show subtle EMA 9 and 21 by default (keep BB and EMA50 clean/off unless checked)
+    ema9Series.applyOptions({ visible: true });
+    ema21Series.applyOptions({ visible: true });
+    ema50Series.applyOptions({ visible: false });
+    bbUpperSeries.applyOptions({ visible: toggleBB?.checked || false });
+    bbLowerSeries.applyOptions({ visible: toggleBB?.checked || false });
+    bbMiddleSeries.applyOptions({ visible: toggleBB?.checked || false });
+
+    if (toggleEMA) toggleEMA.checked = true;
+
+    // Draw clean target lines in Pro mode
+    if (currentSignal) {
+      updateChartPriceLines(currentSignal);
+    }
+  }
+}
+
+btnSimpleMode.addEventListener("click", () => setMode("simple"));
+btnProMode.addEventListener("click", () => setMode("pro"));
+
+// --------------------------------------------------------
+// Mobile View Tabs (< 900px)
+// --------------------------------------------------------
+mobileTabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    mobileTabButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const tab = btn.getAttribute("data-tab");
+    mainContent.setAttribute("data-active-tab", tab);
+
+    if (tab === "chart" && chart) {
+      setTimeout(() => chart.timeScale().fitContent(), 100);
+    }
+  });
+});
+
+// --------------------------------------------------------
+// Real-Time WebSocket Connection
+// --------------------------------------------------------
+function connectWebSocket() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/ws/live`;
+
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    wsStatusText.textContent = "Live Feed Active";
+    statusDot.className = "status-dot online pulsing";
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "candle_tick") {
+        const c = msg.data;
+        if (c.symbol === currentSymbol) {
+          candleSeries.update({
+            time: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          });
+
+          volumeSeries.update({
+            time: c.time,
+            value: c.volume,
+            color: c.close >= c.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
+          });
+
+          updateLivePriceDisplay(c.close);
+
+          if (c.is_closed && toggleAutoAnalyze?.checked && c.time !== lastAnalyzedCandleTime) {
+            lastAnalyzedCandleTime = c.time;
+            triggerAnalyze();
+          }
+        }
+      } else if (msg.type === "new_signal") {
+        applySignal(msg.signal, msg.latest, msg.laya);
+        if (msg.latest) updateTelemetry(msg.latest);
+      }
+    } catch (e) {
+      console.error("WS Parse error:", e);
+    }
+  };
+
+  ws.onclose = () => {
+    wsStatusText.textContent = "Reconnecting...";
+    statusDot.className = "status-dot";
+    setTimeout(connectWebSocket, 2000);
+  };
+
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+// --------------------------------------------------------
+// API Actions
+// --------------------------------------------------------
+async function triggerAnalyze() {
+  analyzeBtn.disabled = true;
+  const originalText = analyzeBtn.innerHTML;
+  analyzeBtn.innerHTML = `<span>Analyzing...</span>`;
+
+  try {
+    const resp = await fetch(`/api/analyze?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    applySignal(data.signal, data.latest, data.laya);
+    if (data.latest) updateTelemetry(data.latest);
+    showToast(`Laya Evaluated: ${data.signal.action} (${data.signal.confidence_pct}%)`, "success");
+  } catch (err) {
+    console.error("Analysis failed:", err);
+    showToast("Analysis request failed. Please check connection.", "info");
+  } finally {
+    analyzeBtn.disabled = false;
+    analyzeBtn.innerHTML = originalText;
+    lucide.createIcons();
+  }
+}
+
+// --------------------------------------------------------
+// Signal History Management & Drawer
+// --------------------------------------------------------
+function addSignalToHistory(sig) {
+  // Deduplicate in local history by candle timestamp
+  const existingIdx = rawSignalHistory.findIndex((s) => s.time === sig.time && s.symbol === sig.symbol && s.interval === sig.interval);
+  if (existingIdx >= 0) {
+    rawSignalHistory[existingIdx] = sig;
+  } else {
+    rawSignalHistory.unshift(sig);
+  }
+  if (rawSignalHistory.length > 100) rawSignalHistory.pop();
+  renderHistoryTable();
+}
+
+function renderHistoryTable() {
+  historyTableBody.innerHTML = "";
+
+  const filtered = rawSignalHistory.filter((s) => {
+    if (activeHistoryFilter === "long") return s.action === "LONG";
+    if (activeHistoryFilter === "short") return s.action === "SHORT";
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    historyTableBody.innerHTML = `
+      <tr class="empty-row">
+        <td colspan="10">No signals found matching filter. Click "Analyze Market" to evaluate.</td>
+      </tr>
+    `;
+  } else {
+    filtered.forEach((sig) => {
+      const tr = document.createElement("tr");
+      const isLong = sig.action === "LONG";
+      const tagClass = isLong ? "tag-long" : "tag-short";
+
+      tr.innerHTML = `
+        <td>${formatTimestamp(sig.timestamp || sig.time)}</td>
+        <td><strong>${sig.symbol}</strong></td>
+        <td>${sig.interval}</td>
+        <td><span class="${tagClass}">${sig.action}</span></td>
+        <td>${formatPrice(sig.entry_price)}</td>
+        <td class="sl-val">${formatPrice(sig.stop_loss)}</td>
+        <td class="tp-val">${formatPrice(sig.take_profit_1)}</td>
+        <td class="tp-val">${formatPrice(sig.take_profit_2)}</td>
+        <td><strong>${sig.confidence_pct}%</strong></td>
+        <td>${sig.latency_ms || 25} ms</td>
+      `;
+      historyTableBody.appendChild(tr);
+    });
+  }
+
+  const count = rawSignalHistory.length;
+  if (historyCount) historyCount.textContent = `${count} Signals`;
+  if (mobileTabHistoryCount) mobileTabHistoryCount.textContent = count;
+}
+
+async function loadHistory() {
+  try {
+    const resp = await fetch("/api/history");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    rawSignalHistory = data.history || [];
+    renderHistoryTable();
+  } catch (e) {
+    console.error("Failed loading history:", e);
+  }
+}
+
+// History Drawer Collapse / Expand
+function toggleHistoryDrawer() {
+  const isCollapsed = historyDrawer.classList.contains("collapsed");
+  if (isCollapsed) {
+    historyDrawer.classList.remove("collapsed");
+  } else {
+    historyDrawer.classList.add("collapsed");
+  }
+  lucide.createIcons();
+}
+
+if (historyDrawerHeader) {
+  historyDrawerHeader.addEventListener("click", (e) => {
+    if (e.target.closest(".history-actions")) return;
+    toggleHistoryDrawer();
+  });
+}
+
+histFilterButtons.forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    histFilterButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    activeHistoryFilter = btn.getAttribute("data-filter");
+    renderHistoryTable();
+  });
+});
+
+if (btnClearHistory) {
+  btnClearHistory.addEventListener("click", (e) => {
+    e.stopPropagation();
+    rawSignalHistory = [];
+    chartMarkers = [];
+    candleSeries?.setMarkers([]);
+    renderHistoryTable();
+    showToast("History log and chart markers cleared.", "info");
+  });
+}
+
+if (btnExportHistory) {
+  btnExportHistory.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (rawSignalHistory.length === 0) {
+      showToast("No history to export.", "info");
+      return;
+    }
+    const headers = ["Time", "Symbol", "Interval", "Action", "Entry", "SL", "TP1", "TP2", "Confidence", "Latency"];
+    const rows = rawSignalHistory.map((s) => [
+      new Date(s.timestamp * 1000).toISOString(),
+      s.symbol,
+      s.interval,
+      s.action,
+      s.entry_price,
+      s.stop_loss,
+      s.take_profit_1,
+      s.take_profit_2,
+      s.confidence_pct + "%",
+      (s.latency_ms || 25) + "ms",
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", `laya_signals_${currentSymbol}_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    showToast("Exported signals to CSV!", "success");
+  });
+}
+
+// --------------------------------------------------------
+// Event Listeners
+// --------------------------------------------------------
+symbolSelect.addEventListener("change", async (e) => {
+  currentSymbol = e.target.value;
+  clearPriceLines();
+  chartMarkers = [];
+  candleSeries?.setMarkers([]);
+  await fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" });
+  await loadKlines(currentSymbol, currentInterval);
+  triggerAnalyze();
+});
+
+tfButtons.forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    tfButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentInterval = btn.getAttribute("data-interval");
+    clearPriceLines();
+    chartMarkers = [];
+    candleSeries?.setMarkers([]);
+    await fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" });
+    await loadKlines(currentSymbol, currentInterval);
+    triggerAnalyze();
+  });
+});
+
+analyzeBtn.addEventListener("click", () => triggerAnalyze());
+
+// Indicator Toggles
+toggleEMA?.addEventListener("change", (e) => {
+  const visible = e.target.checked;
+  ema9Series.applyOptions({ visible });
+  ema21Series.applyOptions({ visible });
+});
+
+toggleBB?.addEventListener("change", (e) => {
+  const visible = e.target.checked;
+  bbUpperSeries.applyOptions({ visible });
+  bbLowerSeries.applyOptions({ visible });
+  bbMiddleSeries.applyOptions({ visible });
+});
+
+toggleTargetLines?.addEventListener("change", () => {
+  if (currentSignal) updateChartPriceLines(currentSignal);
+});
+
+// Chart Controls: Auto-Fit & Fullscreen
+btnFitChart?.addEventListener("click", () => {
+  if (chart) {
+    chart.timeScale().fitContent();
+    showToast("Chart Auto-Fitted", "info");
+  }
+});
+
+btnFullscreenChart?.addEventListener("click", () => {
+  const chartSec = document.getElementById("chartSectionView");
+  if (!chartSec) return;
+  if (!document.fullscreenElement) {
+    chartSec.requestFullscreen?.().catch(() => chartSec.classList.toggle("fullscreen-active"));
+  } else {
+    document.exitFullscreen?.();
+  }
+});
+
+document.addEventListener("fullscreenchange", () => {
+  const icon = document.getElementById("fullscreenIcon");
+  if (document.fullscreenElement) {
+    icon?.setAttribute("data-lucide", "minimize-2");
+  } else {
+    icon?.setAttribute("data-lucide", "expand");
+  }
+  lucide.createIcons();
+  if (chart) chart.timeScale().fitContent();
+});
+
+// Audio Alerts Toggle
+btnAudioToggle?.addEventListener("click", () => {
+  audioEnabled = !audioEnabled;
+  btnAudioToggle.classList.toggle("active", audioEnabled);
+  audioIcon?.setAttribute("data-lucide", audioEnabled ? "bell" : "bell-off");
+  lucide.createIcons();
+  showToast(audioEnabled ? "Audio alerts enabled 🔔" : "Audio alerts muted 🔕", "info");
+});
+
+// Keyboard Shortcuts
+document.addEventListener("keydown", (e) => {
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    triggerAnalyze();
+  } else if (e.key === "s" || e.key === "S") {
+    setMode(currentMode === "simple" ? "pro" : "simple");
+    showToast(`Switched to ${currentMode.toUpperCase()} Mode`, "info");
+  } else if (e.key === "f" || e.key === "F") {
+    btnFullscreenChart?.click();
+  } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
+    const idx = parseInt(e.key) - 1;
+    if (tfButtons[idx]) tfButtons[idx].click();
+  } else if (e.key === "Escape") {
+    closeToobitModal();
+  }
+});
+
+// Auto-analyze interval timer
+function setupAutoAnalyze() {
+  if (autoAnalyzeTimer) clearInterval(autoAnalyzeTimer);
+  autoAnalyzeTimer = setInterval(() => {
+    load24hTicker(currentSymbol);
+    if (toggleAutoAnalyze?.checked) {
+      triggerAnalyze();
+    }
+  }, 20000); // Every 20 seconds
+}
+
+// ========================================================
+// TOOBIT ACCOUNT & POSITION MANAGEMENT CONTROLLER
+// ========================================================
+
+function openToobitModal() {
+  if (!toobitModal) return;
+  toobitModal.classList.remove("hide");
+  toobitModal.style.display = "flex";
+  fetchToobitStatus();
+}
+
+function closeToobitModal() {
+  if (!toobitModal) return;
+  toobitModal.classList.add("hide");
+  toobitModal.style.display = "none";
+}
+
+// Modal Tab Switcher
+tabModeLive?.addEventListener("click", () => {
+  tabModeLive.classList.add("active");
+  tabModeDemo?.classList.remove("active");
+  tabContentLive?.classList.remove("hide");
+  tabContentLive?.classList.add("active");
+  tabContentDemo?.classList.add("hide");
+  tabContentDemo?.classList.remove("active");
+});
+
+tabModeDemo?.addEventListener("click", () => {
+  tabModeDemo.classList.add("active");
+  tabModeLive?.classList.remove("active");
+  tabContentDemo?.classList.remove("hide");
+  tabContentDemo?.classList.add("active");
+  tabContentLive?.classList.add("hide");
+  tabContentLive?.classList.remove("active");
+});
+
+// Toggle Secret Eye
+btnToggleSecret?.addEventListener("click", () => {
+  if (toobitApiSecret) {
+    const isPassword = toobitApiSecret.type === "password";
+    toobitApiSecret.type = isPassword ? "text" : "password";
+    eyeIcon?.setAttribute("data-lucide", isPassword ? "eye-off" : "eye");
+    lucide.createIcons();
+  }
+});
+
+// Fetch Connection & Balance Status
+async function fetchToobitStatus() {
+  try {
+    const res = await fetch("/api/toobit/status");
+    if (!res.ok) return;
+    const data = await res.json();
+    toobitAccountStatus = data;
+
+    // Update Nav status pill
+    if (toobitNavStatus) {
+      toobitNavStatus.className = `toobit-nav-pill ${data.mode}`;
+      if (data.mode === "live") {
+        toobitNavStatus.textContent = "Live";
+      } else if (data.mode === "demo") {
+        toobitNavStatus.textContent = "Demo";
+      } else {
+        toobitNavStatus.textContent = "Offline";
+      }
+    }
+
+    // Update Modal Banner
+    if (modalStatusDot && modalStatusText && modalAvailableBal) {
+      modalStatusDot.className = `status-indicator-dot ${data.mode}`;
+      if (data.mode === "live") {
+        modalStatusText.textContent = "Live Toobit API Connected";
+        if (modalStatusSub) modalStatusSub.textContent = "Real futures funds active";
+        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
+      } else if (data.mode === "demo") {
+        modalStatusText.textContent = "Simulated Demo Mode Active";
+        if (modalStatusSub) modalStatusSub.textContent = "Trading with virtual $5,000 USDT";
+        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 5000).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
+      } else {
+        modalStatusText.textContent = "Not Connected";
+        if (modalStatusSub) modalStatusSub.textContent = "Enter API keys or use Demo Mode";
+        modalAvailableBal.textContent = "$0.00 USDT";
+      }
+    }
+
+    if (proPosModeBadge) {
+      proPosModeBadge.textContent = data.mode === "live" ? "Live Account" : "Demo Account";
+      proPosModeBadge.className = `badge-mini ${data.mode === "live" ? "badge-live" : "badge-demo"}`;
+    }
+  } catch (e) {
+    console.warn("Failed to fetch Toobit status:", e);
+  }
+}
+
+// Fetch Positions and AI Suggestions
+async function fetchToobitPositions() {
+  try {
+    const [posRes, sugRes] = await Promise.all([
+      fetch(`/api/toobit/positions?symbol=${encodeURIComponent(currentSymbol)}`),
+      fetch(`/api/toobit/suggestions?symbol=${encodeURIComponent(currentSymbol)}`)
+    ]);
+
+    let positions = [];
+    if (posRes.ok) {
+      const posData = await posRes.json();
+      positions = posData.positions || [];
+      activeToobitPositions = positions;
+    }
+
+    let suggestionData = null;
+    if (sugRes.ok) {
+      suggestionData = await sugRes.json();
+      currentPositionSuggestion = suggestionData.suggestion;
+    }
+
+    renderToobitPositions(positions, suggestionData?.suggestion);
+  } catch (e) {
+    console.warn("Failed to fetch Toobit positions/suggestions:", e);
+  }
+}
+
+// Render Positions in Simple & Pro Mode
+function renderToobitPositions(positions, suggestion) {
+  const activePos = positions && positions.length > 0 ? positions[0] : null;
+
+  // --- SIMPLE MODE RENDERING ---
+  if (simplePositionCard) {
+    if (activePos) {
+      const isLong = activePos.side === "LONG";
+      if (simplePosBadge) {
+        simplePosBadge.textContent = `${activePos.side} (${toobitAccountStatus.mode === "live" ? "Live" : "Demo"})`;
+        simplePosBadge.className = `pos-badge ${isLong ? "long" : "short"}`;
+      }
+      if (simplePosQty) simplePosQty.textContent = `${Number(activePos.quantity).toLocaleString()} PEPE`;
+      if (simplePosEntry) simplePosEntry.textContent = `$${activePos.entryPrice.toFixed(6)}`;
+      
+      const pnl = Number(activePos.unrealizedPnl || 0);
+      const pnlPct = Number(activePos.pnlPercentage || 0);
+      const isProfitable = pnl >= 0;
+      if (simplePosPnl) {
+        simplePosPnl.textContent = `${isProfitable ? "+" : ""}$${pnl.toFixed(2)} (${isProfitable ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+        simplePosPnl.className = `pos-stat-val ${isProfitable ? "pnl-green" : "pnl-red"}`;
+      }
+      if (btnSimpleFlashClose) {
+        btnSimpleFlashClose.style.display = "inline-flex";
+      }
+    } else {
+      if (simplePosBadge) {
+        simplePosBadge.textContent = "NO OPEN TRADE";
+        simplePosBadge.className = "pos-badge none";
+      }
+      if (simplePosQty) simplePosQty.textContent = "None";
+      if (simplePosEntry) simplePosEntry.textContent = "--";
+      if (simplePosPnl) {
+        simplePosPnl.textContent = "$0.00 (0.0%)";
+        simplePosPnl.className = "pos-stat-val";
+      }
+      if (btnSimpleFlashClose) {
+        btnSimpleFlashClose.style.display = "none";
+      }
+    }
+
+    // Simple Mode AI Suggestion
+    if (suggestion) {
+      if (simpleSugBadge) {
+        simpleSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
+        simpleSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
+      }
+      if (simpleSugHeadline) simpleSugHeadline.textContent = suggestion.headline || "Evaluating Market...";
+      if (simpleSugText) simpleSugText.textContent = suggestion.suggestion || "Stand by for high-probability confluence setup.";
+    }
+  }
+
+  // --- PRO MODE RENDERING ---
+  if (proPositionCard) {
+    if (activePos) {
+      const isLong = activePos.side === "LONG";
+      if (proPosSym) proPosSym.textContent = activePos.displaySymbol || activePos.symbol || currentSymbol;
+      if (proPosSideBadge) {
+        proPosSideBadge.textContent = `${activePos.side} ${activePos.leverage}x`;
+        proPosSideBadge.className = `pos-badge ${isLong ? "long" : "short"}`;
+      }
+      if (proPosQty) proPosQty.textContent = Number(activePos.quantity).toLocaleString();
+      if (proPosEntry) proPosEntry.textContent = `$${activePos.entryPrice.toFixed(6)}`;
+      if (proPosMark) proPosMark.textContent = `$${(activePos.markPrice || lastKnownPrice || activePos.entryPrice).toFixed(6)}`;
+      
+      const pnl = Number(activePos.unrealizedPnl || 0);
+      const pnlPct = Number(activePos.pnlPercentage || 0);
+      const isProfitable = pnl >= 0;
+      if (proPosPnl) {
+        proPosPnl.textContent = `${isProfitable ? "+" : ""}$${pnl.toFixed(2)} (${isProfitable ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+        proPosPnl.className = isProfitable ? "pnl-green" : "pnl-red";
+      }
+      if (proPosLiq) proPosLiq.textContent = activePos.liquidationPrice ? `$${activePos.liquidationPrice.toFixed(6)}` : "--";
+      if (btnProFlashClose) btnProFlashClose.style.display = "inline-flex";
+    } else {
+      if (proPosSym) proPosSym.textContent = currentSymbol;
+      if (proPosSideBadge) {
+        proPosSideBadge.textContent = "FLAT";
+        proPosSideBadge.className = "pos-badge none";
+      }
+      if (proPosQty) proPosQty.textContent = "0";
+      if (proPosEntry) proPosEntry.textContent = "--";
+      if (proPosMark) proPosMark.textContent = lastKnownPrice ? `$${lastKnownPrice.toFixed(6)}` : "--";
+      if (proPosPnl) {
+        proPosPnl.textContent = "$0.00 (0.0%)";
+        proPosPnl.className = "";
+      }
+      if (proPosLiq) proPosLiq.textContent = "--";
+      if (btnProFlashClose) btnProFlashClose.style.display = "none";
+    }
+
+    // Pro Mode AI Suggestion
+    if (suggestion) {
+      if (proSugBadge) {
+        proSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
+        proSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
+      }
+      if (proAlignmentPill) {
+        if (suggestion.alignment === "ALIGNED") {
+          proAlignmentPill.textContent = "Trend Aligned";
+          proAlignmentPill.className = "alignment-pill aligned";
+        } else if (suggestion.alignment === "OPPOSED") {
+          proAlignmentPill.textContent = "Trend Opposed / Risk";
+          proAlignmentPill.className = "alignment-pill opposed";
+        } else {
+          proAlignmentPill.textContent = "Neutral / Watch";
+          proAlignmentPill.className = "alignment-pill neutral";
+        }
+      }
+      if (proSugSl) {
+        proSugSl.textContent = suggestion.recommendedSl > 0 ? `$${suggestion.recommendedSl.toFixed(6)}` : "--";
+      }
+      if (proSugTp) {
+        proSugTp.textContent = suggestion.recommendedTp > 0 ? `$${suggestion.recommendedTp.toFixed(6)}` : "--";
+      }
+      if (proSugText) {
+        proSugText.textContent = suggestion.suggestion || "Monitoring live order book and tick flow...";
+      }
+    }
+  }
+}
+
+// Flash Close Execution
+async function executeFlashClose() {
+  try {
+    const symbolToClose = currentSymbol;
+    showToast(`⚡ Sending Flash Close market order for ${symbolToClose}...`, "info");
+    
+    const res = await fetch("/api/toobit/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: symbolToClose })
+    });
+    const data = await res.json();
+    
+    if (data.success) {
+      showToast(data.message || `Position ${symbolToClose} successfully Flash Closed!`, "bull");
+      playSignalChime(true);
+    } else {
+      showToast(data.message || data.error || "Flash close failed", "error");
+    }
+
+    await fetchToobitPositions();
+    await fetchToobitStatus();
+  } catch (e) {
+    showToast(`Error executing flash close: ${e.message}`, "error");
+  }
+}
+
+// Demo Simulation
+async function simulateDemoTrade(side) {
+  try {
+    const res = await fetch("/api/toobit/demo/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: currentSymbol,
+        side: side,
+        quantity: 100000,
+        entryPrice: lastKnownPrice || 0.00418,
+        leverage: 10
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Simulated ${side} 10x position opened for ${currentSymbol}!`, "bull");
+      playSignalChime(side === "LONG");
+    }
+    await fetchToobitPositions();
+  } catch (e) {
+    showToast(`Failed to simulate position: ${e.message}`, "error");
+  }
+}
+
+// Connect Live API
+async function saveToobitCredentials(e) {
+  e.preventDefault();
+  const apiKey = toobitApiKey?.value.trim();
+  const apiSecret = toobitApiSecret?.value.trim();
+
+  if (!apiKey || !apiSecret) {
+    showToast("Please enter both API Key and Secret Key.", "error");
+    return;
+  }
+
+  showToast("Validating API credentials with Toobit...", "info");
+  if (btnSaveToobitKeys) {
+    btnSaveToobitKeys.disabled = true;
+    btnSaveToobitKeys.innerHTML = `<span>Validating...</span>`;
+  }
+
+  try {
+    const res = await fetch("/api/toobit/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: apiKey,
+        apiSecret: apiSecret,
+        isDemo: false
+      })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showToast("Toobit Futures API Connected Successfully!", "bull");
+      closeToobitModal();
+      await fetchToobitStatus();
+      await fetchToobitPositions();
+    } else {
+      showToast(data.message || "Failed to validate Toobit API keys.", "error");
+    }
+  } catch (err) {
+    showToast(`Connection error: ${err.message}`, "error");
+  } finally {
+    if (btnSaveToobitKeys) {
+      btnSaveToobitKeys.disabled = false;
+      btnSaveToobitKeys.innerHTML = `<i data-lucide="check-circle"></i><span>Connect & Validate API</span>`;
+      lucide.createIcons();
+    }
+  }
+}
+
+// Disconnect
+async function disconnectToobit() {
+  try {
+    const res = await fetch("/api/toobit/disconnect", { method: "POST" });
+    const data = await res.json();
+    showToast("Disconnected from Toobit.", "info");
+    if (toobitApiKey) toobitApiKey.value = "";
+    if (toobitApiSecret) toobitApiSecret.value = "";
+    await fetchToobitStatus();
+    await fetchToobitPositions();
+  } catch (e) {
+    showToast(`Disconnect error: ${e.message}`, "error");
+  }
+}
+
+// Activate Demo Mode
+async function activateDemoMode() {
+  try {
+    const res = await fetch("/api/toobit/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isDemo: true })
+    });
+    const data = await res.json();
+    showToast("Demo Simulation Mode Activated ($5,000 USDT)!", "bull");
+    closeToobitModal();
+    await fetchToobitStatus();
+    await fetchToobitPositions();
+  } catch (e) {
+    showToast(`Error activating demo mode: ${e.message}`, "error");
+  }
+}
+
+// Initialize Toobit Listeners
+function initToobitManager() {
+  btnToobitConnect?.addEventListener("click", openToobitModal);
+  btnCloseToobitModal?.addEventListener("click", closeToobitModal);
+  
+  toobitModal?.addEventListener("click", (e) => {
+    if (e.target === toobitModal) closeToobitModal();
+  });
+
+  toobitApiForm?.addEventListener("submit", saveToobitCredentials);
+  btnDisconnectToobit?.addEventListener("click", disconnectToobit);
+  btnActivateDemoMode?.addEventListener("click", activateDemoMode);
+
+  // Flash Close Listeners
+  btnSimpleFlashClose?.addEventListener("click", executeFlashClose);
+  btnProFlashClose?.addEventListener("click", executeFlashClose);
+
+  // Simulation Listeners
+  btnSimpleSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
+  btnSimpleSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
+  btnProSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
+  btnProSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
+
+  // Start periodic polling for positions (every 4 seconds)
+  fetchToobitStatus();
+  fetchToobitPositions();
+  if (toobitPollInterval) clearInterval(toobitPollInterval);
+  toobitPollInterval = setInterval(() => {
+    fetchToobitPositions();
+  }, 4000);
+}
+
+// --------------------------------------------------------
+// Bootstrap Application
+// --------------------------------------------------------
+window.addEventListener("DOMContentLoaded", async () => {
+  initChart();
+  await loadKlines(currentSymbol, currentInterval);
+  connectWebSocket();
+  await loadHistory();
+  setupAutoAnalyze();
+  initToobitManager();
+  setMode(currentMode);
+  lucide.createIcons();
+  setTimeout(triggerAnalyze, 800);
+});
+
