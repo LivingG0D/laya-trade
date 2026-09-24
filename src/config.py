@@ -12,9 +12,15 @@ BIN_DIR.mkdir(parents=True, exist_ok=True)
 
 # Default Asset & Exchange
 DEFAULT_EXCHANGE = "Toobit"
-DEFAULT_SYMBOL = "1000PEPEUSDT.P"
+DEFAULT_SYMBOL = "BTCUSDT.P"
 
 SUPPORTED_SYMBOLS = [
+    # Major Mega Caps (Default)
+    "BTCUSDT.P",
+    "ETHUSDT.P",
+    "SOLUSDT.P",
+    "BNBUSDT.P",
+    "XRPUSDT.P",
     # Top Trending Memes
     "1000PEPEUSDT.P",
     "DOGEUSDT.P",
@@ -25,12 +31,6 @@ SUPPORTED_SYMBOLS = [
     "POPCATUSDT.P",
     "NEIROUSDT.P",
     "TURBOUSDT.P",
-    # Major Mega Caps
-    "BTCUSDT.P",
-    "ETHUSDT.P",
-    "SOLUSDT.P",
-    "BNBUSDT.P",
-    "XRPUSDT.P",
     # High-Performance Layer 1 & 2
     "SUIUSDT.P",
     "AVAXUSDT.P",

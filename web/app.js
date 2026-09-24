@@ -24,7 +24,7 @@ let bbUpperSeries = null;
 let bbLowerSeries = null;
 let bbMiddleSeries = null;
 
-let currentSymbol = "1000PEPEUSDT.P";
+let currentSymbol = "BTCUSDT.P";
 let currentInterval = "5m";
 let ws = null;
 let autoAnalyzeTimer = null;

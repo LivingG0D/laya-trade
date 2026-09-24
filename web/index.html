@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0b0e14">
   <meta name="description" content="Laya AI — real-time crypto perpetual futures chart analyzer with Laya System-1 signals, position management and Toobit integration.">
-  <title>Laya Crypto AI Trade Analyzer — 1000PEPEUSDT.P (Toobit)</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐸</text></svg>">
+  <title>Laya Crypto AI Trade Analyzer — BTCUSDT.P (Toobit)</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>₿</text></svg>">
   
   <!-- Modern Typography Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -51,8 +51,8 @@
         <div class="asset-selector-wrap" id="coinSelectorWrap">
           <!-- Clean TradingView-style Coin Selector Trigger Button -->
           <button type="button" id="coinSelectorBtn" class="coin-selector-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="Search and select trading coin" title="Search coin (Press / or Ctrl+K)">
-            <span class="coin-btn-icon" id="coinBtnIcon">🐸</span>
-            <span class="coin-btn-symbol" id="coinBtnSymbol">1000PEPEUSDT.P</span>
+            <span class="coin-btn-icon" id="coinBtnIcon">₿</span>
+            <span class="coin-btn-symbol" id="coinBtnSymbol">BTCUSDT.P</span>
             <span class="coin-btn-badge">Toobit</span>
             <i data-lucide="search" class="coin-btn-search-icon"></i>
           </button>
@@ -60,8 +60,15 @@
           <!-- Hidden select to guarantee 100% backward compatibility with all existing scripts -->
           <label for="symbolSelect" class="sr-only">Select Perpetual Market</label>
           <select id="symbolSelect" class="sr-only" aria-hidden="true" tabindex="-1">
+            <optgroup label="👑 Major Mega Caps (Default)">
+              <option value="BTCUSDT.P" selected>₿ BTCUSDT.P (Toobit)</option>
+              <option value="ETHUSDT.P">Ξ ETHUSDT.P (Toobit)</option>
+              <option value="SOLUSDT.P">◎ SOLUSDT.P (Toobit)</option>
+              <option value="BNBUSDT.P">🟡 BNBUSDT.P (Toobit)</option>
+              <option value="XRPUSDT.P">✕ XRPUSDT.P (Toobit)</option>
+            </optgroup>
             <optgroup label="🔥 Top Meme Coins">
-              <option value="1000PEPEUSDT.P" selected>🐸 1000PEPEUSDT.P (Toobit)</option>
+              <option value="1000PEPEUSDT.P">🐸 1000PEPEUSDT.P (Toobit)</option>
               <option value="DOGEUSDT.P">Ð DOGEUSDT.P (Toobit)</option>
               <option value="1000SHIBUSDT.P">🐕 1000SHIBUSDT.P (Toobit)</option>
               <option value="1000BONKUSDT.P">🦴 1000BONKUSDT.P (Toobit)</option>
@@ -70,13 +77,6 @@
               <option value="POPCATUSDT.P">🐱 POPCATUSDT.P (Toobit)</option>
               <option value="NEIROUSDT.P">🐶 NEIROUSDT.P (Toobit)</option>
               <option value="TURBOUSDT.P">🏎️ TURBOUSDT.P (Toobit)</option>
-            </optgroup>
-            <optgroup label="👑 Major Mega Caps">
-              <option value="BTCUSDT.P">₿ BTCUSDT.P (Toobit)</option>
-              <option value="ETHUSDT.P">Ξ ETHUSDT.P (Toobit)</option>
-              <option value="SOLUSDT.P">◎ SOLUSDT.P (Toobit)</option>
-              <option value="BNBUSDT.P">🟡 BNBUSDT.P (Toobit)</option>
-              <option value="XRPUSDT.P">✕ XRPUSDT.P (Toobit)</option>
             </optgroup>
             <optgroup label="⚡ Layer 1 & Layer 2">
               <option value="SUIUSDT.P">💧 SUIUSDT.P (Toobit)</option>
@@ -206,7 +206,7 @@
         <!-- Chart HUD Bar -->
         <div class="chart-header-hud">
           <div class="legend-hud" id="legendHud">
-            <span class="symbol-tag" id="hudSymbol">1000PEPEUSDT.P</span>
+            <span class="symbol-tag" id="hudSymbol">BTCUSDT.P</span>
             <span class="tf-tag" id="hudInterval">5m</span>
             <span class="hud-item hide-on-tiny">O: <strong id="hudO">--</strong></span>
             <span class="hud-item hide-on-tiny">H: <strong id="hudH">--</strong></span>
@@ -279,7 +279,7 @@
           <div class="pos-hud-left">
             <span class="pos-hud-side long" id="posHudSide">LONG 10x</span>
             <div class="pos-hud-info">
-              <span class="pos-hud-sym" id="posHudSymbol">1000PEPEUSDT.P</span>
+              <span class="pos-hud-sym" id="posHudSymbol">BTCUSDT.P</span>
               <span class="pos-hud-entry" id="posHudEntry">Entry: $0.004180</span>
             </div>
           </div>
@@ -350,7 +350,7 @@
             <!-- Live Position Summary -->
             <div class="pos-live" data-pos="live">
               <div class="pos-identity">
-                <span class="pos-symbol" data-pos="symbol">1000PEPE</span>
+                <span class="pos-symbol" data-pos="symbol">BTC</span>
                 <span class="pos-badge long" id="simplePosBadge" data-pos="side">LONG (Demo)</span>
                 <span class="badge-mini badge-demo" id="simplePosModeBadge" data-pos="mode">Demo</span>
               </div>
@@ -637,7 +637,7 @@
             <!-- Position Summary -->
             <div class="pos-live" data-pos="live">
               <div class="pos-identity">
-                <span class="pos-symbol" id="proPosSym" data-pos="symbol">1000PEPE</span>
+                <span class="pos-symbol" id="proPosSym" data-pos="symbol">BTC</span>
                 <span class="pos-badge long" id="proPosSideBadge" data-pos="side">LONG 10x</span>
                 <span class="badge-mini badge-demo" id="proPosModeBadge" data-pos="mode">Demo</span>
               </div>
@@ -962,8 +962,8 @@
       <!-- Category Filter Tabs -->
       <div class="coin-modal-tabs" role="tablist">
         <button type="button" class="coin-tab-btn active" data-category="all">All (32)</button>
-        <button type="button" class="coin-tab-btn" data-category="meme">🔥 Meme</button>
         <button type="button" class="coin-tab-btn" data-category="major">👑 Major</button>
+        <button type="button" class="coin-tab-btn" data-category="meme">🔥 Meme</button>
         <button type="button" class="coin-tab-btn" data-category="l1">⚡ L1/L2</button>
         <button type="button" class="coin-tab-btn" data-category="ai">🤖 AI/Infra</button>
       </div>

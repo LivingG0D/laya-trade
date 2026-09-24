@@ -3,6 +3,13 @@
 // ========================================================
 
 export const COIN_LIST = [
+  // Major Mega Caps (Top Default)
+  { symbol: "BTCUSDT.P", name: "Bitcoin", icon: "₿", category: "major", catName: "Major", badge: "Core" },
+  { symbol: "ETHUSDT.P", name: "Ethereum", icon: "Ξ", category: "major", catName: "Major", badge: "Core" },
+  { symbol: "SOLUSDT.P", name: "Solana", icon: "◎", category: "major", catName: "Major", badge: "Top" },
+  { symbol: "BNBUSDT.P", name: "BNB", icon: "🟡", category: "major", catName: "Major", badge: "" },
+  { symbol: "XRPUSDT.P", name: "XRP", icon: "✕", category: "major", catName: "Major", badge: "" },
+
   // Top Meme Coins
   { symbol: "1000PEPEUSDT.P", name: "Pepe", icon: "🐸", category: "meme", catName: "Meme", badge: "Hot" },
   { symbol: "DOGEUSDT.P", name: "Dogecoin", icon: "Ð", category: "meme", catName: "Meme", badge: "Top" },
@@ -13,13 +20,6 @@ export const COIN_LIST = [
   { symbol: "POPCATUSDT.P", name: "Popcat", icon: "🐱", category: "meme", catName: "Meme", badge: "" },
   { symbol: "NEIROUSDT.P", name: "Neiro", icon: "🐶", category: "meme", catName: "Meme", badge: "New" },
   { symbol: "TURBOUSDT.P", name: "Turbo", icon: "🏎️", category: "meme", catName: "Meme", badge: "AI Meme" },
-
-  // Major Mega Caps
-  { symbol: "BTCUSDT.P", name: "Bitcoin", icon: "₿", category: "major", catName: "Major", badge: "Core" },
-  { symbol: "ETHUSDT.P", name: "Ethereum", icon: "Ξ", category: "major", catName: "Major", badge: "Core" },
-  { symbol: "SOLUSDT.P", name: "Solana", icon: "◎", category: "major", catName: "Major", badge: "Top" },
-  { symbol: "BNBUSDT.P", name: "BNB", icon: "🟡", category: "major", catName: "Major", badge: "" },
-  { symbol: "XRPUSDT.P", name: "XRP", icon: "✕", category: "major", catName: "Major", badge: "" },
 
   // Layer 1 & Layer 2
   { symbol: "SUIUSDT.P", name: "Sui", icon: "💧", category: "l1", catName: "L1/L2", badge: "Vol" },
@@ -164,7 +164,7 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
   function renderList() {
     if (!listContainer) return;
     const filtered = getFilteredCoins();
-    const currentActive = getActiveSymbol ? getActiveSymbol() : (nativeSelect ? nativeSelect.value : "1000PEPEUSDT.P");
+    const currentActive = getActiveSymbol ? getActiveSymbol() : (nativeSelect ? nativeSelect.value : "BTCUSDT.P");
 
     if (countDisplay) {
       if (searchQuery) {
@@ -190,8 +190,8 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
     let html = "";
     if (!searchQuery && activeCategory === "all") {
       const categories = [
-        { id: "meme", title: "🔥 Top Meme Coins" },
         { id: "major", title: "👑 Major Mega Caps" },
+        { id: "meme", title: "🔥 Top Meme Coins" },
         { id: "l1", title: "⚡ Layer 1 & Layer 2" },
         { id: "ai", title: "🤖 AI & Infrastructure" }
       ];
@@ -386,7 +386,7 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
   });
 
   // Initial display setup
-  const initSym = getActiveSymbol ? getActiveSymbol() : (nativeSelect ? nativeSelect.value : "1000PEPEUSDT.P");
+  const initSym = getActiveSymbol ? getActiveSymbol() : (nativeSelect ? nativeSelect.value : "BTCUSDT.P");
   updateTriggerDisplay(initSym);
 
   return {
