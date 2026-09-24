@@ -48,18 +48,59 @@
           <h1 class="brand-title">Laya Trade</h1>
         </div>
 
-        <div class="asset-selector-wrap">
+        <div class="asset-selector-wrap" id="coinSelectorWrap">
+          <!-- Clean TradingView-style Coin Selector Trigger Button -->
+          <button type="button" id="coinSelectorBtn" class="coin-selector-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="Search and select trading coin" title="Search coin (Press / or Ctrl+K)">
+            <span class="coin-btn-icon" id="coinBtnIcon">🐸</span>
+            <span class="coin-btn-symbol" id="coinBtnSymbol">1000PEPEUSDT.P</span>
+            <span class="coin-btn-badge">Toobit</span>
+            <i data-lucide="search" class="coin-btn-search-icon"></i>
+          </button>
+
+          <!-- Hidden select to guarantee 100% backward compatibility with all existing scripts -->
           <label for="symbolSelect" class="sr-only">Select Perpetual Market</label>
-          <div class="select-styled-wrap">
-            <select id="symbolSelect" class="symbol-dropdown" aria-label="Select Trading Symbol">
+          <select id="symbolSelect" class="sr-only" aria-hidden="true" tabindex="-1">
+            <optgroup label="🔥 Top Meme Coins">
               <option value="1000PEPEUSDT.P" selected>🐸 1000PEPEUSDT.P (Toobit)</option>
+              <option value="DOGEUSDT.P">Ð DOGEUSDT.P (Toobit)</option>
+              <option value="1000SHIBUSDT.P">🐕 1000SHIBUSDT.P (Toobit)</option>
+              <option value="1000BONKUSDT.P">🦴 1000BONKUSDT.P (Toobit)</option>
+              <option value="1000FLOKIUSDT.P">⚔️ 1000FLOKIUSDT.P (Toobit)</option>
+              <option value="WIFUSDT.P">🧢 WIFUSDT.P (Toobit)</option>
+              <option value="POPCATUSDT.P">🐱 POPCATUSDT.P (Toobit)</option>
+              <option value="NEIROUSDT.P">🐶 NEIROUSDT.P (Toobit)</option>
+              <option value="TURBOUSDT.P">🏎️ TURBOUSDT.P (Toobit)</option>
+            </optgroup>
+            <optgroup label="👑 Major Mega Caps">
               <option value="BTCUSDT.P">₿ BTCUSDT.P (Toobit)</option>
               <option value="ETHUSDT.P">Ξ ETHUSDT.P (Toobit)</option>
               <option value="SOLUSDT.P">◎ SOLUSDT.P (Toobit)</option>
-              <option value="DOGEUSDT.P">Ð DOGEUSDT.P (Toobit)</option>
-            </select>
-            <i data-lucide="chevron-down" class="select-chevron"></i>
-          </div>
+              <option value="BNBUSDT.P">🟡 BNBUSDT.P (Toobit)</option>
+              <option value="XRPUSDT.P">✕ XRPUSDT.P (Toobit)</option>
+            </optgroup>
+            <optgroup label="⚡ Layer 1 & Layer 2">
+              <option value="SUIUSDT.P">💧 SUIUSDT.P (Toobit)</option>
+              <option value="AVAXUSDT.P">🔺 AVAXUSDT.P (Toobit)</option>
+              <option value="ADAUSDT.P">₳ ADAUSDT.P (Toobit)</option>
+              <option value="NEARUSDT.P">Ⓝ NEARUSDT.P (Toobit)</option>
+              <option value="TONUSDT.P">💎 TONUSDT.P (Toobit)</option>
+              <option value="ARBUSDT.P">🔵 ARBUSDT.P (Toobit)</option>
+              <option value="OPUSDT.P">🔴 OPUSDT.P (Toobit)</option>
+              <option value="APTUSDT.P">🌐 APTUSDT.P (Toobit)</option>
+              <option value="SEIUSDT.P">🔴 SEIUSDT.P (Toobit)</option>
+              <option value="DOTUSDT.P">● DOTUSDT.P (Toobit)</option>
+              <option value="LTCUSDT.P">Ł LTCUSDT.P (Toobit)</option>
+            </optgroup>
+            <optgroup label="🤖 AI & Infrastructure">
+              <option value="TAOUSDT.P">🧠 TAOUSDT.P (Toobit)</option>
+              <option value="FETUSDT.P">🤖 FETUSDT.P (Toobit)</option>
+              <option value="RENDERUSDT.P">🎨 RENDERUSDT.P (Toobit)</option>
+              <option value="LINKUSDT.P">🔗 LINKUSDT.P (Toobit)</option>
+              <option value="TIAUSDT.P">🧱 TIAUSDT.P (Toobit)</option>
+              <option value="INJUSDT.P">⚡ INJUSDT.P (Toobit)</option>
+              <option value="KASUSDT.P">🪙 KASUSDT.P (Toobit)</option>
+            </optgroup>
+          </select>
         </div>
 
         <div class="timeframe-group" role="group" aria-label="Timeframe Selection">
@@ -76,9 +117,8 @@
           <div class="metric-item main-price-box">
             <span class="metric-label">Live Price</span>
             <div class="price-val-wrap">
-              <span id="livePrice" class="metric-value price-up">--</span>
-              <span id="priceFlash" class="price-flash-indicator"></span>
-            </div>
+          <span id="livePrice" class="metric-value price-up">--</span>
+        </div>
           </div>
           <div class="metric-item">
             <span class="metric-label">24h Change</span>
@@ -421,7 +461,7 @@
               <div class="simple-step-item">
                 <div class="step-num">1</div>
                 <div class="step-info">
-                  <span class="step-label">ENTRY (Market Price)</span>
+                  <span class="step-label">Entry (Market Price)</span>
                   <span class="step-value" id="simpleEntryPrice">--</span>
                   <span class="step-desc">Enter trade around this price</span>
                 </div>
@@ -430,7 +470,7 @@
               <div class="simple-step-item profit-step">
                 <div class="step-num">2</div>
                 <div class="step-info">
-                  <span class="step-label">TAKE PROFIT (Target Goal)</span>
+                  <span class="step-label">Take Profit Target</span>
                   <span class="step-value" id="simpleTakeProfit">--</span>
                   <span class="step-desc" id="simpleTpDesc">Sell here to lock in your profit!</span>
                 </div>
@@ -439,7 +479,7 @@
               <div class="simple-step-item be-step">
                 <div class="step-num">🛡️</div>
                 <div class="step-info">
-                  <span class="step-label">BREAK-EVEN SHIELD (+1.0R)</span>
+                  <span class="step-label">Break-Even Trigger (+1.0R)</span>
                   <span class="step-value" id="simpleBreakEven">--</span>
                   <span class="step-desc" id="simpleBeDesc">When price hits here, move Stop Loss to Entry for a 100% Risk-Free trade!</span>
                 </div>
@@ -448,7 +488,7 @@
               <div class="simple-step-item safety-step">
                 <div class="step-num">3</div>
                 <div class="step-info">
-                  <span class="step-label">SAFETY STOP LOSS (Protection)</span>
+                  <span class="step-label">Protective Stop Loss</span>
                   <span class="step-value" id="simpleStopLoss">--</span>
                   <span class="step-desc" id="simpleSlDesc">Safety exit if price moves against you</span>
                 </div>
@@ -896,6 +936,56 @@
   </div>
 
   <!-- ============================================== -->
+  <!-- COIN / SYMBOL SEARCH MODAL (TRADINGVIEW STYLE) -->
+  <!-- ============================================== -->
+  <div id="coinSearchModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="coinSearchTitle">
+    <div class="modal-card coin-search-modal-card">
+      <div class="coin-modal-search-bar">
+        <i data-lucide="search" class="coin-modal-search-icon"></i>
+        <input
+          type="text"
+          id="coinSearchInput"
+          class="coin-modal-search-input"
+          placeholder="Search coin or pair (e.g. BTC, ETH, SOL, PEPE, DOGE)..."
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Search trading coins"
+        />
+        <button type="button" id="coinSearchClear" class="coin-modal-clear-btn hide" aria-label="Clear search">
+          <i data-lucide="x"></i>
+        </button>
+        <button type="button" id="btnCloseCoinSearch" class="modal-close-btn" aria-label="Close Coin Search Modal">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <!-- Category Filter Tabs -->
+      <div class="coin-modal-tabs" role="tablist">
+        <button type="button" class="coin-tab-btn active" data-category="all">All (32)</button>
+        <button type="button" class="coin-tab-btn" data-category="meme">🔥 Meme</button>
+        <button type="button" class="coin-tab-btn" data-category="major">👑 Major</button>
+        <button type="button" class="coin-tab-btn" data-category="l1">⚡ L1/L2</button>
+        <button type="button" class="coin-tab-btn" data-category="ai">🤖 AI/Infra</button>
+      </div>
+
+      <!-- Coin List Container -->
+      <div id="coinListContainer" class="coin-modal-list" role="listbox">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="coin-modal-footer">
+        <span id="coinCountDisplay" class="coin-modal-count">32 perpetual pairs</span>
+        <div class="coin-modal-hints">
+          <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
+          <span><kbd>↵</kbd> select</span>
+          <span><kbd>ESC</kbd> close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================== -->
   <!-- TOOBIT API CONNECTION MODAL -->
   <!-- ============================================== -->
   <div id="toobitModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="toobitModalTitle">
@@ -1014,7 +1104,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script type="module" src="/static/app.js"></script>
   <script>
     lucide.createIcons();
   </script>

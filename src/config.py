@@ -15,16 +15,52 @@ DEFAULT_EXCHANGE = "Toobit"
 DEFAULT_SYMBOL = "1000PEPEUSDT.P"
 
 SUPPORTED_SYMBOLS = [
+    # Top Trending Memes
     "1000PEPEUSDT.P",
+    "DOGEUSDT.P",
+    "1000SHIBUSDT.P",
+    "1000BONKUSDT.P",
+    "1000FLOKIUSDT.P",
+    "WIFUSDT.P",
+    "POPCATUSDT.P",
+    "NEIROUSDT.P",
+    "TURBOUSDT.P",
+    # Major Mega Caps
     "BTCUSDT.P",
     "ETHUSDT.P",
     "SOLUSDT.P",
-    "DOGEUSDT.P",
+    "BNBUSDT.P",
+    "XRPUSDT.P",
+    # High-Performance Layer 1 & 2
+    "SUIUSDT.P",
+    "AVAXUSDT.P",
+    "ADAUSDT.P",
+    "NEARUSDT.P",
+    "TONUSDT.P",
+    "ARBUSDT.P",
+    "OPUSDT.P",
+    "APTUSDT.P",
+    "SEIUSDT.P",
+    "DOTUSDT.P",
+    "LTCUSDT.P",
+    # AI & Compute & Infrastructure
+    "TAOUSDT.P",
+    "FETUSDT.P",
+    "RENDERUSDT.P",
+    "LINKUSDT.P",
+    "TIAUSDT.P",
+    "INJUSDT.P",
+    "KASUSDT.P",
+    # Toobit Swap Format Aliases
     "1000PEPE-SWAP-USDT",
     "BTC-SWAP-USDT",
     "ETH-SWAP-USDT",
     "SOL-SWAP-USDT",
-    "DOGE-SWAP-USDT"
+    "DOGE-SWAP-USDT",
+    "XRP-SWAP-USDT",
+    "SUI-SWAP-USDT",
+    "WIF-SWAP-USDT",
+    "1000SHIB-SWAP-USDT"
 ]
 
 DEFAULT_TIMEFRAME = "5m"

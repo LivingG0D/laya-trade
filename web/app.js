@@ -2,7 +2,19 @@
 // LAYA CRYPTO TRADINGVIEW CHART ANALYZER — APP.JS (CLEAN & DEDUPLICATED)
 // ========================================================
 
+import { formatPrice, formatCompact, formatTimestamp } from "./js/format.js";
+import { showToast, playSignalChime, toggleAudioEnabled } from "./js/feedback.js";
+import {
+  initToobitManager,
+  closeToobitModal,
+  isToobitModalOpen,
+  fetchToobitPositions,
+  handlePositionTick,
+} from "./js/toobit.js";
+import { initCoinSearch, getCoinMetadata } from "./js/coin_search.js";
+
 let chart = null;
+let coinSearchManager = null;
 let candleSeries = null;
 let volumeSeries = null;
 let ema9Series = null;
@@ -22,10 +34,11 @@ let lastAnalyzedCandleTime = 0;
 let lastKnownPrice = null;
 let currentSignal = null;
 let currentLatestTelemetry = null;
-let audioEnabled = true;
 let currentCalcAmount = 500;
 let rawSignalHistory = [];
 let activeHistoryFilter = "all";
+let activeKlineRequestId = 0;
+let lastCandleBarTime = 0;
 
 // DOM Elements — Top Nav
 const symbolSelect = document.getElementById("symbolSelect");
@@ -40,7 +53,6 @@ const btnFitChart = document.getElementById("btnFitChart");
 const btnFullscreenChart = document.getElementById("btnFullscreenChart");
 const btnAudioToggle = document.getElementById("btnAudioToggle");
 const audioIcon = document.getElementById("audioIcon");
-const toastContainer = document.getElementById("toastContainer");
 const chartLoading = document.getElementById("chartLoading");
 
 // On-Chart Floating Position HUD Elements
@@ -50,7 +62,6 @@ const posHudSymbol = document.getElementById("posHudSymbol");
 const posHudEntry = document.getElementById("posHudEntry");
 const posHudPnl = document.getElementById("posHudPnl");
 const posHudLiq = document.getElementById("posHudLiq");
-const btnHudFlashClose = document.getElementById("btnHudFlashClose");
 
 // Mode Switch Elements
 const btnSimpleMode = document.getElementById("btnSimpleMode");
@@ -67,7 +78,6 @@ const low24hEl = document.getElementById("low24h");
 const volume24hEl = document.getElementById("volume24h");
 const wsStatusText = document.getElementById("wsStatusText");
 const statusDot = document.querySelector(".status-dot");
-const priceFlash = document.getElementById("priceFlash");
 
 // HUD Elements
 const hudSymbol = document.getElementById("hudSymbol");
@@ -191,121 +201,8 @@ const mobileTabButtons = document.querySelectorAll(".mobile-tab-btn");
 const mobileTabSignalPill = document.getElementById("mobileTabSignalPill");
 const mobileTabHistoryCount = document.getElementById("mobileTabHistoryCount");
 
-// ========================================================
-// Toobit & Positions Elements
-// ========================================================
-const btnToobitConnect = document.getElementById("btnToobitConnect");
-const toobitNavStatus = document.getElementById("toobitNavStatus");
-const toobitModal = document.getElementById("toobitModal");
-const btnCloseToobitModal = document.getElementById("btnCloseToobitModal");
-const modalStatusDot = document.getElementById("modalStatusDot");
-const modalStatusText = document.getElementById("modalStatusText");
-const modalStatusSub = document.getElementById("modalStatusSub");
-const modalAvailableBal = document.getElementById("modalAvailableBal");
-const tabModeLive = document.getElementById("tabModeLive");
-const tabModeDemo = document.getElementById("tabModeDemo");
-const tabContentLive = document.getElementById("tabContentLive");
-const tabContentDemo = document.getElementById("tabContentDemo");
-const toobitApiForm = document.getElementById("toobitApiForm");
-const toobitApiKey = document.getElementById("toobitApiKey");
-const toobitApiSecret = document.getElementById("toobitApiSecret");
-const btnToggleSecret = document.getElementById("btnToggleSecret");
-const eyeIcon = document.getElementById("eyeIcon");
-const btnSaveToobitKeys = document.getElementById("btnSaveToobitKeys");
-const btnDisconnectToobit = document.getElementById("btnDisconnectToobit");
-const btnActivateDemoMode = document.getElementById("btnActivateDemoMode");
-const toobitConnectError = document.getElementById("toobitConnectError");
-const toobitConnectErrorText = document.getElementById("toobitConnectErrorText");
-
-// Simple Mode Position Elements
-const simplePositionCard = document.getElementById("simplePositionCard");
-const btnSimpleFlashClose = document.getElementById("btnSimpleFlashClose");
-const simpleAiSuggestionBox = document.getElementById("simpleAiSuggestionBox");
-const simpleSugBadge = document.getElementById("simpleSugBadge");
-const simpleSugHeadline = document.getElementById("simpleSugHeadline");
-const simpleSugText = document.getElementById("simpleSugText");
-const btnSimpleSimLong = document.getElementById("btnSimpleSimLong");
-const btnSimpleSimShort = document.getElementById("btnSimpleSimShort");
-
-// Pro Mode Position Elements
-const proPositionCard = document.getElementById("proPositionCard");
-const proPosModeBadge = document.getElementById("proPosModeBadge");
-const btnProFlashClose = document.getElementById("btnProFlashClose");
-const proSugBadge = document.getElementById("proSugBadge");
-const proAlignmentPill = document.getElementById("proAlignmentPill");
-const proSugSl = document.getElementById("proSugSl");
-const proSugTp = document.getElementById("proSugTp");
-const proSugText = document.getElementById("proSugText");
-const btnProSimLong = document.getElementById("btnProSimLong");
-const btnProSimShort = document.getElementById("btnProSimShort");
-
-let toobitAccountStatus = {
-  connected: false,
-  mode: "demo",
-  balance: {}
-};
-let activeToobitPositions = [];
-let currentPositionSuggestion = null;
-let toobitPollInterval = null;
-
-// --------------------------------------------------------
-// Toast Alert Notification System
-// --------------------------------------------------------
-function showToast(message, type = "info", duration = null) {
-  if (!toastContainer) return;
-  const timeoutMs = duration !== null ? duration : (type === "error" ? 5000 : 2500);
-
-  // Keep at most 4 toasts on screen
-  while (toastContainer.children.length >= 4) {
-    toastContainer.firstChild.remove();
-  }
-
-  const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
-  const span = document.createElement("span");
-  span.textContent = message;
-  toast.appendChild(span);
-  toastContainer.appendChild(toast);
-
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(-10px)";
-    toast.style.transition = "all 0.3s ease";
-    setTimeout(() => toast.remove(), 300);
-  }, timeoutMs);
-}
-
-// --------------------------------------------------------
-// Audio Synthesizer Chimes
-// --------------------------------------------------------
-function playSignalChime(isLong) {
-  if (!audioEnabled) return;
-  try {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) return;
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.type = "sine";
-    const now = ctx.currentTime;
-
-    if (isLong) {
-      osc.frequency.setValueAtTime(587.33, now); // D5
-      osc.frequency.exponentialRampToValueAtTime(880.0, now + 0.15); // A5
-    } else {
-      osc.frequency.setValueAtTime(659.25, now); // E5
-      osc.frequency.exponentialRampToValueAtTime(440.0, now + 0.15); // A4
-    }
-
-    gain.gain.setValueAtTime(0.08, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-    osc.start(now);
-    osc.stop(now + 0.3);
-  } catch (e) {}
-}
+// (Toasts + audio chimes live in ./js/feedback.js; the Toobit
+//  account & position controller lives in ./js/toobit.js)
 
 // --------------------------------------------------------
 // Initialize TradingView Lightweight Chart
@@ -467,32 +364,6 @@ function initChart() {
 }
 
 // --------------------------------------------------------
-// Formatters
-// --------------------------------------------------------
-function formatPrice(val) {
-  if (val === null || val === undefined || isNaN(val)) return "--";
-  if (val < 0.01) {
-    // 7 decimals is what the chart uses; trim trailing zeros for readability
-    return Number(val).toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
-  }
-  if (val < 1.0) return Number(val).toFixed(4);
-  return Number(val).toFixed(2);
-}
-
-function formatCompact(val) {
-  if (!val) return "0";
-  if (val >= 1e9) return (val / 1e9).toFixed(2) + "B";
-  if (val >= 1e6) return (val / 1e6).toFixed(2) + "M";
-  if (val >= 1e3) return (val / 1e3).toFixed(2) + "K";
-  return Number(val).toFixed(0);
-}
-
-function formatTimestamp(ts) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-// --------------------------------------------------------
 // Clean Deduplicated Marker Manager
 // --------------------------------------------------------
 function applyDeduplicatedMarkers(inputMarkers = null) {
@@ -535,7 +406,15 @@ function applyDeduplicatedMarkers(inputMarkers = null) {
 // Load Historical Klines & Indicators
 // --------------------------------------------------------
 async function loadKlines(symbol, interval) {
+  const requestId = ++activeKlineRequestId;
   if (chartLoading) chartLoading.classList.remove("hide");
+
+  // Clear any existing retry timeout
+  if (window._klineRetryTimeout) {
+    clearTimeout(window._klineRetryTimeout);
+    window._klineRetryTimeout = null;
+  }
+
   try {
     if (hudSymbol) hudSymbol.textContent = symbol;
     if (hudInterval) hudInterval.textContent = interval;
@@ -543,6 +422,11 @@ async function loadKlines(symbol, interval) {
     const resp = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=350`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+
+    // Stale response guard: discard if user switched symbol or interval during the fetch
+    if (requestId !== activeKlineRequestId || symbol !== currentSymbol || interval !== currentInterval) {
+      return;
+    }
 
     const series = data.series || [];
     if (series.length === 0) throw new Error("Empty series");
@@ -601,6 +485,11 @@ async function loadKlines(symbol, interval) {
     if (bbLowerSeries) bbLowerSeries.setData(bbLow);
     if (bbMiddleSeries) bbMiddleSeries.setData(bbMid);
 
+    // Track the latest bar timestamp to prevent out-of-order WebSocket ticks from crashing TV charts
+    if (candles.length > 0) {
+      lastCandleBarTime = candles[candles.length - 1].time;
+    }
+
     // Apply markers from history (Deduplicated & Cleaned)
     if (data.markers && data.markers.length > 0) {
       applyDeduplicatedMarkers(data.markers);
@@ -621,16 +510,23 @@ async function loadKlines(symbol, interval) {
     }
     load24hTicker(symbol);
   } catch (err) {
+    if (requestId !== activeKlineRequestId || symbol !== currentSymbol || interval !== currentInterval) {
+      return;
+    }
     console.error("Error loading klines:", err);
     showToast("Reconnecting to market data stream...", "warning");
     if (!window._klineRetryTimeout) {
       window._klineRetryTimeout = setTimeout(() => {
         window._klineRetryTimeout = null;
-        loadKlines(symbol, interval);
+        if (requestId === activeKlineRequestId && symbol === currentSymbol && interval === currentInterval) {
+          loadKlines(symbol, interval);
+        }
       }, 2500);
     }
   } finally {
-    if (chartLoading) chartLoading.classList.add("hide");
+    if (requestId === activeKlineRequestId && chartLoading) {
+      chartLoading.classList.add("hide");
+    }
   }
 }
 
@@ -1385,36 +1281,52 @@ function connectWebSocket() {
       if (msg.type === "candle_tick") {
         const c = msg.data;
         if (c.symbol === currentSymbol) {
-          candleSeries.update({
-            time: c.time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-          });
-
-          volumeSeries.update({
-            time: c.time,
-            value: c.volume,
-            color: c.close >= c.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
-          });
-
+          // Real-time price display & active position tracking updates regardless of timeframe
           updateLivePriceDisplay(c.close);
+          handlePositionTick(c.close);
 
-          // Live real-time update for open position lines & HUD
-          if (activeToobitPositions && activeToobitPositions.length > 0) {
-            activeToobitPositions[0].markPrice = c.close;
-            updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
-          }
+          // ONLY update candlestick and volume series if the tick matches active interval
+          if (!c.interval || c.interval === currentInterval) {
+            // Guard: Never feed a tick older than the last bar to TradingView Lightweight Charts
+            if (lastCandleBarTime > 0 && c.time < lastCandleBarTime) {
+              return;
+            }
 
-          if (c.is_closed && toggleAutoAnalyze?.checked && c.time !== lastAnalyzedCandleTime) {
-            lastAnalyzedCandleTime = c.time;
-            triggerAnalyze();
+            try {
+              candleSeries.update({
+                time: c.time,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+              });
+
+              volumeSeries.update({
+                time: c.time,
+                value: c.volume,
+                color: c.close >= c.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
+              });
+
+              lastCandleBarTime = Math.max(lastCandleBarTime, c.time);
+            } catch (updateErr) {
+              console.warn("Out-of-order candle tick update safely dropped:", updateErr);
+            }
+
+            if (c.is_closed && toggleAutoAnalyze?.checked && c.time !== lastAnalyzedCandleTime) {
+              lastAnalyzedCandleTime = c.time;
+              triggerAnalyze();
+            }
           }
         }
       } else if (msg.type === "new_signal") {
-        applySignal(msg.signal, msg.latest, msg.laya);
-        if (msg.latest) updateTelemetry(msg.latest);
+        const sig = msg.signal;
+        if (sig && sig.action !== "NEUTRAL") {
+          addSignalToHistory(sig);
+        }
+        if (sig && sig.symbol === currentSymbol && sig.interval === currentInterval) {
+          applySignal(msg.signal, msg.latest, msg.laya);
+          if (msg.latest) updateTelemetry(msg.latest);
+        }
       }
     } catch (e) {
       console.error("WS Parse error:", e);
@@ -1442,19 +1354,29 @@ async function triggerAnalyze() {
   analyzeInFlight = true;
   analyzeBtn.disabled = true;
   analyzeBtn.setAttribute("aria-busy", "true");
-  const originalText = analyzeBtn.innerHTML;
   analyzeBtn.innerHTML = `<span>Analyzing...</span>`;
 
+  const requestedSymbol = currentSymbol;
+  const requestedInterval = currentInterval;
+
   try {
-    const resp = await fetch(`/api/analyze?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`);
+    const resp = await fetch(`/api/analyze?symbol=${encodeURIComponent(requestedSymbol)}&interval=${requestedInterval}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+
+    // Stale guard: if user switched symbol or interval during analysis, do not overwrite dashboard/chart
+    if (requestedSymbol !== currentSymbol || requestedInterval !== currentInterval) {
+      return;
+    }
+
     applySignal(data.signal, data.latest, data.laya);
     if (data.latest) updateTelemetry(data.latest);
     showToast(`Laya Evaluated: ${data.signal.action} (${data.signal.confidence_pct}%)`, "success");
   } catch (err) {
-    console.error("Analysis failed:", err);
-    showToast("Analysis request failed. Please check connection.", "error");
+    if (requestedSymbol === currentSymbol && requestedInterval === currentInterval) {
+      console.error("Analysis failed:", err);
+      showToast("Analysis request failed. Please check connection.", "error");
+    }
   } finally {
     analyzeInFlight = false;
     analyzeBtn.disabled = false;
@@ -1581,7 +1503,7 @@ if (btnExportHistory) {
     }
     const headers = ["Time", "Symbol", "Interval", "Action", "Entry", "SL", "TP1", "TP2", "Confidence", "Latency"];
     const rows = rawSignalHistory.map((s) => [
-      new Date(s.timestamp * 1000).toISOString(),
+      new Date((s.timestamp || s.time || 0) > 1e11 ? (s.timestamp || s.time) : (s.timestamp || s.time || 0) * 1000).toISOString(),
       s.symbol,
       s.interval,
       s.action,
@@ -1608,13 +1530,28 @@ if (btnExportHistory) {
 // Event Listeners
 // --------------------------------------------------------
 symbolSelect.addEventListener("change", async (e) => {
-  currentSymbol = e.target.value;
+  const newSymbol = e.target.value;
+  if (newSymbol === currentSymbol) return;
+
+  currentSymbol = newSymbol;
+  coinSearchManager?.updateActiveCoinDisplay(currentSymbol);
+  lastCandleBarTime = 0;
+  lastAnalyzedCandleTime = 0;
+
+  if (window._klineRetryTimeout) {
+    clearTimeout(window._klineRetryTimeout);
+    window._klineRetryTimeout = null;
+  }
+
   clearPriceLines();
   clearPositionLines();
   if (chartPositionBadge) chartPositionBadge.classList.add("hide");
   chartMarkers = [];
   candleSeries?.setMarkers([]);
-  await fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" });
+
+  fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" })
+    .catch((err) => console.warn("/api/switch failed:", err));
+
   await loadKlines(currentSymbol, currentInterval);
   fetchToobitPositions();
   triggerAnalyze();
@@ -1622,13 +1559,28 @@ symbolSelect.addEventListener("change", async (e) => {
 
 tfButtons.forEach((btn) => {
   btn.addEventListener("click", async () => {
+    const newInterval = btn.getAttribute("data-interval");
+    if (newInterval === currentInterval) return;
+
     tfButtons.forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    currentInterval = btn.getAttribute("data-interval");
+    currentInterval = newInterval;
+    lastCandleBarTime = 0;
+    lastAnalyzedCandleTime = 0;
+
+    if (window._klineRetryTimeout) {
+      clearTimeout(window._klineRetryTimeout);
+      window._klineRetryTimeout = null;
+    }
+
     clearPriceLines();
     chartMarkers = [];
     candleSeries?.setMarkers([]);
-    await fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" });
+
+    // Fire stream resubscribe in background without blocking chart rendering
+    fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" })
+      .catch((err) => console.warn("/api/switch failed:", err));
+
     await loadKlines(currentSymbol, currentInterval);
     triggerAnalyze();
   });
@@ -1685,11 +1637,11 @@ document.addEventListener("fullscreenchange", () => {
 
 // Audio Alerts Toggle
 btnAudioToggle?.addEventListener("click", () => {
-  audioEnabled = !audioEnabled;
-  btnAudioToggle.classList.toggle("active", audioEnabled);
-  audioIcon?.setAttribute("data-lucide", audioEnabled ? "bell" : "bell-off");
+  const enabled = toggleAudioEnabled();
+  btnAudioToggle.classList.toggle("active", enabled);
+  audioIcon?.setAttribute("data-lucide", enabled ? "bell" : "bell-off");
   lucide.createIcons();
-  showToast(audioEnabled ? "Audio alerts enabled 🔔" : "Audio alerts muted 🔕", "info");
+  showToast(enabled ? "Audio alerts enabled 🔔" : "Audio alerts muted 🔕", "info");
 });
 
 // Keyboard Shortcuts
@@ -1697,9 +1649,9 @@ document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-  const modalOpen = toobitModal && !toobitModal.classList.contains("hide");
+  const modalOpen = isToobitModalOpen() || coinSearchManager?.isOpen?.();
 
-  // While the modal is open only Escape is handled (below)
+  // While any modal is open only Escape is handled (below)
   if (modalOpen && e.key !== "Escape") return;
 
   if (e.code === "Space") {
@@ -1715,6 +1667,7 @@ document.addEventListener("keydown", (e) => {
     if (tfButtons[idx]) tfButtons[idx].click();
   } else if (e.key === "Escape") {
     closeToobitModal();
+    coinSearchManager?.close();
   }
 });
 
@@ -1730,528 +1683,24 @@ function setupAutoAnalyze() {
   }, 20000); // Every 20 seconds
 }
 
-// ========================================================
-// TOOBIT ACCOUNT & POSITION MANAGEMENT CONTROLLER
-// ========================================================
-
-let lastFocusedBeforeModal = null;
-
-function showToobitConnectError(message) {
-  if (!toobitConnectError || !toobitConnectErrorText) return;
-  toobitConnectErrorText.textContent = message;
-  toobitConnectError.classList.remove("hide");
-  if (typeof lucide !== "undefined" && lucide.createIcons) {
-    lucide.createIcons();
-  }
-}
-
-function hideToobitConnectError() {
-  if (!toobitConnectError) return;
-  toobitConnectError.classList.add("hide");
-  if (toobitConnectErrorText) toobitConnectErrorText.textContent = "";
-}
-
-function openToobitModal() {
-  if (!toobitModal) return;
-  hideToobitConnectError();
-  lastFocusedBeforeModal = document.activeElement;
-  toobitModal.classList.remove("hide");
-  toobitModal.style.display = "flex";
-  fetchToobitStatus();
-  setTimeout(() => btnCloseToobitModal?.focus(), 50);
-}
-
-function closeToobitModal() {
-  if (!toobitModal || toobitModal.classList.contains("hide")) return;
-  hideToobitConnectError();
-  toobitModal.classList.add("hide");
-  toobitModal.style.display = "none";
-  if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
-    lastFocusedBeforeModal.focus();
-  }
-  lastFocusedBeforeModal = null;
-}
-
-// Keep keyboard focus inside the open modal
-toobitModal?.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab") return;
-  const focusables = Array.from(
-    toobitModal.querySelectorAll("button, input, select, textarea, a[href]")
-  ).filter((el) => !el.disabled && el.offsetParent !== null);
-  if (focusables.length === 0) return;
-
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault();
-    first.focus();
-  }
-});
-
-// Modal Tab Switcher
-tabModeLive?.addEventListener("click", () => {
-  hideToobitConnectError();
-  tabModeLive.classList.add("active");
-  tabModeLive.setAttribute("aria-selected", "true");
-  tabModeDemo?.classList.remove("active");
-  tabModeDemo?.setAttribute("aria-selected", "false");
-  tabContentLive?.classList.remove("hide");
-  tabContentLive?.classList.add("active");
-  tabContentDemo?.classList.add("hide");
-  tabContentDemo?.classList.remove("active");
-});
-
-tabModeDemo?.addEventListener("click", () => {
-  hideToobitConnectError();
-  tabModeDemo.classList.add("active");
-  tabModeDemo.setAttribute("aria-selected", "true");
-  tabModeLive?.classList.remove("active");
-  tabModeLive?.setAttribute("aria-selected", "false");
-  tabContentDemo?.classList.remove("hide");
-  tabContentDemo?.classList.add("active");
-  tabContentLive?.classList.add("hide");
-  tabContentLive?.classList.remove("active");
-});
-
-// Toggle Secret Eye
-btnToggleSecret?.addEventListener("click", () => {
-  if (toobitApiSecret) {
-    const isPassword = toobitApiSecret.type === "password";
-    toobitApiSecret.type = isPassword ? "text" : "password";
-    eyeIcon?.setAttribute("data-lucide", isPassword ? "eye-off" : "eye");
-    lucide.createIcons();
-  }
-});
-
-// Fetch Connection & Balance Status
-async function fetchToobitStatus() {
-  try {
-    const res = await fetch("/api/toobit/status");
-    if (!res.ok) return;
-    const data = await res.json();
-    toobitAccountStatus = data;
-
-    // Update Nav status pill
-    if (toobitNavStatus) {
-      toobitNavStatus.className = `toobit-nav-pill ${data.mode}`;
-      if (data.mode === "live") {
-        toobitNavStatus.textContent = "Live";
-      } else if (data.mode === "demo") {
-        toobitNavStatus.textContent = "Demo";
-      } else {
-        toobitNavStatus.textContent = "Offline";
-      }
-    }
-
-    // Update Modal Banner
-    if (modalStatusDot && modalStatusText && modalAvailableBal) {
-      modalStatusDot.className = `status-indicator-dot ${data.mode}`;
-      if (data.mode === "live") {
-        modalStatusText.textContent = "Live Toobit API Connected";
-        if (modalStatusSub) modalStatusSub.textContent = "Real futures funds active";
-        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
-      } else if (data.mode === "demo") {
-        modalStatusText.textContent = "Simulated Demo Mode Active";
-        if (modalStatusSub) modalStatusSub.textContent = "Trading with virtual $5,000 USDT";
-        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 5000).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
-      } else {
-        modalStatusText.textContent = "Not Connected";
-        if (modalStatusSub) modalStatusSub.textContent = "Enter API keys or use Demo Mode";
-        modalAvailableBal.textContent = "$0.00 USDT";
-      }
-    }
-
-    if (proPosModeBadge) {
-      proPosModeBadge.textContent = data.mode === "live" ? "Live" : "Demo";
-      proPosModeBadge.className = `badge-mini ${data.mode === "live" ? "badge-live" : "badge-demo"}`;
-    }
-  } catch (e) {
-    console.warn("Failed to fetch Toobit status:", e);
-  }
-}
-
-// Fetch Positions and AI Suggestions
-async function fetchToobitPositions() {
-  try {
-    const [posRes, sugRes] = await Promise.all([
-      fetch(`/api/toobit/positions?symbol=${encodeURIComponent(currentSymbol)}`),
-      fetch(`/api/toobit/suggestions?symbol=${encodeURIComponent(currentSymbol)}`)
-    ]);
-
-    let positions = [];
-    if (posRes.ok) {
-      const posData = await posRes.json();
-      positions = posData.positions || [];
-      activeToobitPositions = positions;
-    }
-
-    let suggestionData = null;
-    if (sugRes.ok) {
-      suggestionData = await sugRes.json();
-      currentPositionSuggestion = suggestionData.suggestion;
-    }
-
-    renderToobitPositions(positions, suggestionData?.suggestion);
-  } catch (e) {
-    console.warn("Failed to fetch Toobit positions/suggestions:", e);
-  }
-}
-
-// Fill one position card (Simple or Pro) from a Toobit position, or show its empty state
-function fillPositionCard(card, pos) {
-  if (!card) return;
-  const field = (name) => card.querySelector(`[data-pos="${name}"]`);
-  const live = field("live");
-  const empty = field("empty");
-  const flashClose = card.querySelector(".btn-flash-close");
-
-  if (!pos) {
-    live?.classList.add("hide");
-    empty?.classList.remove("hide");
-    if (flashClose) flashClose.style.display = "none";
-    return;
-  }
-
-  live?.classList.remove("hide");
-  empty?.classList.add("hide");
-  if (flashClose) flashClose.style.display = "inline-flex";
-
-  const isLong = String(pos.side || "LONG").toUpperCase() === "LONG";
-  const entry = Number(pos.entryPrice) || 0;
-  const mark = Number(pos.markPrice) || Number(lastKnownPrice) || entry;
-  const liq = Number(pos.liquidationPrice) || 0;
-  const qty = Number(pos.quantity) || 0;
-  const margin = Number(pos.margin) || 0;
-  const leverage = Number(pos.leverage) || 0;
-  const pnl = Number(pos.unrealizedPnl) || 0;
-  const pnlPct = Number(pos.pnlPercentage) || 0;
-  const profitable = pnl >= 0;
-  const money = (v) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-  const set = (name, text) => {
-    const el = field(name);
-    if (el) el.textContent = text;
-  };
-  const setPnl = (name, base, text) => {
-    const el = field(name);
-    if (el) {
-      el.textContent = text;
-      el.className = `${base} ${profitable ? "pnl-green" : "pnl-red"}`;
-    }
-  };
-
-  // Identity
-  set("symbol", pos.displaySymbol || pos.symbol || currentSymbol);
-  const sideEl = field("side");
-  if (sideEl) {
-    sideEl.textContent = leverage > 0 ? `${isLong ? "LONG" : "SHORT"} ${leverage}x` : isLong ? "LONG" : "SHORT";
-    sideEl.className = `pos-badge ${isLong ? "long" : "short"}`;
-  }
-  const modeEl = field("mode");
-  if (modeEl) {
-    const isLive = toobitAccountStatus.mode === "live";
-    modeEl.textContent = isLive ? "Live" : "Demo";
-    modeEl.className = `badge-mini ${isLive ? "badge-live" : "badge-demo"}`;
-  }
-
-  // PnL hero
-  const pnlAbs = Math.abs(pnl).toFixed(2);
-  const pctAbs = Math.abs(pnlPct).toFixed(1);
-  setPnl("pnl", "pos-hero-pnl", pnlAbs === "0.00" ? "$0.00" : `${pnl < 0 ? "-" : "+"}$${pnlAbs}`);
-  setPnl("pnlPct", "pos-hero-pct", pctAbs === "0.0" ? "0.0%" : `${pnlPct < 0 ? "-" : "+"}${pctAbs}%`);
-
-  // Stats
-  set("qty", qty.toLocaleString());
-  set("notional", money(qty * mark));
-  set("margin", money(margin));
-  set("lev", leverage > 0 ? `${leverage}x` : "--");
-  set("entryStat", entry > 0 ? `$${formatPrice(entry)}` : "--");
-  set("mark", mark > 0 ? `$${formatPrice(mark)}` : "--");
-  set("entry", entry > 0 ? `$${formatPrice(entry)}` : "--");
-  set("liq", liq > 0 ? `$${formatPrice(liq)}` : "--");
-
-  // Liquidation distance bar: liq sits at 0%, twice the entry distance at 100% (break-even at 50%)
-  const pin = field("pin");
-  const liqVal = field("liqDist");
-  if (liq > 0 && entry > 0) {
-    const span = Math.abs(2 * entry - liq - liq) || 1;
-    const rawPct = isLong ? ((mark - liq) / span) * 100 : ((liq - mark) / span) * 100;
-    const pct = Math.max(0, Math.min(100, rawPct));
-    if (pin) {
-      pin.style.left = `${pct}%`;
-      pin.className = `pos-risk-pin ${pct < 15 ? "danger" : pct < 50 ? "warn" : "safe"}`;
-    }
-    const distPct = mark > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
-    if (liqVal) {
-      liqVal.textContent = `${distPct.toFixed(1)}% away`;
-      // Colour tracks the price's position on the track, not the raw distance
-      // (a fresh 10x position always starts ~9% from liquidation)
-      liqVal.className = `pos-risk-val${pct < 15 ? " danger" : pct < 50 ? " warn" : ""}`;
-    }
-  } else {
-    if (pin) pin.style.left = "50%";
-    if (liqVal) {
-      liqVal.textContent = "n/a";
-      liqVal.className = "pos-risk-val";
-    }
-  }
-}
-
-// Render Positions in Simple & Pro Mode
-function renderToobitPositions(positions, suggestion) {
-  const activePos = positions && positions.length > 0 ? positions[0] : null;
-
-  // --- SIMPLE MODE RENDERING ---
-  if (simplePositionCard) {
-    fillPositionCard(simplePositionCard, activePos);
-
-    // Simple Mode AI Suggestion
-    if (suggestion) {
-      if (simpleSugBadge) {
-        simpleSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
-        simpleSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
-      }
-      if (simpleSugHeadline) simpleSugHeadline.textContent = suggestion.headline || "Evaluating Market...";
-      if (simpleSugText) simpleSugText.textContent = suggestion.suggestion || "Stand by for high-probability confluence setup.";
-    }
-  }
-
-  // --- PRO MODE RENDERING ---
-  if (proPositionCard) {
-    fillPositionCard(proPositionCard, activePos);
-
-    // Pro Mode AI Suggestion
-    if (suggestion) {
-      if (proSugBadge) {
-        proSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
-        proSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
-      }
-      if (proAlignmentPill) {
-        if (suggestion.alignment === "ALIGNED") {
-          proAlignmentPill.textContent = "Trend Aligned";
-          proAlignmentPill.className = "alignment-pill aligned";
-        } else if (suggestion.alignment === "OPPOSED") {
-          proAlignmentPill.textContent = "Trend Opposed / Risk";
-          proAlignmentPill.className = "alignment-pill opposed";
-        } else {
-          proAlignmentPill.textContent = "Neutral / Watch";
-          proAlignmentPill.className = "alignment-pill neutral";
-        }
-      }
-      if (proSugSl) {
-        proSugSl.textContent = suggestion.recommendedSl > 0 ? `$${suggestion.recommendedSl.toFixed(6)}` : "--";
-      }
-      if (proSugTp) {
-        proSugTp.textContent = suggestion.recommendedTp > 0 ? `$${suggestion.recommendedTp.toFixed(6)}` : "--";
-      }
-      if (proSugText) {
-        proSugText.textContent = suggestion.suggestion || "Monitoring live order book and tick flow...";
-      }
-    }
-  }
-
-  // --- CHART POSITION LINES & FLOATING HUD ---
-  updateChartPositionLines(positions, suggestion);
-}
-
-// Flash Close Execution
-async function executeFlashClose() {
-  try {
-    const symbolToClose = currentSymbol;
-    showToast(`⚡ Sending Flash Close market order for ${symbolToClose}...`, "info");
-    
-    const res = await fetch("/api/toobit/close", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol: symbolToClose })
-    });
-    const data = await res.json();
-    
-    if (data.success) {
-      showToast(data.message || `Position ${symbolToClose} successfully Flash Closed!`, "bull");
-      playSignalChime(true);
-      clearPositionLines();
-      if (chartPositionBadge) chartPositionBadge.classList.add("hide");
-    } else {
-      showToast(data.message || data.error || "Flash close failed", "error");
-    }
-
-    await fetchToobitPositions();
-    await fetchToobitStatus();
-  } catch (e) {
-    showToast(`Error executing flash close: ${e.message}`, "error");
-  }
-}
-
-// Demo Simulation
-async function simulateDemoTrade(side) {
-  try {
-    const res = await fetch("/api/toobit/demo/simulate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbol: currentSymbol,
-        side: side,
-        quantity: 100000,
-        entryPrice: lastKnownPrice || 0.00418,
-        leverage: 10
-      })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast(`Simulated ${side} 10x position opened for ${currentSymbol}!`, "bull");
-      playSignalChime(side === "LONG");
-    }
-    await fetchToobitPositions();
-  } catch (e) {
-    showToast(`Failed to simulate position: ${e.message}`, "error");
-  }
-}
-
-// Connect Live API
-async function saveToobitCredentials(e) {
-  e.preventDefault();
-  const apiKey = toobitApiKey?.value.trim();
-  const apiSecret = toobitApiSecret?.value.trim();
-
-  if (!apiKey || !apiSecret) {
-    showToobitConnectError("Please enter both Toobit API Key and Secret Key.");
-    showToast("Please enter both API Key and Secret Key.", "error");
-    return;
-  }
-
-  hideToobitConnectError();
-  showToast("Validating API credentials with Toobit...", "info");
-  if (btnSaveToobitKeys) {
-    btnSaveToobitKeys.disabled = true;
-    btnSaveToobitKeys.innerHTML = `<span>Validating...</span>`;
-  }
-
-  try {
-    const res = await fetch("/api/toobit/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        apiKey: apiKey,
-        apiSecret: apiSecret,
-        isDemo: false
-      })
-    });
-    const data = await res.json();
-
-    if (data.success) {
-      hideToobitConnectError();
-      showToast("Toobit Futures API Connected Successfully!", "bull");
-      closeToobitModal();
-      await fetchToobitStatus();
-      await fetchToobitPositions();
-    } else {
-      const errorMsg = data.message || data.error || data.detail || "Failed to validate Toobit API keys.";
-      showToobitConnectError(errorMsg);
-      showToast("Authentication Failed — see details in dialog", "error", 6000);
-    }
-  } catch (err) {
-    const errorMsg = `Connection error: ${err.message}`;
-    showToobitConnectError(errorMsg);
-    showToast(errorMsg, "error", 6000);
-  } finally {
-    if (btnSaveToobitKeys) {
-      btnSaveToobitKeys.disabled = false;
-      btnSaveToobitKeys.innerHTML = `<i data-lucide="check-circle"></i><span>Connect & Validate API</span>`;
-      lucide.createIcons();
-    }
-  }
-}
-
-// Disconnect
-async function disconnectToobit() {
-  try {
-    const res = await fetch("/api/toobit/disconnect", { method: "POST" });
-    const data = await res.json();
-    hideToobitConnectError();
-    showToast("Disconnected from Toobit.", "info");
-    if (toobitApiKey) toobitApiKey.value = "";
-    if (toobitApiSecret) toobitApiSecret.value = "";
-    await fetchToobitStatus();
-    await fetchToobitPositions();
-  } catch (e) {
-    showToast(`Disconnect error: ${e.message}`, "error");
-  }
-}
-
-// Activate Demo Mode
-async function activateDemoMode() {
-  try {
-    const res = await fetch("/api/toobit/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isDemo: true })
-    });
-    const data = await res.json();
-    hideToobitConnectError();
-    showToast("Demo Simulation Mode Activated ($5,000 USDT)!", "bull");
-    closeToobitModal();
-    await fetchToobitStatus();
-    await fetchToobitPositions();
-  } catch (e) {
-    showToast(`Error activating demo mode: ${e.message}`, "error");
-  }
-}
-
-// Initialize Toobit Listeners
-function initToobitManager() {
-  btnToobitConnect?.addEventListener("click", openToobitModal);
-  btnCloseToobitModal?.addEventListener("click", closeToobitModal);
-  
-  toobitModal?.addEventListener("click", (e) => {
-    if (e.target === toobitModal) closeToobitModal();
-  });
-
-  toobitApiKey?.addEventListener("input", hideToobitConnectError);
-  toobitApiSecret?.addEventListener("input", hideToobitConnectError);
-  toobitApiForm?.addEventListener("submit", saveToobitCredentials);
-  btnDisconnectToobit?.addEventListener("click", disconnectToobit);
-  btnActivateDemoMode?.addEventListener("click", activateDemoMode);
-
-  // Flash Close Listeners
-  btnSimpleFlashClose?.addEventListener("click", executeFlashClose);
-  btnProFlashClose?.addEventListener("click", executeFlashClose);
-  btnHudFlashClose?.addEventListener("click", executeFlashClose);
-
-  // Position Overlay Toggle Listener
-  togglePositionLines?.addEventListener("change", () => {
-    updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
-  });
-
-  // Simulation Listeners
-  btnSimpleSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
-  btnSimpleSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
-  btnProSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
-  btnProSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
-
-  // Start periodic polling for positions (every 8 seconds to prevent API flooding)
-  fetchToobitStatus();
-  fetchToobitPositions();
-  if (toobitPollInterval) clearInterval(toobitPollInterval);
-  toobitPollInterval = setInterval(() => {
-    if (document.hidden) return;
-    fetchToobitPositions();
-  }, 8000);
-}
-
 // --------------------------------------------------------
 // Bootstrap Application
 // --------------------------------------------------------
 window.addEventListener("DOMContentLoaded", async () => {
+  coinSearchManager = initCoinSearch({
+    getActiveSymbol: () => currentSymbol,
+  });
   initChart();
   await loadKlines(currentSymbol, currentInterval);
   connectWebSocket();
   await loadHistory();
   setupAutoAnalyze();
-  initToobitManager();
+  initToobitManager({
+    getSymbol: () => currentSymbol,
+    getFallbackPrice: () => lastKnownPrice,
+    updateChartPositionLines,
+    clearPositionLines,
+  });
   setMode(currentMode);
   lucide.createIcons();
   setTimeout(triggerAnalyze, 800);

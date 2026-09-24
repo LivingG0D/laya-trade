@@ -352,9 +352,23 @@ async def simulate_demo_position(req: ToobitSimulateRequest):
         toobit_client.set_credentials("", "", is_demo=True)
     
     entry_price = req.entryPrice
-    if not entry_price or entry_price <= 0:
+    try:
         ticker = await market_service.fetch_ticker_24h(symbol=req.symbol)
-        entry_price = float(ticker.get("last_price") or ticker.get("price", 0.0042))
+        real_price = float(ticker.get("last_price") or ticker.get("price") or 0)
+    except Exception:
+        real_price = 0.0
+
+    # Trust the client entry only if it's within 5% of this symbol's real
+    # price: the frontend's lastKnownPrice can be stale right after a symbol
+    # switch (cross-symbol race) and would otherwise open a demo position at
+    # a nonsense price scale (e.g. a PEPE position entered at $281).
+    if real_price > 0 and (
+        not entry_price or entry_price <= 0
+        or abs(entry_price - real_price) / real_price > 0.05
+    ):
+        entry_price = real_price
+    if not entry_price or entry_price <= 0:
+        entry_price = 0.0042
 
     pos = toobit_client.simulate_position(
         symbol=req.symbol,

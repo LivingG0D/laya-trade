@@ -34,8 +34,9 @@ class SignalGenerator:
         support = market_state.get("support", cur_price - atr)
         resistance = market_state.get("resistance", cur_price + atr)
 
-        # High beta / meme coin volatility adjustment (prevent stop-hunts on PEPE, DOGE, SHIB)
-        is_meme_or_high_vol = any(k in symbol for k in ["PEPE", "SHIB", "DOGE", "FLOKI", "BONK"]) or atr_pct > 1.5
+        # High beta / meme coin volatility adjustment (prevent stop-hunts on PEPE, DOGE, SHIB, WIF, BONK, etc.)
+        meme_keywords = ["PEPE", "SHIB", "DOGE", "FLOKI", "BONK", "WIF", "POPCAT", "NEIRO", "TURBO", "CAT"]
+        is_meme_or_high_vol = any(k in symbol for k in meme_keywords) or atr_pct > 1.5
         effective_atr_mult = self.atr_multiplier * 1.35 if is_meme_or_high_vol else self.atr_multiplier
 
         pos = laya_decision.get("position", "NEUTRAL_HOLD")

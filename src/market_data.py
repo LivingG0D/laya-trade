@@ -68,6 +68,7 @@ class MarketDataService:
         self._running = False
         self.current_symbol = DEFAULT_SYMBOL
         self.current_interval = DEFAULT_TIMEFRAME
+        self._stream_lock: asyncio.Lock = asyncio.Lock()
 
         # High-performance In-Memory Caching (eliminates redundant REST queries)
         self._klines_cache: Dict[str, tuple] = {}  # key -> (timestamp, List[Dict])
@@ -144,10 +145,10 @@ class MarketDataService:
         resp.raise_for_status()
         raw_klines = resp.json()
 
-        klines = []
+        klines_dict = {}
         for item in raw_klines:
             open_time_sec = int(item[0] // 1000)
-            klines.append({
+            klines_dict[open_time_sec] = {
                 "time": open_time_sec,
                 "open": float(item[1]),
                 "high": float(item[2]),
@@ -157,8 +158,8 @@ class MarketDataService:
                 "taker_buy_volume": float(item[9]) if len(item) > 9 else 0.0,
                 "trades": int(item[8]) if len(item) > 8 else 0,
                 "is_closed": True
-            })
-        klines.sort(key=lambda k: k["time"])
+            }
+        klines = [klines_dict[t] for t in sorted(klines_dict.keys())]
         return klines
 
     async def _fetch_binance_klines(self, symbol: str, interval: str, limit: int) -> List[Dict[str, Any]]:
@@ -173,10 +174,10 @@ class MarketDataService:
         resp.raise_for_status()
         raw_klines = resp.json()
 
-        klines = []
+        klines_dict = {}
         for item in raw_klines:
             open_time_sec = int(item[0] // 1000)
-            klines.append({
+            klines_dict[open_time_sec] = {
                 "time": open_time_sec,
                 "open": float(item[1]),
                 "high": float(item[2]),
@@ -186,8 +187,8 @@ class MarketDataService:
                 "taker_buy_volume": float(item[9]),
                 "trades": int(item[8]),
                 "is_closed": True
-            })
-        klines.sort(key=lambda k: k["time"])
+            }
+        klines = [klines_dict[t] for t in sorted(klines_dict.keys())]
         return klines
 
     async def fetch_ticker_24h(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
@@ -464,34 +465,36 @@ class MarketDataService:
 
     async def start_streaming(self, symbol: str = DEFAULT_SYMBOL, interval: str = DEFAULT_TIMEFRAME):
         """Start or restart the background WebSocket stream for symbol and interval."""
-        self.current_symbol = symbol.upper()
-        self.current_interval = interval
-        self._running = True
+        async with self._stream_lock:
+            self.current_symbol = symbol.upper()
+            self.current_interval = interval
+            self._running = True
 
-        if self._ws_task and not self._ws_task.done():
-            self._ws_task.cancel()
-            try:
-                await self._ws_task
-            except asyncio.CancelledError:
-                pass
+            if self._ws_task and not self._ws_task.done():
+                self._ws_task.cancel()
+                try:
+                    await self._ws_task
+                except asyncio.CancelledError:
+                    pass
 
-        if self.exchange == "Toobit":
-            self._ws_task = asyncio.create_task(self._toobit_stream_loop())
-        else:
-            self._ws_task = asyncio.create_task(self._binance_stream_loop())
+            if self.exchange == "Toobit":
+                self._ws_task = asyncio.create_task(self._toobit_stream_loop())
+            else:
+                self._ws_task = asyncio.create_task(self._binance_stream_loop())
 
     async def _toobit_stream_loop(self):
         toobit_sym = to_toobit_symbol(self.current_symbol)
+        curr_intv = self.current_interval
         url = TOOBIT_WS_URL
-        logger.info(f"Connecting to Toobit WebSocket: {url} (Symbol: {toobit_sym}, Interval: {self.current_interval})")
+        logger.info(f"Connecting to Toobit WebSocket: {url} (Symbol: {toobit_sym}, Interval: {curr_intv})")
 
         backoff = 1
         while self._running:
             try:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-                    logger.info(f"Connected to Toobit live market stream: {toobit_sym} @ {self.current_interval}")
+                    logger.info(f"Connected to Toobit live market stream: {toobit_sym} @ {curr_intv}")
                     sub_msg = {
-                        "topic": f"kline_{self.current_interval}",
+                        "topic": f"kline_{curr_intv}",
                         "event": "sub",
                         "symbol": toobit_sym,
                         "params": {"binary": False}
@@ -507,6 +510,8 @@ class MarketDataService:
 
                         if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                             d = data["data"][0]
+                            topic = data.get("topic", "")
+                            msg_intv = topic.replace("kline_", "") if topic.startswith("kline_") else curr_intv
                             candle = {
                                 "type": "candle_tick",
                                 "symbol": self.current_symbol,
@@ -518,7 +523,7 @@ class MarketDataService:
                                 "close": float(d["c"]),
                                 "volume": float(d.get("v", 0)),
                                 "is_closed": False,
-                                "interval": self.current_interval
+                                "interval": msg_intv
                             }
                             await self._notify_subscribers(candle)
             except asyncio.CancelledError:
@@ -531,7 +536,8 @@ class MarketDataService:
 
     async def _binance_stream_loop(self):
         binance_sym = to_binance_symbol(self.current_symbol)
-        stream_name = f"{binance_sym.lower()}@kline_{self.current_interval}"
+        curr_intv = self.current_interval
+        stream_name = f"{binance_sym.lower()}@kline_{curr_intv}"
         url = f"{BINANCE_FUTURES_WS_URL}/{stream_name}"
         logger.info(f"Connecting to Binance stream: {url}")
 
@@ -557,7 +563,7 @@ class MarketDataService:
                                 "close": float(k["c"]),
                                 "volume": float(k["v"]),
                                 "is_closed": bool(k["x"]),
-                                "interval": k["i"]
+                                "interval": k.get("i", curr_intv)
                             }
                             await self._notify_subscribers(candle)
             except asyncio.CancelledError:
