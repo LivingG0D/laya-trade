@@ -1,14 +1,14 @@
-# 🐸 Laya Crypto TradingView Chart Analyzer & Toobit AI Position Manager
+# 🚀 Laya Crypto TradingView Chart Analyzer & Toobit AI Position Manager
 
-A live crypto market analyzer powered by **Laya System-1 GGUF** ([mys/laya-GGUF](https://huggingface.co/mys/laya-GGUF)), featuring real-time Toobit Perpetual Futures market data streaming, multi-timeframe technical indicator analysis, System-1 calibrated probabilistic decision-making for Long and Short positions, an interactive TradingView Lightweight Charts WebUI, and direct **Toobit API integration** to manage open positions and receive live AI suggestions.
+A live crypto market analyzer powered by the **Fine-Tuned Laya Crypto Model** (`models/fine_tuned_laya_crypto`), featuring real-time Toobit Perpetual Futures market data streaming, multi-timeframe technical indicator analysis, System-1 calibrated probabilistic decision-making for Long and Short positions, an interactive TradingView Lightweight Charts WebUI, and direct **Toobit API integration** to manage open positions and receive live AI suggestions.
 
-Default asset: **`1000PEPEUSDT.P`** (Toobit contract `1000PEPE-SWAP-USDT`, with instant switching to `BTCUSDT.P`, `ETHUSDT.P`, `SOLUSDT.P`, `DOGEUSDT.P`).
+Default asset: **`BTCUSDT.P`** (Toobit contract `BTC-SWAP-USDT`, with instant switching across 32 perpetual pairs).
 
 ---
 
 ## ⚡ Highlights
 
-- **Laya GGUF Decision Engine**: Leverages `convaiinnovations/laya` (ModernBERT-large, 421M, compiled via `ggmlc` into GGUF) for ultra-fast (~25-50ms) System-1 calibrated probabilistic decisions on local GPU or CPU.
+- **Fine-Tuned Laya Crypto Decision Engine**: Leverages `models/fine_tuned_laya_crypto` (ModernBERT-large RL agent fine-tuned on multi-timeframe crypto datasets) for ultra-fast (~45ms) System-1 calibrated probabilistic decisions on local NVIDIA GPU (CUDA) or CPU.
 - **Toobit Futures API & Position Management**:
   - Connect your Toobit API key/secret with HMAC SHA-256 request authentication.
   - Live account balance, available margin, and active position telemetry.

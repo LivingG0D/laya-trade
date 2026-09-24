@@ -4,11 +4,15 @@ import json
 import time
 import logging
 import asyncio
+import warnings
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import httpx
+import torch
+import laya
+import numpy as np
 from huggingface_hub import hf_hub_download
 
 from .config import (
@@ -30,6 +34,7 @@ class LayaEngine:
         model_filename: str = DEFAULT_MODEL_FILE,
         host: str = LAYA_SERVER_HOST,
         port: int = LAYA_SERVER_PORT,
+        device: Optional[str] = None,
     ):
         self.repo_id = repo_id
         self.model_filename = model_filename
@@ -40,14 +45,24 @@ class LayaEngine:
         self.server_url = f"http://{self.host}:{self.port}"
         self._http_client = httpx.AsyncClient(timeout=10.0)
         self._server_process: Optional[subprocess.Popen] = None
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._agent: Optional[Any] = None
         self._is_ready = False
         self._is_server_alive = False
+        self._load_lock = asyncio.Lock()
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready and (self._agent is not None or self._is_server_alive)
 
     def is_model_downloaded(self) -> bool:
+        if self.model_path.is_dir():
+            st_file = self.model_path / "model.safetensors"
+            return st_file.exists() and st_file.stat().st_size > 10_000_000
         return self.model_path.exists() and self.model_path.stat().st_size > 10_000_000
 
     def download_model(self) -> Path:
-        """Download model GGUF from Hugging Face if not already present."""
+        """Download model from Hugging Face if not already present."""
         if self.is_model_downloaded():
             logger.info(f"Model already present at {self.model_path}")
             return self.model_path
@@ -90,59 +105,88 @@ class LayaEngine:
         return env
 
     async def start_server(self) -> bool:
-        """Start local laya.exe serve process."""
-        if not self.binary_path.exists():
-            logger.warning(f"Laya binary not found at {self.binary_path}")
-            return False
-
-        if not self.is_model_downloaded():
-            logger.warning("Model file not downloaded yet. Run download_model() first.")
-            return False
-
-        # First check if a server is already listening
-        if await self.check_health():
-            logger.info(f"Laya server already active at {self.server_url}")
-            self._is_server_alive = True
-            self._is_ready = True
-            return True
-
-        cmd = [
-            str(self.binary_path),
-            "serve",
-            str(self.model_path),
-            "--port", str(self.port),
-            "--device", "auto",
-            "--cuda-graph"
-        ]
-
-        logger.info(f"Launching Laya server: {' '.join(cmd)}")
-        try:
-            env = self._get_cuda_env()
-            self._server_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                cwd=str(BASE_DIR)
-            )
-
-            # Wait up to 5 seconds for health endpoint
-            for _ in range(10):
-                await asyncio.sleep(0.5)
-                if await self.check_health():
-                    logger.info("Laya server started and healthy!")
-                    self._is_server_alive = True
+        """Load native fine-tuned Laya crypto model or launch local laya.exe serve process."""
+        async with self._load_lock:
+            # 1. Native fine-tuned Laya crypto model (safetensors checkpoint)
+            if self.model_path.is_dir() and (self.model_path / "model.safetensors").exists():
+                try:
+                    logger.info(f"Loading fine-tuned Laya crypto model from {self.model_path} on {self.device}...")
+                    warnings.filterwarnings("ignore", category=RuntimeWarning, module="laya.*")
+                    self._agent = await asyncio.to_thread(
+                        laya.load,
+                        str(self.model_path),
+                        device=self.device
+                    )
                     self._is_ready = True
+                    self._is_server_alive = True
+                    logger.info(f"Fine-tuned Laya crypto model loaded successfully on {self.device}!")
+                    asyncio.create_task(self._warmup())
                     return True
+                except Exception as e:
+                    logger.error(f"Failed to load fine-tuned model with laya.load: {e}", exc_info=True)
 
-            logger.warning("Laya server did not report healthy within 5 seconds.")
+            # 2. Check if external Laya server is already responding
+            if await self.check_health():
+                logger.info(f"Laya server already active at {self.server_url}")
+                self._is_server_alive = True
+                self._is_ready = True
+                return True
+
+            # 3. GGUF binary serve fallback if model is a .gguf file
+            if self.binary_path.exists() and self.model_path.is_file() and self.model_path.suffix == ".gguf":
+                cmd = [
+                    str(self.binary_path),
+                    "serve",
+                    str(self.model_path),
+                    "--port", str(self.port),
+                    "--device", "auto",
+                    "--cuda-graph"
+                ]
+                logger.info(f"Launching Laya GGUF server: {' '.join(cmd)}")
+                try:
+                    env = self._get_cuda_env()
+                    self._server_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                        cwd=str(BASE_DIR)
+                    )
+                    for _ in range(10):
+                        await asyncio.sleep(0.5)
+                        if await self.check_health():
+                            logger.info("Laya GGUF server started and healthy!")
+                            self._is_server_alive = True
+                            self._is_ready = True
+                            return True
+                except Exception as e:
+                    logger.error(f"Failed to start Laya GGUF server process: {e}")
+
+            logger.warning("Could not initialize native or GGUF Laya server. Internal calibrated engine will be used.")
             return False
+
+    async def _warmup(self):
+        """Warm up fine-tuned model asynchronously."""
+        if self._agent is None:
+            return
+        try:
+            state = "Asset: BTCUSDT.P | Micro TF: 5m | Price: 80000 | 1H Trend: NEUTRAL"
+            q = {
+                "position": {
+                    "type": "choice",
+                    "instructions": "Optimal position?",
+                    "criteria": {"A": "A", "B": "B"}
+                }
+            }
+            await asyncio.to_thread(self._agent.predict, state, q)
+            logger.info("Fine-tuned Laya crypto model warmup completed.")
         except Exception as e:
-            logger.error(f"Failed to start Laya server process: {e}")
-            return False
+            logger.debug(f"Warmup error: {e}")
 
     async def check_health(self) -> bool:
-        """Check if Laya server is alive and responding."""
+        """Check if Laya server is alive and responding or agent is loaded."""
+        if self._agent is not None:
+            return True
         try:
             resp = await self._http_client.get(f"{self.server_url}/health", timeout=1.5)
             if resp.status_code == 200:
@@ -214,8 +258,8 @@ class LayaEngine:
 
         # Format state as rich contextual document for Laya System 1 encoder
         summary_text = (
-            f"Asset: {market_state.get('symbol', '1000PEPEUSDT')} | Micro TF: {market_state.get('interval', '5m')}\n"
-            f"Current Price: {market_state.get('price')} (24h Change: {market_state.get('change_pct')}%)\n"
+            f"Asset: {market_state.get('symbol', 'BTCUSDT.P')} | Micro TF: {market_state.get('interval', '5m')}\n"
+            f"Current Price: {market_state.get('price')} (24h Change: {market_state.get('change_pct')}%\n"
             f"Macro Confluence: {htf_str}\n"
             f"Market Dynamics: {regime_str} | {squeeze_str}\n"
             f"Order Flow & Liquidity: {depth_str} | {funding_str}\n"
@@ -232,7 +276,20 @@ class LayaEngine:
             "questions": questions
         }
 
-        # Try query to live laya server
+        # 1. Native in-process fine-tuned Laya crypto agent (CUDA/PyTorch)
+        if self._agent is not None:
+            try:
+                res = await asyncio.to_thread(self._agent.predict, summary_text, questions)
+                latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                return self._format_laya_response(
+                    res,
+                    latency_ms,
+                    engine_type=f"fine_tuned_laya_crypto_{self.device}"
+                )
+            except Exception as e:
+                logger.warning(f"Native fine-tuned model inference failed: {e}. Trying fallback.")
+
+        # 2. Remote / local GGUF server
         if self._is_server_alive or await self.check_health():
             try:
                 resp = await self._http_client.post(
@@ -247,12 +304,12 @@ class LayaEngine:
             except Exception as e:
                 logger.warning(f"Laya server request failed: {e}. Falling back to internal decision engine.")
 
-        # Fallback calibrated System 1 decision engine
+        # 3. Fallback calibrated System 1 decision engine
         latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
         return self._fallback_decision(market_state, latency_ms)
 
     def _format_laya_response(self, raw_data: Dict[str, Any], latency_ms: float, engine_type: str) -> Dict[str, Any]:
-        """Format raw Laya server JSON into structured signal data."""
+        """Format raw Laya server or agent JSON into structured signal data."""
         answers = raw_data.get("answers", {})
 
         pos_ans = answers.get("position", {})
@@ -260,11 +317,20 @@ class LayaEngine:
         pos_probs = pos_ans.get("probabilities", {})
 
         conf_ans = answers.get("confidence", {})
-        conf_score = conf_ans.get("expected_score") or conf_ans.get("value") or 3
-        conf_val = pos_ans.get("confidence") or conf_ans.get("confidence", 0.75)
+        raw_score = conf_ans.get("score")
+        if raw_score is None:
+            raw_score = conf_ans.get("expected_score") or conf_ans.get("value") or 3
+        try:
+            conf_score = round(float(raw_score), 2)
+        except Exception:
+            conf_score = 3.0
+
+        conf_val = pos_ans.get("answer_confidence") or pos_ans.get("confidence") or pos_probs.get(pos_choice, 0.75)
 
         squeeze_ans = answers.get("squeeze_risk", {})
-        squeeze_prob = squeeze_ans.get("probability") or squeeze_ans.get("noul", 0.15)
+        squeeze_prob = squeeze_ans.get("noul")
+        if squeeze_prob is None:
+            squeeze_prob = squeeze_ans.get("probability", 0.15)
 
         horizon_ans = answers.get("time_horizon", {})
         horizon = horizon_ans.get("choice") or horizon_ans.get("label", "SCALP")
@@ -476,6 +542,13 @@ class LayaEngine:
         }
 
     async def close(self):
+        if self._agent is not None:
+            self._agent = None
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
         if self._server_process:
             self._server_process.terminate()
             self._server_process = None

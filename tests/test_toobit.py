@@ -89,7 +89,7 @@ async def run_tests():
     assert sug_none["action"] == "ENTER_SETUP"
 
     print("\n=== TEST 4: Flash Close Execution ===")
-    close_res = await client.flash_close("1000PEPEUSDT.P")
+    close_res = await client.flash_close(pos["displaySymbol"])
     print("Flash Close Result:", close_res)
     assert close_res["success"] is True
 

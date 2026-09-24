@@ -25,7 +25,7 @@ class SignalGenerator:
         Applies strict confluence gating, break-even targets, and volatility adjustments.
         """
         cur_price = market_state.get("price", 0.0)
-        symbol = str(market_state.get("symbol", "1000PEPEUSDT.P")).upper()
+        symbol = str(market_state.get("symbol", "BTCUSDT.P")).upper()
         interval = market_state.get("interval", "5m")
         candle_time = market_state.get("time", int(time.time()))
 
@@ -54,7 +54,8 @@ class SignalGenerator:
         market_regime = market_state.get("market_regime", "CHOP_RANGE")
         is_squeeze = market_state.get("is_squeeze", False)
 
-        raw_prob = probs.get(pos, laya_decision.get("long_prob" if is_long else "short_prob", 0.5))
+        dir_prob = laya_decision.get("long_prob" if is_long else "short_prob")
+        raw_prob = dir_prob if dir_prob is not None else probs.get(pos, 0.5)
 
         # ========================================================
         # STRICT CONFLUENCE GATEKEEPER (INSTITUTIONAL QUALITY FILTER)

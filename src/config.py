@@ -75,12 +75,14 @@ BINANCE_FUTURES_REST_URL = "https://fapi.binance.com"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws"
 
 # Laya Model Settings
-HF_REPO_ID = "mys/laya-GGUF"
-DEFAULT_MODEL_FILE = "laya_english_q8_0.gguf"
+FINE_TUNED_MODEL_DIR = MODELS_DIR / "fine_tuned_laya_crypto"
+DEFAULT_MODEL_FILE = "fine_tuned_laya_crypto"
+DEFAULT_MODEL_NAME = "fine_tuned_laya_crypto"
+HF_REPO_ID = "convaiinnovations/laya"
 ALTERNATIVE_MODELS = [
+    "fine_tuned_laya_crypto",
     "laya_english_q8_0.gguf",
-    "laya_english_f16.gguf",
-    "laya_english_ud_q4_k_m.gguf"
+    "laya_english_f16.gguf"
 ]
 
 # Service Ports

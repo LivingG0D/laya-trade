@@ -29,18 +29,23 @@ def main():
     print("=" * 65)
     print(" [*] LAYA LIVE CRYPTO TRADINGVIEW CHART ANALYZER")
     print(f" [*] Initial Asset: {args.symbol}")
-    print(f" [*] System 1 Model: mys/laya-GGUF ({DEFAULT_MODEL_FILE})")
+    print(f" [*] Model: Fine-Tuned Laya Crypto ({DEFAULT_MODEL_FILE})")
     print(f" [*] Dashboard: http://localhost:{args.port}")
     print("=" * 65)
 
     engine = LayaEngine()
-    if args.download_model or not engine.is_model_downloaded():
-        print(f"\n[*] Checking Laya GGUF model in {MODELS_DIR}...")
-        try:
-            engine.download_model()
-            print("[+] Model ready for System-1 decision inference!")
-        except Exception as e:
-            print(f"[!] Warning: Could not download model right now ({e}). Internal calibrated engine will be used.")
+    if not engine.is_model_downloaded():
+        print(f"\n[*] Checking Laya model at {engine.model_path}...")
+        if args.download_model:
+            try:
+                engine.download_model()
+                print("[+] Model ready for System-1 decision inference!")
+            except Exception as e:
+                print(f"[!] Warning: Could not download model ({e}). Internal calibrated engine will be used.")
+        else:
+            print(f"[!] Warning: Model directory {engine.model_path} not found. Fallback engine will be used.")
+    else:
+        print(f"[+] Fine-tuned Laya crypto model detected at {engine.model_path}!")
 
     uvicorn.run(
         "src.app:app",

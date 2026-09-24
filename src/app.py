@@ -135,7 +135,8 @@ async def get_status():
         "current_interval": market_service.current_interval,
         "model_file": laya_engine.model_filename,
         "model_downloaded": laya_engine.is_model_downloaded(),
-        "laya_server_active": laya_engine._is_server_alive,
+        "laya_server_active": laya_engine.is_ready,
+        "device": laya_engine.device,
         "supported_symbols": SUPPORTED_SYMBOLS,
         "supported_timeframes": SUPPORTED_TIMEFRAMES,
     }
