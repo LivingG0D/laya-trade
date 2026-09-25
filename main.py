@@ -45,7 +45,7 @@ def main():
         else:
             print(f"[!] Warning: Model directory {engine.model_path} not found. Fallback engine will be used.")
     else:
-        print(f"[+] Fine-tuned Laya crypto model detected at {engine.model_path}!")
+        print(f"[+] Fine-tuned Laya crypto model detected at {engine.model_path} (Device: {engine.device.upper()})!")
 
     uvicorn.run(
         "src.app:app",

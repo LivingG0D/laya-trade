@@ -1,18 +1,32 @@
 from typing import Dict, Any, List, Optional
 import time
 
-from .config import DEFAULT_ATR_SL_MULTIPLIER, DEFAULT_TP1_RR, DEFAULT_TP2_RR
+from .config import (
+    DEFAULT_ATR_SL_MULTIPLIER,
+    DEFAULT_TP1_RR,
+    DEFAULT_TP2_RR,
+    DEFAULT_BE_RR,
+    DEFAULT_LEVERAGE,
+    LEVERAGE_MAX_SL_PCT,
+    LEVERAGE_MIN_SL_PCT,
+    DEFAULT_POSITION_MARGIN_USD,
+    DEFAULT_KELLY_FRACTION_PCT,
+)
 
 class SignalGenerator:
     def __init__(
         self,
         atr_multiplier: float = DEFAULT_ATR_SL_MULTIPLIER,
         tp1_rr: float = DEFAULT_TP1_RR,
-        tp2_rr: float = DEFAULT_TP2_RR
+        tp2_rr: float = DEFAULT_TP2_RR,
+        be_rr: float = DEFAULT_BE_RR,
+        leverage: int = DEFAULT_LEVERAGE,
     ):
         self.atr_multiplier = atr_multiplier
         self.tp1_rr = tp1_rr
         self.tp2_rr = tp2_rr
+        self.be_rr = be_rr
+        self.leverage = leverage
         self.signal_history: List[Dict[str, Any]] = []
 
     def generate_signal(
@@ -33,6 +47,9 @@ class SignalGenerator:
         atr_pct = market_state.get("atr_pct", 1.0)
         support = market_state.get("support", cur_price - atr)
         resistance = market_state.get("resistance", cur_price + atr)
+        rsi = market_state.get("rsi", 50.0)
+        adx = market_state.get("adx", 20.0)
+        trend_state = str(market_state.get("trend_state", "NEUTRAL")).upper()
 
         # High beta / meme coin volatility adjustment (prevent stop-hunts on PEPE, DOGE, SHIB, WIF, BONK, etc.)
         meme_keywords = ["PEPE", "SHIB", "DOGE", "FLOKI", "BONK", "WIF", "POPCAT", "NEIRO", "TURBO", "CAT"]
@@ -55,26 +72,55 @@ class SignalGenerator:
         is_squeeze = market_state.get("is_squeeze", False)
 
         dir_prob = laya_decision.get("long_prob" if is_long else "short_prob")
-        raw_prob = dir_prob if dir_prob is not None else probs.get(pos, 0.5)
+        dir_conviction = laya_decision.get("directional_conviction")
+        if dir_conviction is None:
+            p_l = float(laya_decision.get("long_prob", 0.33))
+            p_s = float(laya_decision.get("short_prob", 0.33))
+            if is_long:
+                dir_conviction = p_l / max(1e-5, p_l + p_s)
+            elif is_short:
+                dir_conviction = p_s / max(1e-5, p_l + p_s)
+            else:
+                dir_conviction = float(laya_decision.get("hold_prob", 0.5))
+
+        raw_prob = dir_conviction
 
         # ========================================================
-        # STRICT CONFLUENCE GATEKEEPER (INSTITUTIONAL QUALITY FILTER)
+        # STRICT CONFLUENCE GATEKEEPER (WIN RATE OPTIMIZED)
         # ========================================================
         filter_reason = None
 
-        # 1. Reject counter-trend trades against strong 1H macro trend
-        if is_long and htf_trend == "STRONG_BEARISH":
+        # 1. Anti-Falling-Knife / Counter-Momentum Rule (ADX > 35)
+        if is_long and ("BEAR" in htf_trend or "BEAR" in trend_state) and adx > 35.0:
+            filter_reason = f"Long trade rejected: Violent bear cascade (ADX {adx:.1f}). Do not catch falling knives."
+        elif is_short and ("BULL" in htf_trend or "BULL" in trend_state) and adx > 35.0:
+            filter_reason = f"Short trade rejected: Violent bull momentum (ADX {adx:.1f}). Do not short strong expansions."
+
+        # 2. Reject counter-trend trades against strong 1H macro trend
+        elif is_long and htf_trend == "STRONG_BEARISH":
             filter_reason = "Long trade rejected: Opposed to 1H Strong Bearish Macro Trend (confluence failure)."
         elif is_short and htf_trend == "STRONG_BULLISH":
             filter_reason = "Short trade rejected: Opposed to 1H Strong Bullish Macro Trend (confluence failure)."
+        elif is_short and htf_trend == "BULLISH" and dir_conviction < 0.535:
+            filter_reason = f"Short trade rejected: Counter-trend setup requires >= 53.5% conviction in 1H Bullish trend (got {round(dir_conviction * 100, 1)}%)."
+        elif is_long and htf_trend == "BEARISH" and dir_conviction < 0.535:
+            filter_reason = f"Long trade rejected: Counter-trend setup requires >= 53.5% conviction in 1H Bearish trend (got {round(dir_conviction * 100, 1)}%)."
 
-        # 2. Strict Confidence Threshold Gate (Minimum 65% conviction required)
-        elif (is_long or is_short) and raw_prob < 0.65:
-            filter_reason = f"Trade rejected: Model conviction ({round(raw_prob * 100, 1)}%) below institutional threshold (65.0%)."
+        # 3. Reject overextended extremes (No chasing RSI > 72 or shorting RSI < 28 without squeeze coiling)
+        elif is_long and rsi > 72.0 and not is_squeeze:
+            filter_reason = f"Long filtered: RSI overbought ({rsi:.1f}) without active squeeze coiling (wait for pullback)."
+        elif is_short and rsi < 28.0 and not is_squeeze:
+            filter_reason = f"Short filtered: RSI oversold ({rsi:.1f}) without active squeeze coiling (wait for relief bounce)."
 
-        # 3. Chop Market Filter (Avoid whipsaws when ADX is dead unless in pre-squeeze compression)
-        elif (is_long or is_short) and market_regime == "CHOP_RANGE" and not is_squeeze and raw_prob < 0.72:
-            filter_reason = "Trade filtered: Low ADX range chop without squeeze expansion catalyst."
+        # 4. Directional Conviction Gate (Requires statistically meaningful edge >= 52.5%, or >= 51.5% in Squeeze)
+        elif (is_long or is_short) and not is_squeeze and dir_conviction < 0.525:
+            filter_reason = f"Trade rejected: Directional edge ({round(dir_conviction * 100, 1)}%) below threshold (52.5%)."
+        elif (is_long or is_short) and is_squeeze and dir_conviction < 0.515:
+            filter_reason = f"Trade rejected: Squeeze compression edge ({round(dir_conviction * 100, 1)}%) below threshold (51.5%)."
+
+        # 5. Chop Market Filter (When ADX indicates dead chop, require >= 53.0% conviction unless in squeeze compression)
+        elif (is_long or is_short) and market_regime == "CHOP_RANGE" and not is_squeeze and dir_conviction < 0.530:
+            filter_reason = f"Trade filtered: Low ADX range chop requires stronger conviction (>= 53.0%, got {round(dir_conviction * 100, 1)}%)."
 
         if filter_reason:
             is_long = False
@@ -94,28 +140,46 @@ class SignalGenerator:
             shape = "arrowUp"
             marker_pos = "belowBar"
             dir_prob = raw_prob
+
+            # Calculate estimated liquidation price for 50x leverage (~1.80% maintenance margin cushion)
+            liq_dist_pct = 0.90 / self.leverage
+            liq_price = cur_price * (1.0 - liq_dist_pct)
             
-            # SL placed below entry by adjusted ATR or key structural support
-            sl_dist = max(atr * effective_atr_mult, cur_price * 0.006)
-            if 0 < (cur_price - support) <= sl_dist * 1.5:
-                stop_loss = support - (atr * 0.25)
+            # SL strictly bounded within safe envelope (0.45% to 1.20% maximum)
+            max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
+            min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
+            raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
+            sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
+
+            if 0 < (cur_price - support) <= max_sl_dist:
+                cand_sl = support - (atr * 0.15)
+                stop_loss = min(cur_price - min_sl_dist, max(cur_price - max_sl_dist, cand_sl))
             else:
                 stop_loss = cur_price - sl_dist
 
             risk = cur_price - stop_loss
-            be_price = cur_price + (risk * 1.0) # +1.0R Break-Even
-            tp1 = cur_price + (risk * self.tp1_rr) # +1.5R (Take 50% profit)
-            tp2 = cur_price + (risk * self.tp2_rr) # +2.5R (Runner target)
+            be_price = cur_price + (risk * self.be_rr) # +0.75R Break-Even
+            tp1 = cur_price + (risk * self.tp1_rr) # +1.2R (Take 50% profit)
+            tp2 = cur_price + (risk * self.tp2_rr) # +2.2R (Runner target)
 
-            reasons.append(f"Laya Decision: {pos} ({round(dir_prob * 100, 1)}% probability)")
+            # Return on Equity (ROE) under 50x leverage
+            sl_roe = round(-(risk / cur_price) * self.leverage * 100, 1)
+            be_roe = round(+(risk * self.be_rr / cur_price) * self.leverage * 100, 1)
+            tp1_roe = round(+((tp1 - cur_price) / cur_price) * self.leverage * 100, 1)
+            tp2_roe = round(+((tp2 - cur_price) / cur_price) * self.leverage * 100, 1)
+
+            reasons.append(f"⚡ 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: ${fmt(liq_price)} (-{round(liq_dist_pct*100, 2)}%).")
+            reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe above liquidation.")
+            reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
+            reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
+            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry for 100% risk-free trade.")
+            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {self.leverage}x.")
+            if is_squeeze:
+                reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
             if htf_trend != "NEUTRAL":
                 reasons.append(f"1H Macro Alignment: {htf_trend} (Trend Confluence Verified)")
             if obi != 0:
                 reasons.append(f"Order Flow Depth: OBI {obi:+.1f}% ({'Bids' if obi > 0 else 'Asks'} dominate Toobit book)")
-            if is_squeeze:
-                reasons.append("TTM Squeeze Active: Volatility compression pending explosive expansion.")
-            reasons.append(f"Execution Rule: Move SL to Break-Even (${fmt(be_price)}) once +1.0R is reached.")
-            reasons.append(f"Take Profit Strategy: Scale out 50% at TP1 (${fmt(tp1)}); trail runner to TP2 (${fmt(tp2)}).")
 
         elif is_short:
             action = "SHORT"
@@ -125,27 +189,45 @@ class SignalGenerator:
             marker_pos = "aboveBar"
             dir_prob = raw_prob
 
-            # SL placed above entry by adjusted ATR or key structural resistance
-            sl_dist = max(atr * effective_atr_mult, cur_price * 0.006)
-            if 0 < (resistance - cur_price) <= sl_dist * 1.5:
-                stop_loss = resistance + (atr * 0.25)
+            # Calculate estimated liquidation price for 50x leverage (~1.80% maintenance margin cushion)
+            liq_dist_pct = 0.90 / self.leverage
+            liq_price = cur_price * (1.0 + liq_dist_pct)
+            
+            # SL strictly bounded within 50x leverage safe envelope (0.25% to 0.80% maximum)
+            max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
+            min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
+            raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
+            sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
+
+            if 0 < (resistance - cur_price) <= max_sl_dist:
+                cand_sl = resistance + (atr * 0.15)
+                stop_loss = max(cur_price + min_sl_dist, min(cur_price + max_sl_dist, cand_sl))
             else:
                 stop_loss = cur_price + sl_dist
 
             risk = stop_loss - cur_price
-            be_price = cur_price - (risk * 1.0) # +1.0R Break-Even
-            tp1 = cur_price - (risk * self.tp1_rr) # +1.5R (Take 50% profit)
-            tp2 = cur_price - (risk * self.tp2_rr) # +2.5R (Runner target)
+            be_price = cur_price - (risk * self.be_rr) # +0.75R Break-Even
+            tp1 = cur_price - (risk * self.tp1_rr) # +1.2R (Take 50% profit)
+            tp2 = cur_price - (risk * self.tp2_rr) # +2.2R (Runner target)
 
-            reasons.append(f"Laya Decision: {pos} ({round(dir_prob * 100, 1)}% probability)")
+            # Return on Equity (ROE) under 50x leverage
+            sl_roe = round(-(risk / cur_price) * self.leverage * 100, 1)
+            be_roe = round(+(risk * self.be_rr / cur_price) * self.leverage * 100, 1)
+            tp1_roe = round(+((cur_price - tp1) / cur_price) * self.leverage * 100, 1)
+            tp2_roe = round(+((cur_price - tp2) / cur_price) * self.leverage * 100, 1)
+
+            reasons.append(f"⚡ 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: ${fmt(liq_price)} (+{round(liq_dist_pct*100, 2)}%).")
+            reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe below liquidation.")
+            reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
+            reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
+            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry for 100% risk-free trade.")
+            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {self.leverage}x.")
+            if is_squeeze:
+                reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
             if htf_trend != "NEUTRAL":
                 reasons.append(f"1H Macro Alignment: {htf_trend} (Trend Confluence Verified)")
             if obi != 0:
                 reasons.append(f"Order Flow Depth: OBI {obi:+.1f}% ({'Bids' if obi > 0 else 'Asks'} dominate Toobit book)")
-            if is_squeeze:
-                reasons.append("TTM Squeeze Active: Volatility compression pending explosive expansion.")
-            reasons.append(f"Execution Rule: Move SL to Break-Even (${fmt(be_price)}) once +1.0R is reached.")
-            reasons.append(f"Take Profit Strategy: Scale out 50% at TP1 (${fmt(tp1)}); trail runner to TP2 (${fmt(tp2)}).")
 
         else:
             action = "NEUTRAL"
@@ -158,7 +240,9 @@ class SignalGenerator:
             be_price = cur_price
             tp1 = cur_price
             tp2 = cur_price
+            liq_price = cur_price
             risk = 0.0
+            sl_roe = be_roe = tp1_roe = tp2_roe = 0.0
 
             if filter_reason:
                 reasons.append(f"Quality Filter: {filter_reason}")
@@ -169,7 +253,7 @@ class SignalGenerator:
             if market_regime:
                 reasons.append(f"Market Regime: {market_regime}")
 
-        # Build signal setup object
+        # Build signal setup object with 50x Leverage & ROE targets
         signal_obj = {
             "id": f"sig_{int(time.time() * 1000)}",
             "time": candle_time,
@@ -179,6 +263,14 @@ class SignalGenerator:
             "action": action,
             "direction": direction,
             "signal_type": pos,
+            "leverage": self.leverage,
+            "liquidation_price": fmt(liq_price),
+            "roe_targets": {
+                "stop_loss_roe": f"{sl_roe}%" if action != "NEUTRAL" else "0.0%",
+                "break_even_roe": f"+{be_roe}%" if action != "NEUTRAL" else "0.0%",
+                "take_profit_1_roe": f"+{tp1_roe}%" if action != "NEUTRAL" else "0.0%",
+                "take_profit_2_roe": f"+{tp2_roe}%" if action != "NEUTRAL" else "0.0%",
+            },
             "entry_price": fmt(cur_price),
             "stop_loss": fmt(stop_loss),
             "break_even": fmt(be_price),
@@ -189,10 +281,13 @@ class SignalGenerator:
                 "stop_loss": fmt(stop_loss),
                 "break_even": fmt(be_price),
                 "take_profit_1": fmt(tp1),
-                "take_profit_2": fmt(tp2)
+                "take_profit_2": fmt(tp2),
+                "liquidation": fmt(liq_price),
             },
             "risk_reward_ratio": round(self.tp1_rr, 1),
-            "confidence_pct": round(dir_prob * 100, 1),
+            "recommended_margin_usd": DEFAULT_POSITION_MARGIN_USD,
+            "sizing_rule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
+            "confidence_pct": round(dir_conviction * 100, 1),
             "confidence_score": laya_decision.get("confidence_score", 2),
             "squeeze_risk": laya_decision.get("squeeze_risk", 0.0),
             "time_horizon": laya_decision.get("time_horizon", "SCALP"),

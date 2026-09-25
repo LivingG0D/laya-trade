@@ -12,6 +12,11 @@ import {
   handlePositionTick,
 } from "./js/toobit.js";
 import { initCoinSearch, getCoinMetadata } from "./js/coin_search.js";
+import {
+  initAutoTradeManager,
+  handleAutoTradeWsMessage,
+  fetchAutoTradeStatus
+} from "./js/autotrade.js";
 
 let chart = null;
 let coinSearchManager = null;
@@ -126,10 +131,17 @@ const signalAction = document.getElementById("signalAction");
 const confidenceVal = document.getElementById("confidenceVal");
 const signalSubtext = document.getElementById("signalSubtext");
 const targetEntry = document.getElementById("targetEntry");
+const targetEntrySub = document.getElementById("targetEntrySub");
 const targetSL = document.getElementById("targetSL");
+const targetSLRoe = document.getElementById("targetSLRoe");
 const targetBE = document.getElementById("targetBE");
+const targetBERoe = document.getElementById("targetBERoe");
 const targetTP1 = document.getElementById("targetTP1");
+const targetTP1Roe = document.getElementById("targetTP1Roe");
 const targetTP2 = document.getElementById("targetTP2");
+const targetTP2Roe = document.getElementById("targetTP2Roe");
+const targetLiq = document.getElementById("targetLiq");
+const targetLiqDist = document.getElementById("targetLiqDist");
 const targetRRR = document.getElementById("targetRRR");
 const targetHorizon = document.getElementById("targetHorizon");
 const reasonsList = document.getElementById("reasonsList");
@@ -749,6 +761,45 @@ function applySignal(signal, latest, laya) {
   targetRRR.textContent = "1 : " + signal.risk_reward_ratio;
   targetHorizon.textContent = signal.time_horizon ? signal.time_horizon : "Scalp";
 
+  // 50x Leverage & ROE Target Displays
+  const lev = signal.leverage || 50;
+  if (targetEntrySub) targetEntrySub.textContent = `${lev}x Leverage`;
+  if (targetLiq) {
+    targetLiq.textContent = signal.liquidation_price ? formatPrice(signal.liquidation_price) : "--";
+  }
+  if (targetLiqDist) {
+    const curP = Number(signal.entry_price);
+    const liqP = Number(signal.liquidation_price);
+    if (curP > 0 && liqP > 0) {
+      const d = (Math.abs(curP - liqP) / curP) * 100;
+      targetLiqDist.textContent = `Liq: ${d.toFixed(2)}% away`;
+    } else {
+      targetLiqDist.textContent = "Safe below SL";
+    }
+  }
+  if (signal.roe_targets) {
+    if (targetSLRoe) targetSLRoe.textContent = `${signal.roe_targets.stop_loss_roe} ROE`;
+    if (targetBERoe) targetBERoe.textContent = `${signal.roe_targets.break_even_roe} ROE`;
+    if (targetTP1Roe) targetTP1Roe.textContent = `${signal.roe_targets.take_profit_1_roe} ROE`;
+    if (targetTP2Roe) targetTP2Roe.textContent = `${signal.roe_targets.take_profit_2_roe} ROE`;
+  } else {
+    if (targetSLRoe) targetSLRoe.textContent = "Max -40.0% ROE";
+    if (targetBERoe) targetBERoe.textContent = "Shield to Entry";
+    if (targetTP1Roe) targetTP1Roe.textContent = "+16% - +25% ROE";
+    if (targetTP2Roe) targetTP2Roe.textContent = "+28% - +35% ROE";
+  }
+
+  // Anti-Volatility-Drag Position Sizing
+  const targetRecMarginEl = document.getElementById("targetRecMargin");
+  const targetSizingRuleEl = document.getElementById("targetSizingRule");
+  if (targetRecMarginEl) {
+    const recM = signal.recommended_margin_usd || 10.0;
+    targetRecMarginEl.textContent = `$${recM.toFixed(2)} Fixed`;
+  }
+  if (targetSizingRuleEl && signal.sizing_rule) {
+    targetSizingRuleEl.textContent = signal.sizing_rule;
+  }
+
   // 4. Confluence Reasons
   reasonsList.innerHTML = "";
   if (signal.reasons && signal.reasons.length > 0) {
@@ -899,7 +950,7 @@ function updateChartPositionLines(positions, suggestion) {
   const mark = Number(activePos.markPrice) || Number(lastKnownPrice) || entry;
   const liq = Number(activePos.liquidationPrice) || 0;
   const qty = Number(activePos.quantity) || 0;
-  const leverage = Number(activePos.leverage) || 10;
+  const leverage = Number(activePos.leverage) || 50;
   const margin = Number(activePos.margin) || (leverage > 0 ? (qty * entry) / leverage : 0);
 
   // Real-time PnL calculation
@@ -948,35 +999,35 @@ function updateChartPositionLines(positions, suggestion) {
     }
   }
 
-  // 3. Recommended SL / TP lines if available
-  if (suggestion) {
-    if (suggestion.recommendedTp && Number(suggestion.recommendedTp) > 0) {
-      try {
-        const tpLine = candleSeries.createPriceLine({
-          price: Number(suggestion.recommendedTp),
-          color: "rgba(16, 185, 129, 0.8)",
-          lineWidth: 1,
-          lineStyle: LightweightCharts.LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: "POS TP",
-        });
-        activePositionLines.push(tpLine);
-      } catch (e) {}
-    }
+  // 3. Position Active or Recommended SL / TP lines
+  const effectiveTp = Number(activePos.takeProfit || activePos.takeProfit1) || (suggestion?.recommendedTp ? Number(suggestion.recommendedTp) : 0);
+  if (effectiveTp > 0) {
+    try {
+      const tpLine = candleSeries.createPriceLine({
+        price: effectiveTp,
+        color: "rgba(16, 185, 129, 0.85)",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `POS TP @ $${formatPrice(effectiveTp)}`,
+      });
+      activePositionLines.push(tpLine);
+    } catch (e) {}
+  }
 
-    if (suggestion.recommendedSl && Number(suggestion.recommendedSl) > 0) {
-      try {
-        const slLine = candleSeries.createPriceLine({
-          price: Number(suggestion.recommendedSl),
-          color: "rgba(239, 68, 68, 0.8)",
-          lineWidth: 1,
-          lineStyle: LightweightCharts.LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: "POS SL",
-        });
-        activePositionLines.push(slLine);
-      } catch (e) {}
-    }
+  const effectiveSl = Number(activePos.stopLoss) || (suggestion?.recommendedSl ? Number(suggestion.recommendedSl) : 0);
+  if (effectiveSl > 0) {
+    try {
+      const slLine = candleSeries.createPriceLine({
+        price: effectiveSl,
+        color: "rgba(239, 68, 68, 0.85)",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `POS SL @ $${formatPrice(effectiveSl)}`,
+      });
+      activePositionLines.push(slLine);
+    } catch (e) {}
   }
 
   // 4. Update On-Chart Floating HUD
@@ -1071,32 +1122,37 @@ function updateSimpleModeUI(signal, latest, laya) {
   const be = Number(bePrice);
 
   if (entry > 0 && tp > 0 && sl > 0) {
-    const gainPct = isLong ? (((tp - entry) / entry) * 100).toFixed(2) : (((entry - tp) / entry) * 100).toFixed(2);
-    const lossPct = isLong ? (((entry - sl) / entry) * 100).toFixed(2) : (((sl - entry) / entry) * 100).toFixed(2);
-    simpleTpDesc.textContent = `Sell here to lock in +${gainPct}% profit!`;
-    simpleSlDesc.textContent = `Safety stop to cap max loss at -${lossPct}%`;
+    const leverage = signal.leverage || 50;
+    const gainPct = isLong ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
+    const lossPct = isLong ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
+    const gainRoe = (gainPct * leverage).toFixed(1);
+    const lossRoe = (lossPct * leverage).toFixed(1);
+
+    simpleTpDesc.textContent = `Lock in +${gainRoe}% ROE profit (+${gainPct.toFixed(2)}% price move)!`;
+    simpleSlDesc.textContent = `Safety stop caps loss at -${lossRoe}% ROE (-${lossPct.toFixed(2)}% price move, safe from liq)`;
     if (simpleBeDesc && be > 0) {
-      const bePct = isLong ? (((be - entry) / entry) * 100).toFixed(2) : (((entry - be) / entry) * 100).toFixed(2);
-      simpleBeDesc.textContent = `At +${bePct}% (+1.0R), move Stop Loss to Entry ($${formatPrice(entry)}) to eliminate risk!`;
+      const bePct = isLong ? ((be - entry) / entry) * 100 : ((entry - be) / entry) * 100;
+      const beRoe = (bePct * leverage).toFixed(1);
+      simpleBeDesc.textContent = `At +${beRoe}% ROE (+1.0R / $${formatPrice(be)}), move SL to Entry for a 100% Risk-Free trade!`;
     }
 
     // Visual Risk/Reward bar
     if (rrGainLabel && rrRiskLabel && rrGainFill && rrRiskFill) {
-      rrGainLabel.textContent = `Target Win: +${gainPct}%`;
-      rrRiskLabel.textContent = `Safety SL: -${lossPct}%`;
+      rrGainLabel.textContent = `Target Win: +${gainRoe}% ROE`;
+      rrRiskLabel.textContent = `Safety SL: -${lossRoe}% ROE`;
       const ratio = Number(gainPct) / (Number(gainPct) + Number(lossPct) || 1);
       rrGainFill.style.width = `${Math.round(ratio * 100)}%`;
       rrRiskFill.style.width = `${100 - Math.round(ratio * 100)}%`;
     }
 
-    // Update Position Demo Calculator
-    updateDemoCalculator(Number(gainPct), Number(lossPct));
+    // Update Position Demo Calculator with 50x ROE
+    updateDemoCalculator(Number(gainRoe), Number(lossRoe));
   }
 
   // 4. Plain English Reasons
   simpleReasonsList.innerHTML = "";
   const reasons = [];
-  reasons.push(`🤖 <strong>Laya AI Recommendation:</strong> Calibrated setup with <strong>${conf}%</strong> confidence.`);
+  reasons.push(`🤖 <strong>Laya AI Recommendation:</strong> Calibrated 50x setup with <strong>${conf}%</strong> confidence.`);
 
   if (latest) {
     if (latest.rsi < 35) {
@@ -1128,14 +1184,14 @@ function updateSimpleModeUI(signal, latest, laya) {
 }
 
 // --------------------------------------------------------
-// Demo Position Return Calculator
+// Demo Position Return Calculator (50x Leverage Margin)
 // --------------------------------------------------------
-function updateDemoCalculator(gainPct, lossPct) {
+function updateDemoCalculator(gainRoe, lossRoe) {
   if (!calcWinVal || !calcLossVal) return;
-  const win = ((currentCalcAmount * gainPct) / 100).toFixed(2);
-  const loss = ((currentCalcAmount * lossPct) / 100).toFixed(2);
-  calcWinVal.textContent = `+$${win}`;
-  calcLossVal.textContent = `-$${loss}`;
+  const win = ((currentCalcAmount * Number(gainRoe)) / 100).toFixed(2);
+  const loss = ((currentCalcAmount * Number(lossRoe)) / 100).toFixed(2);
+  calcWinVal.textContent = `+$${win} (+${gainRoe}%)`;
+  calcLossVal.textContent = `-$${loss} (-${lossRoe}%)`;
 }
 
 if (calcPresetGroup) {
@@ -1149,18 +1205,21 @@ if (calcPresetGroup) {
       const entry = Number(currentSignal.entry_price);
       const tp = Number(currentSignal.take_profit_1);
       const sl = Number(currentSignal.stop_loss);
+      const leverage = currentSignal.leverage || 50;
       if (entry > 0 && tp > 0 && sl > 0) {
         const isLong = currentSignal.action === "LONG";
         const gainPct = isLong ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
         const lossPct = isLong ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
-        updateDemoCalculator(gainPct, lossPct);
+        const gainRoe = (gainPct * leverage).toFixed(1);
+        const lossRoe = (lossPct * leverage).toFixed(1);
+        updateDemoCalculator(Number(gainRoe), Number(lossRoe));
       }
     }
   });
 }
 
 // --------------------------------------------------------
-// Copy Trade Plan to Clipboard
+// Copy Trade Plan to Clipboard (50x Futures Setup)
 // --------------------------------------------------------
 if (btnCopyTradePlan) {
   btnCopyTradePlan.addEventListener("click", () => {
@@ -1169,17 +1228,23 @@ if (btnCopyTradePlan) {
       return;
     }
     const sig = currentSignal;
-    const text = `🐸 ${sig.symbol} (${sig.interval}) AI Trade Setup:
+    const roe = sig.roe_targets || {};
+    const text = `⚡ ${sig.symbol} (${sig.interval}) AI 50x Futures Setup:
 Action: ${sig.action} (${sig.signal_type})
+Leverage: 50x Perpetual Futures
 Entry: $${formatPrice(sig.entry_price)}
-Take Profit: $${formatPrice(sig.take_profit_1)}
-Stop Loss: $${formatPrice(sig.stop_loss)}
+Take Profit 1: $${formatPrice(sig.take_profit_1)} (${roe.take_profit_1_roe || "+60.0% ROE"})
+Take Profit 2: $${formatPrice(sig.take_profit_2)} (${roe.take_profit_2_roe || "+100.0% ROE"})
+Break-Even Trigger: $${formatPrice(sig.break_even || sig.entry_price)} (${roe.break_even_roe || "+32.0% ROE"})
+Stop Loss: $${formatPrice(sig.stop_loss)} (${roe.stop_loss_roe || "-32.0% ROE"})
+Est. Liquidation: $${formatPrice(sig.liquidation_price || "0")} (Safe beyond SL)
+Position Sizing: Fixed $${Number(sig.recommended_margin_usd || 10).toFixed(2)} Margin (Max 20% Kelly Anti-Drag Shield)
 Risk/Reward: 1 : ${sig.risk_reward_ratio}
 Win Confidence: ${sig.confidence_pct}%
-AI Engine: Laya System-1 GPU`;
+AI Engine: Laya System-1 GPU (fine_tuned_laya_crypto)`;
 
     navigator.clipboard.writeText(text).then(
-      () => showToast("Trade Plan Copied to Clipboard! 📋", "success"),
+      () => showToast("50x Trade Plan Copied to Clipboard! 📋", "success"),
       () => showToast("Could not copy to clipboard", "info")
     );
   });
@@ -1327,6 +1392,8 @@ function connectWebSocket() {
           applySignal(msg.signal, msg.latest, msg.laya);
           if (msg.latest) updateTelemetry(msg.latest);
         }
+      } else if (msg.type === "autotrade_log" || msg.type === "autotrade_update") {
+        handleAutoTradeWsMessage(msg);
       }
     } catch (e) {
       console.error("WS Parse error:", e);
@@ -1700,6 +1767,29 @@ window.addEventListener("DOMContentLoaded", async () => {
     getFallbackPrice: () => lastKnownPrice,
     updateChartPositionLines,
     clearPositionLines,
+    switchSymbol: (sym) => {
+      const select = document.getElementById("symbolSelect");
+      if (select && sym) {
+        const normSym = sym.toUpperCase().replace(/[-_.]/g, "").replace("SWAP", "").replace("P", "");
+        let targetVal = null;
+        for (const opt of select.options) {
+          const normOpt = opt.value.toUpperCase().replace(/[-_.]/g, "").replace("SWAP", "").replace("P", "");
+          if (normOpt === normSym) {
+            targetVal = opt.value;
+            break;
+          }
+        }
+        if (targetVal) {
+          select.value = targetVal;
+          select.dispatchEvent(new Event("change"));
+          showToast(`Switched chart to ${targetVal} 📈`, "info");
+        }
+      }
+    },
+  });
+  initAutoTradeManager({
+    getSymbol: () => currentSymbol,
+    fetchToobitPositions,
   });
   setMode(currentMode);
   lucide.createIcons();

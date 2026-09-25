@@ -1,0 +1,542 @@
+{
+  "total_simulations": 8,
+  "directional_signals": 2,
+  "neutral_signals": 6,
+  "wins": 1,
+  "losses": 1,
+  "break_even": 0,
+  "win_rate_pct": 50.0,
+  "net_pnl_pct": 2.09,
+  "net_roe_50x_pct": 104.2,
+  "profit_factor": 13.29,
+  "avg_r_multiple": 0.6,
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "BTC Flash Breakdown & Support Loss",
+      "symbol": "BTCUSDT.P",
+      "interval": "15m",
+      "regime_type": "Strong Bearish Breakdown (RSI 32, ADX 48.6)",
+      "cutoff_timestamp": 1790167500,
+      "cutoff_time": "2026-09-23 12:45 UTC",
+      "entry_price": 85465.0,
+      "past_bars": 376,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 34.28,
+        "trend": "STRONG_BEARISH",
+        "adx": 50.0,
+        "macd_hist": -14.42048911,
+        "atr": 198.8767418,
+        "support": 85217.6,
+        "resistance": 86232.9,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.1208,
+          "SCALP_LONG": 0.2243,
+          "NEUTRAL_HOLD": 0.283,
+          "SCALP_SHORT": 0.2231,
+          "STRONG_SHORT": 0.1488
+        },
+        "long_prob": 0.3451,
+        "short_prob": 0.3719,
+        "hold_prob": 0.283,
+        "confidence_prob": 0.519,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 602.8
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 85465.0,
+        "stop_loss": 85465.0,
+        "tp1": 85465.0,
+        "tp2": 85465.0,
+        "break_even": 85465.0,
+        "confidence_pct": 51.9,
+        "reasons": [
+          "Quality Filter: Trade rejected: Directional edge (51.9%) below threshold (52.5%).",
+          "Market Regime: STRONG_TREND"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "MISSED_RUNAWAY",
+        "is_success": false,
+        "exit_reason": "CHOP_EXPANDED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 0.51,
+        "mae_pct": 2.34,
+        "total_range_pct": 2.84,
+        "details": "Price drifted in a 2.84% range (Trend occurred without entry)"
+      }
+    },
+    {
+      "id": 2,
+      "name": "BTC Upward Momentum Breakout",
+      "symbol": "BTCUSDT.P",
+      "interval": "15m",
+      "regime_type": "Strong Bullish Expansion (RSI 72.9, ADX 43.2)",
+      "cutoff_timestamp": 1789987500,
+      "cutoff_time": "2026-09-21 10:45 UTC",
+      "entry_price": 84400.2,
+      "past_bars": 176,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 72.12,
+        "trend": "STRONG_BULLISH",
+        "adx": 45.5,
+        "macd_hist": 129.02963987,
+        "atr": 427.25365899,
+        "support": 81356.0,
+        "resistance": 85283.0,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.1268,
+          "SCALP_LONG": 0.2354,
+          "NEUTRAL_HOLD": 0.2606,
+          "SCALP_SHORT": 0.2263,
+          "STRONG_SHORT": 0.1509
+        },
+        "long_prob": 0.3622,
+        "short_prob": 0.3772,
+        "hold_prob": 0.2606,
+        "confidence_prob": 0.51,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 607.6
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 84400.2,
+        "stop_loss": 84400.2,
+        "tp1": 84400.2,
+        "tp2": 84400.2,
+        "break_even": 84400.2,
+        "confidence_pct": 51.0,
+        "reasons": [
+          "Quality Filter: Short trade rejected: Violent bull momentum (ADX 45.5). Do not short strong expansions.",
+          "Market Regime: STRONG_TREND"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "MISSED_RUNAWAY",
+        "is_success": false,
+        "exit_reason": "CHOP_EXPANDED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 2.27,
+        "mae_pct": 0.06,
+        "total_range_pct": 2.33,
+        "details": "Price drifted in a 2.33% range (Trend occurred without entry)"
+      }
+    },
+    {
+      "id": 3,
+      "name": "BTC Low-Volatility Squeeze Compression",
+      "symbol": "BTCUSDT.P",
+      "interval": "15m",
+      "regime_type": "TTM Squeeze Active + Low ADX Chop (ADX 9.8)",
+      "cutoff_timestamp": 1790122500,
+      "cutoff_time": "2026-09-23 00:15 UTC",
+      "entry_price": 86417.5,
+      "past_bars": 326,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 57.18,
+        "trend": "STRONG_BULLISH",
+        "adx": 10.7,
+        "macd_hist": 15.60155475,
+        "atr": 212.17262518,
+        "support": 85954.7,
+        "resistance": 86495.0,
+        "is_squeeze": true
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.1246,
+          "SCALP_LONG": 0.2313,
+          "NEUTRAL_HOLD": 0.2744,
+          "SCALP_SHORT": 0.2218,
+          "STRONG_SHORT": 0.1479
+        },
+        "long_prob": 0.3559,
+        "short_prob": 0.3697,
+        "hold_prob": 0.2744,
+        "confidence_prob": 0.509,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 602.5
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 86417.5,
+        "stop_loss": 86417.5,
+        "tp1": 86417.5,
+        "tp2": 86417.5,
+        "break_even": 86417.5,
+        "confidence_pct": 50.9,
+        "reasons": [
+          "Quality Filter: Trade rejected: Squeeze compression edge (50.9%) below threshold (51.5%).",
+          "Market Regime: CHOP_RANGE"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "SUCCESS_AVOIDED_CHOP",
+        "is_success": true,
+        "exit_reason": "CAPITAL_PRESERVED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 0.96,
+        "mae_pct": 0.34,
+        "total_range_pct": 1.3,
+        "details": "Price drifted in a 1.30% range (Noise avoided)"
+      }
+    },
+    {
+      "id": 4,
+      "name": "SOL Bearish Momentum & Rejection",
+      "symbol": "SOLUSDT.P",
+      "interval": "15m",
+      "regime_type": "Bearish Trend Rejection (RSI 34.4, ADX 29.6)",
+      "cutoff_timestamp": 1790055000,
+      "cutoff_time": "2026-09-22 05:30 UTC",
+      "entry_price": 116.64,
+      "past_bars": 251,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 42.84,
+        "trend": "NEUTRAL",
+        "adx": 31.4,
+        "macd_hist": -0.06638377,
+        "atr": 0.65468174,
+        "support": 115.54,
+        "resistance": 119.44,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.1228,
+          "SCALP_LONG": 0.228,
+          "NEUTRAL_HOLD": 0.2691,
+          "SCALP_SHORT": 0.228,
+          "STRONG_SHORT": 0.1521
+        },
+        "long_prob": 0.3508,
+        "short_prob": 0.3801,
+        "hold_prob": 0.2691,
+        "confidence_prob": 0.52,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 626.7
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 116.64,
+        "stop_loss": 116.64,
+        "tp1": 116.64,
+        "tp2": 116.64,
+        "break_even": 116.64,
+        "confidence_pct": 52.0,
+        "reasons": [
+          "Quality Filter: Trade rejected: Directional edge (52.0%) below threshold (52.5%).",
+          "Market Regime: STRONG_TREND"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "MISSED_RUNAWAY",
+        "is_success": false,
+        "exit_reason": "CHOP_EXPANDED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 1.13,
+        "mae_pct": 0.77,
+        "total_range_pct": 1.9,
+        "details": "Price drifted in a 1.90% range (Trend occurred without entry)"
+      }
+    },
+    {
+      "id": 5,
+      "name": "SOL Coiling Range Before Major Leg",
+      "symbol": "SOLUSDT.P",
+      "interval": "15m",
+      "regime_type": "Tight Range Compression (ADX 14.9, Squeeze True)",
+      "cutoff_timestamp": 1789920000,
+      "cutoff_time": "2026-09-20 16:00 UTC",
+      "entry_price": 108.84,
+      "past_bars": 101,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 62.91,
+        "trend": "BULLISH",
+        "adx": 17.1,
+        "macd_hist": 0.08748626,
+        "atr": 0.3858145,
+        "support": 107.91,
+        "resistance": 108.97,
+        "is_squeeze": true
+      },
+      "laya": {
+        "position": "SCALP_SHORT",
+        "probabilities": {
+          "STRONG_LONG": 0.113,
+          "SCALP_LONG": 0.2098,
+          "NEUTRAL_HOLD": 0.3066,
+          "SCALP_SHORT": 0.2224,
+          "STRONG_SHORT": 0.1482
+        },
+        "long_prob": 0.3228,
+        "short_prob": 0.3706,
+        "hold_prob": 0.3066,
+        "confidence_prob": 0.534,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 624.5
+      },
+      "signal": {
+        "action": "SHORT",
+        "entry_price": 108.84,
+        "stop_loss": 109.0279,
+        "tp1": 108.6146,
+        "tp2": 108.4267,
+        "break_even": 108.6991,
+        "confidence_pct": 53.4,
+        "reasons": [
+          "\u26a1 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: $110.7991 (+1.8%).",
+          "\ud83d\udee1\ufe0f Structural Invalidation: SL at $109.0279 (-8.6% ROE) protects capital safe below liquidation.",
+          "\ud83c\udfaf Take Profit 1 (+1.2R): Reach $108.6146 for +10.4% ROE (Scale out 50% profit).",
+          "\ud83d\ude80 Take Profit 2 (+2.2R): Runner target at $108.4267 for +19.0% ROE.",
+          "\ud83d\udd12 Break-Even Trigger (+0.75R): At $108.6991 (+6.5% ROE), move SL to entry for 100% risk-free trade.",
+          "\ud83d\udd25 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion."
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "FAILED_SL",
+        "is_success": false,
+        "exit_reason": "SL_HIT",
+        "exit_price": 109.0279,
+        "exit_bar": 1,
+        "pnl_pct": -0.17,
+        "roe_pct": -8.6,
+        "r_multiple": -1.0,
+        "mfe_pct": 0.04,
+        "mae_pct": 0.56,
+        "tp1_reached": false,
+        "tp2_reached": false,
+        "be_triggered": false,
+        "sl_hit": true
+      }
+    },
+    {
+      "id": 6,
+      "name": "SOL Bullish Continuation at New Highs",
+      "symbol": "SOLUSDT.P",
+      "interval": "15m",
+      "regime_type": "Strong Bullish Uptrend Continuation (ADX 39.1)",
+      "cutoff_timestamp": 1790032500,
+      "cutoff_time": "2026-09-21 23:15 UTC",
+      "entry_price": 118.85,
+      "past_bars": 226,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 54.07,
+        "trend": "NEUTRAL",
+        "adx": 39.4,
+        "macd_hist": -0.03003983,
+        "atr": 0.65626048,
+        "support": 117.01,
+        "resistance": 119.97,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "SCALP_SHORT",
+        "probabilities": {
+          "STRONG_LONG": 0.1162,
+          "SCALP_LONG": 0.2159,
+          "NEUTRAL_HOLD": 0.2957,
+          "SCALP_SHORT": 0.2233,
+          "STRONG_SHORT": 0.1489
+        },
+        "long_prob": 0.3321,
+        "short_prob": 0.3722,
+        "hold_prob": 0.2957,
+        "confidence_prob": 0.528,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 608.5
+      },
+      "signal": {
+        "action": "SHORT",
+        "entry_price": 118.85,
+        "stop_loss": 120.0684,
+        "tp1": 117.3879,
+        "tp2": 116.1694,
+        "break_even": 117.9362,
+        "confidence_pct": 52.8,
+        "reasons": [
+          "\u26a1 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: $120.9893 (+1.8%).",
+          "\ud83d\udee1\ufe0f Structural Invalidation: SL at $120.0684 (-51.3% ROE) protects capital safe below liquidation.",
+          "\ud83c\udfaf Take Profit 1 (+1.2R): Reach $117.3879 for +61.5% ROE (Scale out 50% profit).",
+          "\ud83d\ude80 Take Profit 2 (+2.2R): Runner target at $116.1694 for +112.8% ROE.",
+          "\ud83d\udd12 Break-Even Trigger (+0.75R): At $117.9362 (+38.4% ROE), move SL to entry for 100% risk-free trade."
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "SUCCESS_TP2",
+        "is_success": true,
+        "exit_reason": "TP2_HIT",
+        "exit_price": 116.1694,
+        "exit_bar": 23,
+        "pnl_pct": 2.26,
+        "roe_pct": 112.8,
+        "r_multiple": 2.2,
+        "mfe_pct": 2.3,
+        "mae_pct": 0.5,
+        "tp1_reached": true,
+        "tp2_reached": true,
+        "be_triggered": true,
+        "sl_hit": false
+      }
+    },
+    {
+      "id": 7,
+      "name": "PEPE High-Beta Meme Capitulation Dump",
+      "symbol": "1000PEPEUSDT.P",
+      "interval": "15m",
+      "regime_type": "Extreme Oversold Dump (RSI 28.1, ADX 70.1)",
+      "cutoff_timestamp": 1790190000,
+      "cutoff_time": "2026-09-23 19:00 UTC",
+      "entry_price": 0.0043604,
+      "past_bars": 401,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 27.0,
+        "trend": "STRONG_BEARISH",
+        "adx": 69.6,
+        "macd_hist": 1.001e-05,
+        "atr": 4.934e-05,
+        "support": 0.0043285,
+        "resistance": 0.0046007,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.3086,
+          "SCALP_LONG": 0.1661,
+          "NEUTRAL_HOLD": 0.0804,
+          "SCALP_SHORT": 0.2892,
+          "STRONG_SHORT": 0.1557
+        },
+        "long_prob": 0.4747,
+        "short_prob": 0.4449,
+        "hold_prob": 0.0804,
+        "confidence_prob": 0.516,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 608.0
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 0.0043604,
+        "stop_loss": 0.0043604,
+        "tp1": 0.0043604,
+        "tp2": 0.0043604,
+        "break_even": 0.0043604,
+        "confidence_pct": 51.6,
+        "reasons": [
+          "Quality Filter: Long trade rejected: Violent bear cascade (ADX 69.6). Do not catch falling knives.",
+          "Market Regime: STRONG_TREND"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "MISSED_RUNAWAY",
+        "is_success": false,
+        "exit_reason": "CHOP_EXPANDED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 1.16,
+        "mae_pct": 1.23,
+        "total_range_pct": 2.39,
+        "details": "Price drifted in a 2.39% range (Trend occurred without entry)"
+      }
+    },
+    {
+      "id": 8,
+      "name": "PEPE Meme Parabolic Breakout",
+      "symbol": "1000PEPEUSDT.P",
+      "interval": "15m",
+      "regime_type": "Parabolic Expansion (RSI 72.1, ADX 63.6)",
+      "cutoff_timestamp": 1790010000,
+      "cutoff_time": "2026-09-21 17:00 UTC",
+      "entry_price": 0.0049671,
+      "past_bars": 201,
+      "future_bars": 24,
+      "indicators": {
+        "rsi": 72.43,
+        "trend": "STRONG_BULLISH",
+        "adx": 64.3,
+        "macd_hist": 2.362e-05,
+        "atr": 0.00011657,
+        "support": 0.0042076,
+        "resistance": 0.0051595,
+        "is_squeeze": false
+      },
+      "laya": {
+        "position": "NEUTRAL_HOLD",
+        "probabilities": {
+          "STRONG_LONG": 0.1551,
+          "SCALP_LONG": 0.2881,
+          "NEUTRAL_HOLD": 0.0554,
+          "SCALP_SHORT": 0.1755,
+          "STRONG_SHORT": 0.3259
+        },
+        "long_prob": 0.4432,
+        "short_prob": 0.5014,
+        "hold_prob": 0.0554,
+        "confidence_prob": 0.531,
+        "engine": "laya_crypto_int8",
+        "latency_ms": 1579.8
+      },
+      "signal": {
+        "action": "NEUTRAL",
+        "entry_price": 0.0049671,
+        "stop_loss": 0.0049671,
+        "tp1": 0.0049671,
+        "tp2": 0.0049671,
+        "break_even": 0.0049671,
+        "confidence_pct": 53.1,
+        "reasons": [
+          "Quality Filter: Short trade rejected: Violent bull momentum (ADX 64.3). Do not short strong expansions.",
+          "Market Regime: STRONG_TREND"
+        ]
+      },
+      "outcome": {
+        "status": "COMPLETED",
+        "result": "MISSED_RUNAWAY",
+        "is_success": false,
+        "exit_reason": "CHOP_EXPANDED",
+        "pnl_pct": 0.0,
+        "roe_pct": 0.0,
+        "r_multiple": 0.0,
+        "mfe_pct": 1.96,
+        "mae_pct": 4.28,
+        "total_range_pct": 6.25,
+        "details": "Price drifted in a 6.25% range (Trend occurred without entry)"
+      }
+    }
+  ]
+}

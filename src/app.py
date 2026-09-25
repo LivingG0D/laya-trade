@@ -16,8 +16,11 @@ from .config import (
     DEFAULT_TIMEFRAME,
     SUPPORTED_TIMEFRAMES,
     WEB_DIR,
+    BASE_DIR,
     APP_HOST,
-    APP_PORT
+    APP_PORT,
+    TOOBIT_API_KEY,
+    TOOBIT_API_SECRET
 )
 from .market_data import MarketDataService
 from .indicators import compute_all_indicators
@@ -26,6 +29,7 @@ from .signal_generator import SignalGenerator
 
 from pydantic import BaseModel
 from .toobit_client import ToobitClient, generate_position_suggestion
+from .auto_trader import AutoTrader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("app")
@@ -34,7 +38,11 @@ logger = logging.getLogger("app")
 market_service = MarketDataService()
 laya_engine = LayaEngine()
 signal_generator = SignalGenerator()
-toobit_client = ToobitClient(is_demo=True)  # Start in Demo simulation mode by default for zero-risk testing
+toobit_client = ToobitClient(
+    api_key=TOOBIT_API_KEY,
+    api_secret=TOOBIT_API_SECRET,
+    is_demo=not bool(TOOBIT_API_KEY and TOOBIT_API_SECRET)
+)
 
 # Cache latest market analysis for instant position suggestion evaluation
 latest_analysis_cache: Dict[str, Any] = {}
@@ -52,7 +60,19 @@ class ToobitSimulateRequest(BaseModel):
     side: str = "LONG"
     quantity: float = 100000.0
     entryPrice: Optional[float] = None
-    leverage: int = 10
+    leverage: int = 50
+
+class ToobitTPSLRequest(BaseModel):
+    symbol: str
+    side: Optional[str] = "LONG"
+    stopLoss: float = 0.0
+    takeProfit: float = 0.0
+
+class AutoTradeToggleRequest(BaseModel):
+    enabled: bool
+
+class AutoTradeSettingsRequest(BaseModel):
+    settings: Dict[str, Any]
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -79,6 +99,15 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
+# Autonomous Algorithmic Trading Supervisor
+auto_trader = AutoTrader(
+    toobit_client=toobit_client,
+    market_service=market_service,
+    laya_engine=laya_engine,
+    signal_generator=signal_generator,
+    ws_manager=ws_manager
+)
+
 # Background tick handler
 async def handle_candle_tick(candle_update: Dict[str, Any]):
     """Broadcast tick to all connected web clients."""
@@ -97,10 +126,14 @@ async def lifespan(app: FastAPI):
     # Check model readiness asynchronously without blocking startup
     asyncio.create_task(laya_engine.start_server())
 
+    # Launch AutoTrader background supervisor
+    auto_trader.start_loop()
+
     yield
 
     # Shutdown
     logger.info("Shutting down services...")
+    await auto_trader.stop_loop()
     await market_service.close()
     await laya_engine.close()
     await toobit_client.close()
@@ -211,29 +244,32 @@ async def trigger_analysis(
 ):
     """Run full technical calculation and Laya System 1 probabilistic decision with multi-factor confluence."""
     try:
-        raw_klines = await market_service.fetch_klines(symbol=symbol, interval=interval, limit=200)
+        # Fully parallel gather across all external exchange network endpoints
+        results = await asyncio.gather(
+            market_service.fetch_klines(symbol=symbol, interval=interval, limit=200),
+            market_service.fetch_htf_context(symbol),
+            market_service.fetch_order_book_depth(symbol),
+            market_service.fetch_funding_rate(symbol),
+            return_exceptions=True
+        )
+        raw_klines, htf_ctx, depth_ctx, funding_ctx = results
+
+        if isinstance(raw_klines, Exception) or not raw_klines:
+            logger.error(f"Failed to fetch market klines: {raw_klines}")
+            raise HTTPException(status_code=500, detail="Failed to fetch market klines from exchange")
+
         calc = compute_all_indicators(raw_klines)
         latest = calc["latest"]
         latest["symbol"] = symbol.upper()
         latest["interval"] = interval
         latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
 
-        # Concurrent fetch of institutional intelligence: 1h HTF Macro Trend, Order Book Depth (OBI), and Funding Rate
-        try:
-            htf_ctx, depth_ctx, funding_ctx = await asyncio.gather(
-                market_service.fetch_htf_context(symbol),
-                market_service.fetch_order_book_depth(symbol),
-                market_service.fetch_funding_rate(symbol),
-                return_exceptions=True
-            )
-            if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
-                latest["htf"] = htf_ctx
-            if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
-                latest["depth"] = depth_ctx
-            if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
-                latest["funding"] = funding_ctx
-        except Exception as e:
-            logger.warning(f"Error gathering institutional intelligence in analyze: {e}")
+        if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
+            latest["htf"] = htf_ctx
+        if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
+            latest["depth"] = depth_ctx
+        if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
+            latest["funding"] = funding_ctx
 
         # Laya inference with enriched multi-factor context
         laya_decision = await laya_engine.decide(latest)
@@ -294,7 +330,22 @@ async def connect_toobit(req: ToobitConnectRequest):
     if not test_result.get("success"):
         toobit_client.disconnect()
         return JSONResponse(status_code=401, content=test_result)
-    
+
+    # Persist validated keys to .env
+    try:
+        env_path = BASE_DIR / ".env"
+        existing_lines = []
+        if env_path.exists():
+            existing_lines = [
+                line for line in env_path.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("TOOBIT_API_KEY=") and not line.startswith("TOOBIT_API_SECRET=")
+            ]
+        existing_lines.append(f"TOOBIT_API_KEY={req.apiKey.strip()}")
+        existing_lines.append(f"TOOBIT_API_SECRET={req.apiSecret.strip()}")
+        env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not persist keys to .env: {e}")
+
     return {
         "success": True,
         "mode": "live",
@@ -305,6 +356,16 @@ async def connect_toobit(req: ToobitConnectRequest):
 async def disconnect_toobit():
     """Disconnect and clear credentials."""
     toobit_client.disconnect()
+    try:
+        env_path = BASE_DIR / ".env"
+        if env_path.exists():
+            existing_lines = [
+                line for line in env_path.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("TOOBIT_API_KEY=") and not line.startswith("TOOBIT_API_SECRET=")
+            ]
+            env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not clear keys from .env: {e}")
     return {"success": True, "message": "Disconnected from Toobit."}
 
 @app.get("/api/toobit/status")
@@ -322,19 +383,77 @@ async def get_toobit_status():
 async def get_toobit_positions(symbol: Optional[str] = Query(None)):
     """Fetch active open positions with live calculated PnL."""
     try:
-        sym = symbol or market_service.current_symbol
-        ticker = await market_service.fetch_ticker_24h(symbol=sym)
-        current_price = float(ticker.get("last_price") or ticker.get("price", 0.0))
+        # Fetch all open positions across the Toobit account
+        all_positions = await toobit_client.get_positions(symbol=None)
+        
+        # If symbol specified, filter/prioritize matching position
+        matching_positions = []
+        if symbol and all_positions:
+            norm_target = symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            for p in all_positions:
+                p_sym = p.get("symbol", "")
+                norm_pos = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                if norm_target == norm_pos or p_sym == symbol:
+                    matching_positions.append(p)
 
-        positions = await toobit_client.get_positions(symbol=symbol, current_market_price=current_price)
+        # If auto_trader has active trade info with TP/SL, enrich positions
+        if auto_trader._active_trade:
+            act = auto_trader._active_trade
+            act_sym = act.get("symbol", "")
+            norm_act = act_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            for p in all_positions:
+                p_sym = p.get("symbol", "")
+                norm_p = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                if norm_p == norm_act:
+                    if (not p.get("stopLoss") or p.get("stopLoss") == 0) and act.get("stop_loss"):
+                        p["stopLoss"] = float(act["stop_loss"])
+                    if (not p.get("takeProfit") or p.get("takeProfit") == 0) and act.get("take_profit_1"):
+                        p["takeProfit"] = float(act["take_profit_1"])
+                        p["takeProfit1"] = float(act["take_profit_1"])
+
+        # Active positions to return:
+        # If there is a position for the active chart coin, return it first.
+        # Otherwise, return all open account positions so the trader is never blind to active trades!
+        positions_to_return = matching_positions if matching_positions else all_positions
+
         return {
             "connected": toobit_client.is_connected,
             "mode": "demo" if toobit_client.is_demo else "live",
-            "positions": positions
+            "positions": positions_to_return,
+            "all_positions": all_positions,
+            "has_matching_position": bool(matching_positions)
         }
     except Exception as e:
         logger.error(f"Error fetching Toobit positions: {e}")
-        return {"connected": toobit_client.is_connected, "positions": [], "error": str(e)}
+        return {"connected": toobit_client.is_connected, "positions": [], "all_positions": [], "error": str(e)}
+
+@app.post("/api/toobit/tpsl")
+async def set_toobit_tpsl(req: ToobitTPSLRequest):
+    """Directly configure or adjust exchange-level TP/SL on Toobit."""
+    try:
+        side = req.side
+        if not side:
+            side = await toobit_client._resolve_position_side(req.symbol) or "LONG"
+        res = await toobit_client.set_position_tpsl(
+            symbol=req.symbol,
+            side=side,
+            stop_loss=req.stopLoss,
+            take_profit=req.takeProfit
+        )
+        # Update auto_trader active trade if matching
+        if auto_trader._active_trade:
+            pos_sym = auto_trader._active_trade.get("symbol", "")
+            norm_target = req.symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            norm_active = pos_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            if norm_target == norm_active:
+                if req.stopLoss > 0:
+                    auto_trader._active_trade["stop_loss"] = req.stopLoss
+                if req.takeProfit > 0:
+                    auto_trader._active_trade["take_profit_1"] = req.takeProfit
+        return res
+    except Exception as e:
+        logger.error(f"Error setting Toobit TP/SL: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.post("/api/toobit/close")
 async def close_toobit_position(req: ToobitCloseRequest):
@@ -355,14 +474,10 @@ async def simulate_demo_position(req: ToobitSimulateRequest):
     entry_price = req.entryPrice
     try:
         ticker = await market_service.fetch_ticker_24h(symbol=req.symbol)
-        real_price = float(ticker.get("last_price") or ticker.get("price") or 0)
+        real_price = float(ticker.get("last_price") or ticker.get("price", 0) or 0)
     except Exception:
         real_price = 0.0
 
-    # Trust the client entry only if it's within 5% of this symbol's real
-    # price: the frontend's lastKnownPrice can be stale right after a symbol
-    # switch (cross-symbol race) and would otherwise open a demo position at
-    # a nonsense price scale (e.g. a PEPE position entered at $281).
     if real_price > 0 and (
         not entry_price or entry_price <= 0
         or abs(entry_price - real_price) / real_price > 0.05
@@ -390,15 +505,32 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
     Evaluate open positions against the latest Laya System-1 probabilistic intelligence
     and return tailored actionable trade management suggestions.
     """
+    # 1. Fetch active positions across account
+    all_positions = await toobit_client.get_positions(symbol=None)
     target_sym = symbol or market_service.current_symbol
+
+    # 2. Check for matching position or fallback to open account position
+    active_pos = None
+    if all_positions:
+        norm_target = target_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+        for p in all_positions:
+            p_sym = p.get("symbol", "")
+            norm_pos = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            if norm_target == norm_pos or p_sym == target_sym:
+                active_pos = p
+                break
+        
+        # If no position matches current chart coin, evaluate the actual open position!
+        if not active_pos and all_positions:
+            active_pos = all_positions[0]
+            target_sym = active_pos.get("displaySymbol") or active_pos.get("symbol")
+
     ticker = await market_service.fetch_ticker_24h(symbol=target_sym)
     current_price = float(ticker.get("last_price") or ticker.get("price", 0.0))
+    if current_price <= 0 and active_pos:
+        current_price = float(active_pos.get("markPrice") or active_pos.get("entryPrice", 0.0))
     if current_price <= 0 and latest_analysis_cache.get("latest"):
         current_price = float(latest_analysis_cache["latest"].get("price", 0.0))
-
-    # Get active position
-    positions = await toobit_client.get_positions(symbol=target_sym, current_market_price=current_price)
-    active_pos = positions[0] if positions else None
 
     # Get or generate latest market analysis
     analysis = latest_analysis_cache.get("signal")
@@ -435,6 +567,35 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
         "position": active_pos,
         "suggestion": suggestion
     }
+
+# ==============================================
+# AUTONOMOUS TRADING ENGINE ENDPOINTS
+# ==============================================
+
+@app.get("/api/autotrade/status")
+async def get_autotrade_status():
+    """Return live AutoTrader state, settings, stats, and audit logs."""
+    return auto_trader.get_status()
+
+@app.post("/api/autotrade/toggle")
+async def toggle_autotrade(req: AutoTradeToggleRequest):
+    """Enable or disable autonomous trading."""
+    return await auto_trader.toggle(req.enabled)
+
+@app.post("/api/autotrade/settings")
+async def update_autotrade_settings(req: AutoTradeSettingsRequest):
+    """Update AutoTrader strategy, risk, and circuit breaker settings."""
+    return await auto_trader.update_settings(req.settings)
+
+@app.post("/api/autotrade/emergency_stop")
+async def emergency_stop_autotrade():
+    """Emergency Kill Switch: instantly halts auto-trading, cancels orders, and flash-closes positions."""
+    return await auto_trader.emergency_stop()
+
+@app.post("/api/autotrade/clear_logs")
+async def clear_autotrade_logs():
+    """Clear AutoTrader audit log history."""
+    return auto_trader.clear_logs()
 
 @app.post("/api/switch")
 async def switch_stream(symbol: str = Query(...), interval: str = Query(DEFAULT_TIMEFRAME)):

@@ -267,7 +267,7 @@ def calculate_ttm_squeeze(
     return {"is_squeeze": is_squeeze, "status": status}
 
 
-def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
+def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = True) -> Dict[str, Any]:
     """
     Compute full technical indicator suite on klines.
     Each kline expected format: {'time': int, 'open': float, 'high': float, 'low': float, 'close': float, 'volume': float, ...}
@@ -302,30 +302,31 @@ def compute_all_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Decorate klines with indicators for frontend lightweight charts
     decorated_series = []
     n = len(klines)
-    for i in range(n):
-        k = klines[i]
-        item = {
-            "time": k["time"],
-            "open": float(opens[i]),
-            "high": float(highs[i]),
-            "low": float(lows[i]),
-            "close": float(closes[i]),
-            "volume": float(volumes[i]),
-            "ema9": None if np.isnan(ema9[i]) else round(float(ema9[i]), 8),
-            "ema21": None if np.isnan(ema21[i]) else round(float(ema21[i]), 8),
-            "ema50": None if np.isnan(ema50[i]) else round(float(ema50[i]), 8),
-            "ema200": None if np.isnan(ema200[i]) else round(float(ema200[i]), 8),
-            "rsi": None if np.isnan(rsi[i]) else round(float(rsi[i]), 2),
-            "macd": None if np.isnan(macd_res["macd"][i]) else round(float(macd_res["macd"][i]), 8),
-            "macd_signal": None if np.isnan(macd_res["signal"][i]) else round(float(macd_res["signal"][i]), 8),
-            "macd_hist": None if np.isnan(macd_res["histogram"][i]) else round(float(macd_res["histogram"][i]), 8),
-            "bb_upper": None if np.isnan(bb_res["upper"][i]) else round(float(bb_res["upper"][i]), 8),
-            "bb_middle": None if np.isnan(bb_res["middle"][i]) else round(float(bb_res["middle"][i]), 8),
-            "bb_lower": None if np.isnan(bb_res["lower"][i]) else round(float(bb_res["lower"][i]), 8),
-            "atr": None if np.isnan(atr[i]) else round(float(atr[i]), 8),
-            "adx": round(float(adx_res["adx"][i]), 1),
-        }
-        decorated_series.append(item)
+    if include_series:
+        for i in range(n):
+            k = klines[i]
+            item = {
+                "time": k["time"],
+                "open": float(opens[i]),
+                "high": float(highs[i]),
+                "low": float(lows[i]),
+                "close": float(closes[i]),
+                "volume": float(volumes[i]),
+                "ema9": None if np.isnan(ema9[i]) else round(float(ema9[i]), 8),
+                "ema21": None if np.isnan(ema21[i]) else round(float(ema21[i]), 8),
+                "ema50": None if np.isnan(ema50[i]) else round(float(ema50[i]), 8),
+                "ema200": None if np.isnan(ema200[i]) else round(float(ema200[i]), 8),
+                "rsi": None if np.isnan(rsi[i]) else round(float(rsi[i]), 2),
+                "macd": None if np.isnan(macd_res["macd"][i]) else round(float(macd_res["macd"][i]), 8),
+                "macd_signal": None if np.isnan(macd_res["signal"][i]) else round(float(macd_res["signal"][i]), 8),
+                "macd_hist": None if np.isnan(macd_res["histogram"][i]) else round(float(macd_res["histogram"][i]), 8),
+                "bb_upper": None if np.isnan(bb_res["upper"][i]) else round(float(bb_res["upper"][i]), 8),
+                "bb_middle": None if np.isnan(bb_res["middle"][i]) else round(float(bb_res["middle"][i]), 8),
+                "bb_lower": None if np.isnan(bb_res["lower"][i]) else round(float(bb_res["lower"][i]), 8),
+                "atr": None if np.isnan(atr[i]) else round(float(atr[i]), 8),
+                "adx": round(float(adx_res["adx"][i]), 1),
+            }
+            decorated_series.append(item)
 
     # Latest bar metrics
     last_idx = -1

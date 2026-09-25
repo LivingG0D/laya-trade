@@ -170,6 +170,14 @@
           <span class="toobit-nav-pill demo" id="toobitNavStatus">Demo</span>
         </button>
 
+        <!-- Auto-Trading Cockpit Trigger -->
+        <button id="btnAutoTradeModal" class="btn-autotrade" title="Autonomous Algorithmic Trading Cockpit" aria-label="Open Auto-Trader">
+          <span class="autotrade-status-dot" id="navAutoTradeDot"></span>
+          <i data-lucide="bot"></i>
+          <span class="autotrade-btn-text hide-on-compact">Auto-Trader</span>
+          <span class="autotrade-pill off" id="navAutoTradePill">OFF</span>
+        </button>
+
         <!-- Primary Action Button -->
         <button id="analyzeBtn" class="btn-primary" title="Trigger Laya System 1 Inference (Shortcut: Space)">
           <i data-lucide="zap"></i>
@@ -277,7 +285,7 @@
         <!-- On-Chart Floating Active Position Overlay (HUD) -->
         <div id="chartPositionBadge" class="chart-pos-hud hide" role="region" aria-label="Open Position HUD">
           <div class="pos-hud-left">
-            <span class="pos-hud-side long" id="posHudSide">LONG 10x</span>
+            <span class="pos-hud-side long" id="posHudSide">LONG 50x</span>
             <div class="pos-hud-info">
               <span class="pos-hud-sym" id="posHudSymbol">BTCUSDT.P</span>
               <span class="pos-hud-entry" id="posHudEntry">Entry: $0.004180</span>
@@ -334,6 +342,46 @@
             </div>
           </div>
 
+          <!-- Beginner Auto-Trading Control Card -->
+          <div class="simple-plan-card autotrade-card" id="simpleAutoTradeCard">
+            <div class="card-header-styled">
+              <div class="simple-card-title">
+                <i data-lucide="bot"></i>
+                <span>AI Auto-Trader</span>
+              </div>
+              <div class="autotrade-card-actions">
+                <button type="button" class="btn-autotrade-switch" id="btnSimpleAutoTradeToggle" aria-label="Toggle Auto-Trading">
+                  <span class="toggle-knob"></span>
+                  <span class="toggle-label" id="simpleAutoTradeToggleLabel">OFF</span>
+                </button>
+              </div>
+            </div>
+            <div class="autotrade-quick-status">
+              <div class="at-status-indicator">
+                <span class="status-pulse-dot" id="simpleAtStatusDot"></span>
+                <span class="at-status-text" id="simpleAtStatusText">Standby (Turn ON to trade automatically)</span>
+              </div>
+              <div class="at-stats-row">
+                <div class="at-stat-box">
+                  <span class="at-stat-label">Safety Profile</span>
+                  <strong class="at-stat-val" id="simpleAtRiskVal">50x • $1.00 Margin</strong>
+                </div>
+                <div class="at-stat-box">
+                  <span class="at-stat-label">Win Rate</span>
+                  <strong class="at-stat-val pnl-green" id="simpleAtWinRate">--% (0 trades)</strong>
+                </div>
+              </div>
+            </div>
+            <div class="autotrade-card-footer">
+              <button type="button" class="btn-at-config" id="btnSimpleAtConfig">
+                <i data-lucide="sliders"></i> Configure Sizing & Limits
+              </button>
+              <button type="button" class="btn-at-kill-chip" id="btnSimpleAtKill">
+                <i data-lucide="alert-octagon"></i> Kill Switch
+              </button>
+            </div>
+          </div>
+
           <!-- Live Active Trade & AI Suggestions Card -->
           <div class="simple-plan-card position-highlight-card" id="simplePositionCard">
             <div class="card-header-styled">
@@ -353,6 +401,7 @@
                 <span class="pos-symbol" data-pos="symbol">BTC</span>
                 <span class="pos-badge long" id="simplePosBadge" data-pos="side">LONG (Demo)</span>
                 <span class="badge-mini badge-demo" id="simplePosModeBadge" data-pos="mode">Demo</span>
+                <button type="button" class="btn-switch-chart-chip hide" data-pos="switchBtn" title="Switch chart to this position">View on Chart ↗</button>
               </div>
 
               <div class="pos-hero">
@@ -393,11 +442,11 @@
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Margin</span>
-                  <span class="pos-stat-val" data-pos="margin">$41.80</span>
+                  <span class="pos-stat-val" data-pos="margin">$8.36</span>
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Leverage</span>
-                  <span class="pos-stat-val" data-pos="lev">10x</span>
+                  <span class="pos-stat-val" data-pos="lev">50x</span>
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Entry Price</span>
@@ -406,6 +455,14 @@
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Mark Price</span>
                   <span class="pos-stat-val" data-pos="mark">$0.004245</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Stop Loss (SL)</span>
+                  <span class="pos-stat-val sl-val" data-pos="sl">--</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Take Profit (TP)</span>
+                  <span class="pos-stat-val tp-val" data-pos="tp">--</span>
                 </div>
               </div>
             </div>
@@ -532,6 +589,9 @@
                 <span class="calc-res-val" id="calcLossVal">-$9.70</span>
               </div>
             </div>
+            <div class="simple-sizing-note" style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #94a3b8; background: rgba(15, 23, 42, 0.6); padding: 8px 12px; border-radius: 6px; border-left: 3px solid #38bdf8; margin-top: 10px;">
+              <span>🛡️ <strong>Anti-Loss Shield:</strong> Trade with a fixed $10 margin (or max 20% balance) per trade. Never go 100% all-in on 50x leverage to prevent compounding volatility loss.</span>
+            </div>
           </div>
 
           <!-- Plain English Why -->
@@ -588,24 +648,34 @@
             <!-- Trade Execution Plan -->
             <div class="trade-plan-grid">
               <div class="plan-item">
-                <span class="plan-label">Entry</span>
+                <span class="plan-label">Entry (50x)</span>
                 <span class="plan-val" id="targetEntry">--</span>
+                <span class="plan-sub" id="targetEntrySub">50x Leverage</span>
               </div>
               <div class="plan-item">
                 <span class="plan-label">Stop Loss (SL)</span>
                 <span class="plan-val sl-val" id="targetSL">--</span>
+                <span class="plan-sub sl-val" id="targetSLRoe">Max -40.0% ROE</span>
               </div>
               <div class="plan-item">
-                <span class="plan-label">Break-Even (+1.0R)</span>
+                <span class="plan-label">Break-Even (+0.45R)</span>
                 <span class="plan-val be-val" id="targetBE">--</span>
+                <span class="plan-sub be-val" id="targetBERoe">Shield to Entry</span>
               </div>
               <div class="plan-item">
-                <span class="plan-label">Take Profit 1 (1.5R)</span>
+                <span class="plan-label">Take Profit 1 (+0.8R)</span>
                 <span class="plan-val tp-val" id="targetTP1">--</span>
+                <span class="plan-sub tp-val" id="targetTP1Roe">+16% - +25% ROE</span>
               </div>
               <div class="plan-item">
-                <span class="plan-label">Take Profit 2 (2.5R)</span>
+                <span class="plan-label">Take Profit 2 (+1.4R)</span>
                 <span class="plan-val tp-val" id="targetTP2">--</span>
+                <span class="plan-sub tp-val" id="targetTP2Roe">+28% - +35% ROE</span>
+              </div>
+              <div class="plan-item">
+                <span class="plan-label">Est. Liquidation</span>
+                <span class="plan-val" id="targetLiq" style="color: #f59e0b;">--</span>
+                <span class="plan-sub" id="targetLiqDist" style="color: var(--text-dim);">Safe below SL</span>
               </div>
             </div>
 
@@ -614,11 +684,74 @@
               <span class="time-horizon" id="targetHorizon">Scalp (5m)</span>
             </div>
 
+            <!-- Anti-Volatility-Drag Position Sizing Shield -->
+            <div class="sizing-shield-banner" id="sizingShieldBanner" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; margin-top: 8px; border-radius: 6px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(56, 189, 248, 0.25); font-size: 0.8rem; color: #94a3b8;">
+              <span>🛡️ <strong style="color: #38bdf8;">Margin Shield:</strong> <span id="targetRecMargin" style="color: #f8fafc; font-weight: 600;">$10.00 Fixed</span></span>
+              <span style="color: #34d399; font-weight: 500;" id="targetSizingRule">Max 20% Kelly (Anti-Drag)</span>
+            </div>
+
             <div class="reasons-list-wrap">
               <div class="reasons-title"><i data-lucide="info"></i> Signal Confluence Rationale</div>
               <ul class="reasons-list" id="reasonsList">
                 <li>Click "Analyze Market" to evaluate indicators.</li>
               </ul>
+            </div>
+          </div>
+
+          <!-- Pro Mode Auto-Trading Cockpit Card -->
+          <div class="panel-card autotrade-pro-card" id="proAutoTradeCard">
+            <div class="panel-header">
+              <div class="panel-header-left">
+                <h3><i data-lucide="cpu"></i> Autonomous Algorithmic Desk</h3>
+              </div>
+              <div class="pro-at-header-controls">
+                <span class="at-mode-badge demo" id="proAtModeBadge">Demo</span>
+                <button type="button" class="btn-autotrade-switch" id="btnProAutoTradeToggle" aria-label="Toggle Auto-Trading">
+                  <span class="toggle-knob"></span>
+                  <span class="toggle-label" id="proAutoTradeToggleLabel">OFF</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="pro-at-body">
+              <div class="pro-at-metric-grid">
+                <div class="pro-at-metric">
+                  <span class="lbl">Engine Status</span>
+                  <span class="val status-idle" id="proAtStatus">IDLE</span>
+                </div>
+                <div class="pro-at-metric">
+                  <span class="lbl">Leverage & Sizing</span>
+                  <span class="val" id="proAtSizing">50x • Fixed $1.00</span>
+                </div>
+                <div class="pro-at-metric">
+                  <span class="lbl">Realized PnL</span>
+                  <span class="val pnl-green" id="proAtPnl">+$0.00</span>
+                </div>
+                <div class="pro-at-metric">
+                  <span class="lbl">Circuit Breaker</span>
+                  <span class="val" id="proAtCircuit">Safe (0/3 losses)</span>
+                </div>
+              </div>
+
+              <!-- Live Execution Feed Snippet -->
+              <div class="pro-at-log-snippet" id="proAtLogSnippet">
+                <div class="snippet-item">
+                  <span class="snippet-time">--:--:--</span>
+                  <span class="snippet-cat">[SYSTEM]</span>
+                  <span class="snippet-msg">Auto-trading standing by...</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="pro-at-footer">
+              <button type="button" class="btn-pro-secondary" id="btnProAtConfig">
+                <i data-lucide="sliders"></i>
+                <span>Settings & Audit Log</span>
+              </button>
+              <button type="button" class="btn-pro-kill" id="btnProAtKill">
+                <i data-lucide="alert-octagon"></i>
+                <span>Emergency Stop</span>
+              </button>
             </div>
           </div>
 
@@ -638,8 +771,9 @@
             <div class="pos-live" data-pos="live">
               <div class="pos-identity">
                 <span class="pos-symbol" id="proPosSym" data-pos="symbol">BTC</span>
-                <span class="pos-badge long" id="proPosSideBadge" data-pos="side">LONG 10x</span>
+                <span class="pos-badge long" id="proPosSideBadge" data-pos="side">LONG 50x</span>
                 <span class="badge-mini badge-demo" id="proPosModeBadge" data-pos="mode">Demo</span>
+                <button type="button" class="btn-switch-chart-chip hide" data-pos="switchBtn" title="Switch chart to this position">View on Chart ↗</button>
               </div>
 
               <div class="pos-hero">
@@ -649,7 +783,7 @@
                 </div>
                 <div class="pos-hero-block pos-hero-block-right">
                   <span class="pos-hero-label">Return on Margin</span>
-                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+15.5%</span>
+                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+77.8%</span>
                 </div>
               </div>
 
@@ -680,11 +814,11 @@
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Margin</span>
-                  <span class="pos-stat-val" data-pos="margin">$41.80</span>
+                  <span class="pos-stat-val" data-pos="margin">$8.36</span>
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Leverage</span>
-                  <span class="pos-stat-val" data-pos="lev">10x</span>
+                  <span class="pos-stat-val" data-pos="lev">50x</span>
                 </div>
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Entry Price</span>
@@ -693,6 +827,14 @@
                 <div class="pos-stat-item">
                   <span class="pos-stat-label">Mark Price</span>
                   <span class="pos-stat-val" data-pos="mark">$0.004245</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Stop Loss (SL)</span>
+                  <span class="pos-stat-val sl-val" data-pos="sl">--</span>
+                </div>
+                <div class="pos-stat-item">
+                  <span class="pos-stat-label">Take Profit (TP)</span>
+                  <span class="pos-stat-val tp-val" data-pos="tp">--</span>
                 </div>
               </div>
             </div>
@@ -1097,6 +1239,283 @@
                 <i data-lucide="play-circle"></i>
                 <span>Activate Demo Account ($5,000 USDT)</span>
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- AUTONOMOUS TRADING CONTROLLER & AUDIT MODAL    -->
+  <!-- ============================================== -->
+  <div id="autoTradeModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="autoTradeModalTitle">
+    <div class="modal-card autotrade-modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div class="modal-title-icon-box autotrade-icon">
+            <i data-lucide="cpu"></i>
+          </div>
+          <div>
+            <h2 id="autoTradeModalTitle">Autonomous Trading Desk</h2>
+            <span class="modal-subtitle">Laya System-1 Probabilistic AI with Rejection-Proof 50x Risk Engine</span>
+          </div>
+        </div>
+        <div class="modal-header-actions">
+          <div class="at-master-switch-wrap">
+            <span class="at-switch-label">MASTER:</span>
+            <button type="button" class="btn-autotrade-switch" id="modalAutoTradeToggle" aria-label="Toggle Auto-Trading Master Switch">
+              <span class="toggle-knob"></span>
+              <span class="toggle-label" id="modalAutoTradeToggleLabel">OFF</span>
+            </button>
+          </div>
+          <button id="btnCloseAutoTradeModal" class="modal-close-btn" aria-label="Close Modal">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- Live Status Bar -->
+        <div class="at-modal-status-bar" id="modalAtStatusBar">
+          <div class="status-bar-item">
+            <span class="lbl">STATUS</span>
+            <div class="val-pill status-idle" id="modalAtStatusPill">
+              <span class="status-pulse-dot" id="modalAtStatusDot"></span>
+              <span id="modalAtStatusText">STANDBY (OFF)</span>
+            </div>
+          </div>
+          <div class="status-bar-item">
+            <span class="lbl">MODE</span>
+            <span class="val-tag demo" id="modalAtModeTag">DEMO SIMULATION</span>
+          </div>
+          <div class="status-bar-item">
+            <span class="lbl">WIN RATE</span>
+            <span class="val-bold pnl-green" id="modalAtWinRateVal">--% (0 trades)</span>
+          </div>
+          <div class="status-bar-item">
+            <span class="lbl">DAILY REALIZED PNL</span>
+            <span class="val-bold" id="modalAtDailyPnlVal">+$0.00</span>
+          </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="modal-tabs" role="tablist" aria-label="Auto-Trader Sections">
+          <button class="modal-tab-btn active" id="tabAtSettings" role="tab" aria-selected="true" aria-controls="tabContentAtSettings">
+            <i data-lucide="sliders"></i> Risk & Strategy Controls
+          </button>
+          <button class="modal-tab-btn" id="tabAtSafety" role="tab" aria-selected="false" aria-controls="tabContentAtSafety">
+            <i data-lucide="shield-check"></i> Safety Circuit Breakers
+          </button>
+          <button class="modal-tab-btn" id="tabAtLogs" role="tab" aria-selected="false" aria-controls="tabContentAtLogs">
+            <i data-lucide="terminal"></i> Live Audit Log
+          </button>
+        </div>
+
+        <!-- Tab 1: Risk & Strategy Settings -->
+        <div id="tabContentAtSettings" class="tab-content active" role="tabpanel" aria-labelledby="tabAtSettings">
+          <form id="atSettingsForm" class="toobit-form">
+            <div class="form-row-dual">
+              <!-- Mode Selection -->
+              <div class="form-group">
+                <label for="atSettingMode">Execution Mode</label>
+                <select id="atSettingMode" class="styled-select">
+                  <option value="demo">🧪 Demo Simulation (Virtual $5,000 Equity)</option>
+                  <option value="live">⚡ Live Toobit Futures (Real Capital)</option>
+                </select>
+                <span class="input-hint">Live mode requires API Keys with Futures Trading permission.</span>
+              </div>
+
+              <!-- Leverage Multiplier -->
+              <div class="form-group">
+                <label for="atSettingLeverage">Leverage Multiplier</label>
+                <select id="atSettingLeverage" class="styled-select">
+                  <option value="10">10x Leverage (Conservative)</option>
+                  <option value="20">20x Leverage (Balanced)</option>
+                  <option value="50" selected>50x Leverage (Scalp Optimized)</option>
+                </select>
+                <span class="input-hint">Isolated margin with ATR-clamped Stop Loss.</span>
+              </div>
+            </div>
+
+            <div class="form-row-dual">
+              <!-- Sizing Mode & Margin -->
+              <div class="form-group">
+                <label for="atSettingSizingMode">Position Sizing Method</label>
+                <select id="atSettingSizingMode" class="styled-select">
+                  <option value="fixed_margin" selected>Fixed Margin (USDT per trade)</option>
+                  <option value="pct_equity">% of Account Equity</option>
+                </select>
+                <span class="input-hint">Never risk compounding volatility losses.</span>
+              </div>
+
+              <div class="form-group">
+                <label for="atSettingMarginVal">Margin Allocation</label>
+                <div class="input-wrap">
+                  <input type="number" id="atSettingMarginVal" step="0.5" min="0.5" max="50" value="1.0">
+                  <span class="input-suffix-tag" id="atMarginUnit">USDT</span>
+                </div>
+                <div class="quick-preset-chips" id="atMarginPresetChips">
+                  <button type="button" class="preset-chip" data-val="0.5">$0.50</button>
+                  <button type="button" class="preset-chip active" data-val="1.0">$1.00</button>
+                  <button type="button" class="preset-chip" data-val="2.0">$2.00</button>
+                  <button type="button" class="preset-chip" data-val="5.0">$5.00</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-row-dual">
+              <!-- Minimum Confidence Filter -->
+              <div class="form-group">
+                <label for="atSettingMinConf">Minimum Signal Confidence</label>
+                <select id="atSettingMinConf" class="styled-select">
+                  <option value="60">60% Confidence (Higher Frequency)</option>
+                  <option value="65" selected>65% Confidence (Recommended Balanced)</option>
+                  <option value="70">70% Confidence (Strict Confluence)</option>
+                  <option value="75">75% Confidence (Ultra High Conviction)</option>
+                </select>
+                <span class="input-hint">Skips choppy regimes and low-confidence setups.</span>
+              </div>
+
+              <!-- Cooldown Seconds -->
+              <div class="form-group">
+                <label for="atSettingCooldown">Cooldown Between Trades</label>
+                <div class="input-wrap">
+                  <input type="number" id="atSettingCooldown" min="10" max="300" value="30">
+                  <span class="input-suffix-tag">seconds</span>
+                </div>
+                <span class="input-hint">Guards against volatility whipsaws and revenge trading.</span>
+              </div>
+            </div>
+
+            <!-- Protective Strategy Rules -->
+            <div class="at-checkbox-group">
+              <label class="custom-checkbox-row">
+                <input type="checkbox" id="atSettingAutoBracket" checked>
+                <div class="cb-text">
+                  <strong>Automatic Exchange Bracket Orders (SL & TP)</strong>
+                  <span>Immediately attaches Stop-Loss clamped at 0.35%–0.80% and Take-Profit targets on entry.</span>
+                </div>
+              </label>
+
+              <label class="custom-checkbox-row">
+                <input type="checkbox" id="atSettingAutoBreakeven" checked>
+                <div class="cb-text">
+                  <strong>Auto Break-Even Profit Lock (+0.45R / +9% ROE)</strong>
+                  <span>Automatically raises Stop-Loss to entry price once trade reaches TP1 to secure a risk-free runner.</span>
+                </div>
+              </label>
+
+              <label class="custom-checkbox-row">
+                <input type="checkbox" id="atSettingReversalExit" checked>
+                <div class="cb-text">
+                  <strong>Opposing Signal Protection (Flash Close on Reversal)</strong>
+                  <span>Instantly exits position if Laya detects strong high-conviction counter-trend momentum (≥70%).</span>
+                </div>
+              </label>
+            </div>
+
+            <div class="modal-form-actions">
+              <button type="submit" id="btnSaveAtSettings" class="btn-primary-modal">
+                <i data-lucide="check"></i>
+                <span>Save Strategy Settings</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Tab 2: Safety Circuit Breakers -->
+        <div id="tabContentAtSafety" class="tab-content" role="tabpanel" aria-labelledby="tabAtSafety">
+          <div class="at-safety-banner">
+            <i data-lucide="shield-alert" class="safety-banner-icon"></i>
+            <div>
+              <strong>Institutional Circuit Breakers Active</strong>
+              <p>Hard limits enforced by the risk engine. If any limit is breached, auto-trading halts immediately to preserve your capital.</p>
+            </div>
+          </div>
+
+          <form id="atSafetyForm" class="toobit-form">
+            <div class="form-row-dual">
+              <div class="form-group">
+                <label for="atSettingMaxDailyLoss">Daily Loss Circuit Breaker ($ USD)</label>
+                <div class="input-wrap">
+                  <input type="number" id="atSettingMaxDailyLoss" step="1.0" min="1.0" max="200.0" value="5.0">
+                  <span class="input-suffix-tag">USDT</span>
+                </div>
+                <span class="input-hint">Shuts down auto-trading if cumulative daily loss exceeds this amount.</span>
+              </div>
+
+              <div class="form-group">
+                <label for="atSettingMaxConsec">Consecutive Loss Halt Limit</label>
+                <div class="input-wrap">
+                  <input type="number" id="atSettingMaxConsec" min="2" max="10" value="3">
+                  <span class="input-suffix-tag">losses</span>
+                </div>
+                <span class="input-hint">Pauses auto-trading after N back-to-back losses for human review.</span>
+              </div>
+            </div>
+
+            <div class="safety-metrics-grid">
+              <div class="safety-metric-card">
+                <span class="sm-lbl">Today's Realized PnL</span>
+                <span class="sm-val" id="safetyDailyPnl">+$0.00</span>
+                <span class="sm-sub" id="safetyDailyLimitLabel">Cap: -$5.00 USDT</span>
+              </div>
+              <div class="safety-metric-card">
+                <span class="sm-lbl">Consecutive Losses</span>
+                <span class="sm-val" id="safetyConsecLosses">0 / 3</span>
+                <span class="sm-sub">Max allowed: 3</span>
+              </div>
+              <div class="safety-metric-card">
+                <span class="sm-lbl">80% Free Margin Shield</span>
+                <span class="sm-val pnl-green">ARMED</span>
+                <span class="sm-sub">Max 20% margin per trade</span>
+              </div>
+              <div class="safety-metric-card">
+                <span class="sm-lbl">Liquidation Distance</span>
+                <span class="sm-val pnl-green">~1.80% Clearance</span>
+                <span class="sm-sub">SL triggers at max 0.80%</span>
+              </div>
+            </div>
+
+            <div class="modal-form-actions">
+              <button type="submit" id="btnSaveAtSafety" class="btn-secondary-modal">
+                <i data-lucide="save"></i>
+                <span>Update Circuit Breaker Limits</span>
+              </button>
+            </div>
+          </form>
+
+          <!-- Emergency Kill Switch Action -->
+          <div class="at-emergency-section">
+            <div class="emergency-text">
+              <strong>Emergency Kill Switch</strong>
+              <p>Immediately disconnects auto-trading, cancels all resting exchange orders, and flash-closes all open positions at market price.</p>
+            </div>
+            <button type="button" id="btnModalEmergencyStop" class="btn-emergency-kill">
+              <i data-lucide="alert-octagon"></i>
+              <span>🚨 ACTIVATE EMERGENCY KILL SWITCH</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 3: Live Audit Log -->
+        <div id="tabContentAtLogs" class="tab-content" role="tabpanel" aria-labelledby="tabAtLogs">
+          <div class="at-logs-header">
+            <div class="logs-title">
+              <i data-lucide="terminal"></i>
+              <span>Real-Time Audit Trail & Execution Stream</span>
+            </div>
+            <button type="button" id="btnClearAtLogs" class="btn-clear-logs" title="Clear log entries">
+              <i data-lucide="trash-2"></i> Clear
+            </button>
+          </div>
+          <div class="at-terminal-box" id="atTerminalBox" role="log" aria-live="polite">
+            <!-- Logs rendered dynamically -->
+            <div class="log-line info">
+              <span class="log-time">--:--:--</span>
+              <span class="log-badge system">SYSTEM</span>
+              <span class="log-msg">Audit terminal ready. Awaiting events...</span>
             </div>
           </div>
         </div>

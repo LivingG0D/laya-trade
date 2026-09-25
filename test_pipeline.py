@@ -7,7 +7,7 @@ from src.signal_generator import SignalGenerator
 async def test():
     print("[1] Testing MarketDataService...")
     md = MarketDataService()
-    klines = await md.fetch_klines('1000PEPEUSDT', '5m', 100)
+    klines = await md.fetch_klines('BTCUSDT.P', '5m', 100)
     print(f"    Fetched {len(klines)} klines. Latest candle close: {klines[-1]['close']}")
     
     print("\n[2] Testing compute_all_indicators...")
@@ -25,8 +25,8 @@ async def test():
     started = await laya.start_server()
     print(f"    Laya server started: {started}")
     
-    print("\n[4] Running Laya System-1 inference on 1000PEPEUSDT...")
-    latest['symbol'] = '1000PEPEUSDT'
+    print("\n[4] Running Laya System-1 inference on BTCUSDT.P...")
+    latest['symbol'] = 'BTCUSDT.P'
     latest['interval'] = '5m'
     decision = await laya.decide(latest)
     print("    Laya Decision Output:")

@@ -58,9 +58,9 @@ class MarketDataService:
         self.exchange = exchange
         self.rest_url = rest_url or (TOOBIT_REST_URL if exchange == "Toobit" else BINANCE_FUTURES_REST_URL)
         self.ws_url = ws_url or (TOOBIT_WS_URL if exchange == "Toobit" else BINANCE_FUTURES_WS_URL)
-        # Tight 5s timeout and connection pool to prevent request piling
+        # 10s timeout and connection pool to prevent connect timeouts on fluctuating latency
         self._http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(5.0, connect=3.0),
+            timeout=httpx.Timeout(10.0, connect=6.0),
             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20, keepalive_expiry=30.0)
         )
         self._ws_task: Optional[asyncio.Task] = None
@@ -96,10 +96,10 @@ class MarketDataService:
         sym_key = f"{symbol.upper()}_{interval}"
         now = time.time()
 
-        # Check TTL cache (3 seconds)
+        # Check TTL cache (5 seconds)
         if sym_key in self._klines_cache:
             ts, cached_klines = self._klines_cache[sym_key]
-            if now - ts < 3.0 and len(cached_klines) >= min(limit, 100):
+            if now - ts < 5.0 and len(cached_klines) >= min(limit, 100):
                 return cached_klines[-limit:]
 
         klines = None
@@ -268,7 +268,7 @@ class MarketDataService:
         sym_key = symbol.upper()
         if sym_key in self._depth_cache:
             ts, cached = self._depth_cache[sym_key]
-            if now - ts < 2.0:
+            if now - ts < 4.0:
                 return cached
 
         toobit_sym = to_toobit_symbol(symbol)
@@ -315,7 +315,7 @@ class MarketDataService:
         sym_key = symbol.upper()
         if sym_key in self._funding_cache:
             ts, cached = self._funding_cache[sym_key]
-            if now - ts < 30.0:
+            if now - ts < 120.0:
                 return cached
 
         binance_sym = to_binance_symbol(symbol)
@@ -348,7 +348,7 @@ class MarketDataService:
         sym_key = symbol.upper()
         if sym_key in self._htf_cache:
             ts, cached = self._htf_cache[sym_key]
-            if now - ts < 15.0:
+            if now - ts < 60.0:
                 return cached
 
         try:

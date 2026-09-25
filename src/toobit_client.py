@@ -1,12 +1,18 @@
 import asyncio
 import hashlib
 import hmac
+from decimal import Decimal
 import logging
 import time
 from typing import Dict, Any, List, Optional
 import httpx
 
-from .config import TOOBIT_REST_URL, DEFAULT_SYMBOL
+from .config import (
+    TOOBIT_REST_URL,
+    DEFAULT_SYMBOL,
+    DEFAULT_POSITION_MARGIN_USD,
+    DEFAULT_KELLY_FRACTION_PCT
+)
 from .market_data import to_toobit_symbol
 
 logger = logging.getLogger("toobit_client")
@@ -26,14 +32,17 @@ class ToobitClient:
         self._time_offset: int = 0  # Milliseconds offset: server_time - local_time
         self._last_time_sync: float = 0.0
         self._http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=5.0),
-            limits=httpx.Limits(max_connections=30, max_keepalive_connections=10, keepalive_expiry=30.0)
+            timeout=httpx.Timeout(20.0, connect=10.0, read=15.0),
+            limits=httpx.Limits(max_connections=40, max_keepalive_connections=15, keepalive_expiry=30.0)
         )
 
         # Demo mode state storage
         self._demo_balance = 5000.0  # $5,000 USDT virtual starting margin
         self._demo_positions: Dict[str, Dict[str, Any]] = {}
         self._last_positions: List[Dict[str, Any]] = []  # last live positions fetched
+        self._position_tpsl_cache: Dict[str, Dict[str, Any]] = {}  # local cache of configured TP/SL
+        self._contract_rules_cache: Dict[str, Dict[str, Any]] = {}
+        self._last_rules_cache_time: float = 0.0
         
         # If demo mode is default or requested without keys, initialize a default demo position for 1000PEPE
         if is_demo:
@@ -50,11 +59,11 @@ class ToobitClient:
             "quantity": 100000.0,
             "entryPrice": 0.004180,
             "markPrice": 0.004245,
-            "leverage": 10,
-            "margin": 41.80,
+            "leverage": 50,
+            "margin": 8.36,
             "unrealizedPnl": 6.50,
-            "pnlPercentage": 15.55,
-            "liquidationPrice": 0.003780,
+            "pnlPercentage": 77.75,
+            "liquidationPrice": 0.004105,
             "isolated": True,
             "createdAt": int(time.time() * 1000)
         }
@@ -100,19 +109,22 @@ class ToobitClient:
 
     async def sync_server_time(self) -> int:
         """Fetch Toobit server time and calculate clock offset."""
-        try:
-            resp = await self._http_client.get(f"{self.base_url}/api/v1/time", timeout=4.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                server_time = int(data.get("serverTime", 0))
-                if server_time > 0:
-                    local_time = int(time.time() * 1000)
-                    self._time_offset = server_time - local_time
-                    self._last_time_sync = time.time()
-                    logger.info(f"Toobit server time synchronized: offset={self._time_offset}ms")
-                    return self._time_offset
-        except Exception as e:
-            logger.warning(f"Failed to sync server time with Toobit: {e}")
+        for attempt in range(2):
+            try:
+                resp = await self._http_client.get(f"{self.base_url}/api/v1/time", timeout=8.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    server_time = int(data.get("serverTime", 0))
+                    if server_time > 0:
+                        local_time = int(time.time() * 1000)
+                        self._time_offset = server_time - local_time
+                        self._last_time_sync = time.time()
+                        logger.info(f"Toobit server time synchronized: offset={self._time_offset}ms")
+                        return self._time_offset
+            except Exception as e:
+                logger.warning(f"Failed to sync server time with Toobit (attempt {attempt+1}): {repr(e)}")
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
         return self._time_offset
 
     async def _send_signed_request(
@@ -134,7 +146,7 @@ class ToobitClient:
         # Timestamp synchronized with Toobit's server clock
         req_params["timestamp"] = int(time.time() * 1000) + self._time_offset
         if "recvWindow" not in req_params:
-            req_params["recvWindow"] = 5000
+            req_params["recvWindow"] = 60000
 
         # Sign the query string in exact insertion order
         query_string = self._build_query_string(req_params)
@@ -159,6 +171,9 @@ class ToobitClient:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
             url = f"{self.base_url}{endpoint}"
             resp = await self._http_client.post(url, headers=headers, content=full_query_string)
+        elif m == "DELETE":
+            url = f"{self.base_url}{endpoint}?{full_query_string}"
+            resp = await self._http_client.delete(url, headers=headers)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -213,7 +228,13 @@ class ToobitClient:
                 "data": balance_data
             }
         except Exception as e:
-            err_str = str(e)
+            err_str = str(e).strip()
+            if not err_str or "timeout" in type(e).__name__.lower():
+                err_str = (
+                    "Network Timeout: Connection to Toobit API (api.toobit.com) timed out.\n"
+                    "• Please check your internet connection or VPN/proxy.\n"
+                    "• Timeouts have been extended, please click 'Connect & Validate API' again."
+                )
             logger.warning(f"Toobit futures connection test failed: {err_str}")
 
             # If error is -1000 or 400, test spot account endpoint to see if key works for spot
@@ -400,15 +421,24 @@ class ToobitClient:
                         unrealized_pnl = float(p.get("unrealizedPnL", p.get("unrealizedPnl", p.get("unRealizedProfit", 0.0))))
                         leverage = int(float(p.get("leverage", 10)))
                         liq_price = float(p.get("flp", p.get("liquidationPrice", 0.0)))
-                        margin = float(p.get("margin") or ((abs(qty) * entry_price) / max(leverage, 1)))
+                        multiplier = float(p.get("contractMultiplier") or (self._contract_rules_cache.get(p_sym, {}).get("multiplier", 1.0)))
+                        margin = float(p.get("margin") or ((abs(qty) * entry_price * multiplier) / max(leverage, 1)))
 
                         pnl_pct = 0.0
                         if margin > 0:
                             pnl_pct = (unrealized_pnl / margin) * 100
 
+                        clean_sym = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                        canonical_disp = f"{clean_sym}.P" if clean_sym.endswith("USDT") else f"{clean_sym}USDT.P"
+
+                        tpsl_info = self._position_tpsl_cache.get(p_sym, {})
+                        sl_val = float(p.get("stopLoss") or tpsl_info.get("stopLoss", 0.0))
+                        tp_val = float(p.get("takeProfit") or p.get("takeProfit1") or tpsl_info.get("takeProfit", 0.0))
+
                         active_positions.append({
                             "symbol": p_sym,
-                            "displaySymbol": symbol or p_sym,
+                            "rawSymbol": p_sym,
+                            "displaySymbol": symbol if symbol else canonical_disp,
                             "side": side,
                             "positionSide": side,
                             "quantity": abs(qty),
@@ -419,14 +449,17 @@ class ToobitClient:
                             "unrealizedPnl": round(unrealized_pnl, 2),
                             "pnlPercentage": round(pnl_pct, 2),
                             "liquidationPrice": liq_price,
-                            "isolated": str(p.get("marginType", "ISOLATED")).upper() != "CROSS"
+                            "isolated": str(p.get("marginType", "ISOLATED")).upper() != "CROSS",
+                            "stopLoss": sl_val,
+                            "takeProfit": tp_val,
+                            "takeProfit1": tp_val
                         })
 
             self._last_positions = active_positions
             return active_positions
         except Exception as e:
             logger.error(f"Error fetching Toobit positions: {e}")
-            return []
+            raise
 
     async def _resolve_position_side(self, symbol: str) -> Optional[str]:
         """flashClose requires the position side (LONG/SHORT) - find it on the account."""
@@ -490,6 +523,32 @@ class ToobitClient:
                 "message": f"Flash Close order executed on Toobit for {toobit_sym}!"
             }
         except Exception as e:
+            logger.warning(f"Error executing flashClose on {toobit_sym} ({e}), attempting market close fallback...")
+            try:
+                positions = await self.get_positions(symbol=symbol)
+                if positions:
+                    pos = positions[0]
+                    qty = float(pos.get("quantity", 0.0))
+                    pos_side = str(pos.get("side", "")).upper()
+                    exit_side = "SELL_CLOSE" if pos_side == "LONG" else "BUY_CLOSE"
+                    if qty > 0:
+                        close_res = await self.create_order(
+                            symbol=symbol,
+                            side=exit_side,
+                            order_type="MARKET",
+                            quantity=qty
+                        )
+                        if close_res.get("success"):
+                            return {
+                                "success": True,
+                                "mode": "live",
+                                "symbol": toobit_sym,
+                                "data": close_res,
+                                "message": f"Closed {toobit_sym} position via market fallback order!"
+                            }
+            except Exception as e2:
+                logger.error(f"Fallback market close failed for {toobit_sym}: {e2}")
+
             logger.error(f"Error executing flash close on {toobit_sym}: {e}")
             return {
                 "success": False,
@@ -505,7 +564,10 @@ class ToobitClient:
         side: str,
         quantity: float,
         entry_price: float,
-        leverage: int = 10
+        leverage: int = 50,
+        stop_loss: float = 0.0,
+        take_profit_1: float = 0.0,
+        take_profit_2: float = 0.0
     ) -> Dict[str, Any]:
         """Open or replace a simulated demo position for testing."""
         toobit_sym = to_toobit_symbol(symbol)
@@ -534,11 +596,503 @@ class ToobitClient:
             "unrealizedPnl": 0.0,
             "pnlPercentage": 0.0,
             "liquidationPrice": round(liq_price, 6),
+            "stopLoss": stop_loss,
+            "takeProfit1": take_profit_1,
+            "takeProfit2": take_profit_2,
             "isolated": True,
             "createdAt": int(time.time() * 1000)
         }
         self._demo_positions[toobit_sym] = pos
         return pos
+
+    async def get_symbol_rules(self, symbol: str) -> Dict[str, Any]:
+        """Fetch trading rules, step size, and tick precision for a contract symbol."""
+        toobit_sym = to_toobit_symbol(symbol)
+        now = time.time()
+        if not self._contract_rules_cache or (now - self._last_rules_cache_time > 3600):
+            try:
+                resp = await self._http_client.get(f"{self.base_url}/api/v1/exchangeInfo", timeout=8.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    contracts = data.get("contracts", [])
+                    rules_map = {}
+                    for c in contracts:
+                        sym = c.get("symbol")
+                        if not sym:
+                            continue
+                        step_size = Decimal("0.001")
+                        tick_size = Decimal("0.01")
+                        min_qty = Decimal("0.001")
+                        max_qty = Decimal("1000000")
+                        min_notional = Decimal("5.0")
+
+                        for f in c.get("filters", []):
+                            ft = f.get("filterType")
+                            if ft == "LOT_SIZE":
+                                min_qty = Decimal(str(f.get("minQty", min_qty)))
+                                max_qty = Decimal(str(f.get("maxQty", max_qty)))
+                                step_size = Decimal(str(f.get("stepSize", step_size)))
+                            elif ft == "PRICE_FILTER":
+                                tick_size = Decimal(str(f.get("tickSize", tick_size)))
+                            elif ft in ("MIN_NOTIONAL", "NOTIONAL"):
+                                min_notional = Decimal(str(f.get("minNotional", min_notional)))
+
+                        min_trade_prec = Decimal(str(c.get("minTradePrecision", "0") or "0"))
+                        if min_trade_prec > 0:
+                            min_qty = max(min_qty, min_trade_prec)
+                            step_size = max(step_size, min_trade_prec)
+
+                        rules_map[sym] = {
+                            "symbol": sym,
+                            "step_size": float(step_size),
+                            "tick_size": float(tick_size),
+                            "min_qty": float(min_qty),
+                            "max_qty": float(max_qty),
+                            "min_notional": float(min_notional),
+                            "multiplier": float(c.get("contractMultiplier", 1.0))
+                        }
+                    self._contract_rules_cache = rules_map
+                    self._last_rules_cache_time = now
+            except Exception as e:
+                logger.warning(f"Error refreshing Toobit contract rules: {e}")
+
+        if toobit_sym in self._contract_rules_cache:
+            return self._contract_rules_cache[toobit_sym]
+
+        return {
+            "symbol": toobit_sym,
+            "step_size": 0.001,
+            "tick_size": 0.01,
+            "min_qty": 0.001,
+            "max_qty": 100000.0,
+            "min_notional": 5.0,
+            "multiplier": 1.0
+        }
+
+    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """Configure leverage multiplier on Toobit futures."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            if toobit_sym in self._demo_positions:
+                self._demo_positions[toobit_sym]["leverage"] = leverage
+            return {"success": True, "mode": "demo", "symbol": toobit_sym, "leverage": leverage}
+
+        params = {"symbol": toobit_sym, "leverage": leverage}
+        try:
+            res = await self._send_signed_request("POST", "/api/v1/futures/leverage", params)
+            return {"success": True, "mode": "live", "symbol": toobit_sym, "leverage": leverage, "data": res}
+        except Exception as e:
+            if "already" in str(e).lower() or "not modified" in str(e).lower():
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "leverage": leverage}
+            logger.warning(f"Could not set leverage on {toobit_sym}: {e}")
+            return {"success": False, "mode": "live", "symbol": toobit_sym, "error": str(e)}
+
+    async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> Dict[str, Any]:
+        """Configure margin mode: ISOLATED or CROSSED."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            return {"success": True, "mode": "demo", "symbol": toobit_sym, "marginType": margin_type}
+
+        params = {"symbol": toobit_sym, "marginType": margin_type.upper()}
+        try:
+            res = await self._send_signed_request("POST", "/api/v1/futures/marginType", params)
+            return {"success": True, "mode": "live", "symbol": toobit_sym, "marginType": margin_type, "data": res}
+        except Exception as e:
+            if "already" in str(e).lower() or "-4046" in str(e) or "4046" in str(e):
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "marginType": margin_type, "message": "Already set"}
+            logger.warning(f"Could not set margin type on {toobit_sym}: {e}")
+            return {"success": False, "mode": "live", "symbol": toobit_sym, "error": str(e)}
+
+    async def _attach_entry_protection(
+        self,
+        symbol: str,
+        position_side: str,
+        quantity: float,
+        stop_loss: float,
+        take_profit_1: float,
+        take_profit_2: float,
+    ) -> Dict[str, Any]:
+        """Place and verify every requested protective leg before reporting success."""
+        if stop_loss <= 0:
+            return {
+                "success": False,
+                "bracket": [],
+                "errors": ["A positive stop-loss is required for live entries."],
+            }
+
+        exit_side = "SELL_CLOSE" if position_side == "LONG" else "BUY_CLOSE"
+        plans = [("SL", quantity, stop_loss, "STOP_MARKET")]
+        if take_profit_1 > 0 and take_profit_2 > 0:
+            first_quantity = quantity / 2.0
+            plans.extend([
+                ("TP1", first_quantity, take_profit_1, "TAKE_PROFIT_MARKET"),
+                ("TP2", quantity - first_quantity, take_profit_2, "TAKE_PROFIT_MARKET"),
+            ])
+        elif take_profit_1 > 0:
+            plans.append(("TP1", quantity, take_profit_1, "TAKE_PROFIT_MARKET"))
+        elif take_profit_2 > 0:
+            plans.append(("TP2", quantity, take_profit_2, "TAKE_PROFIT_MARKET"))
+
+        bracket: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for label, plan_quantity, trigger_price, order_type in plans:
+            try:
+                result = await self.create_plan_order(
+                    symbol=symbol,
+                    side=exit_side,
+                    order_type=order_type,
+                    quantity=plan_quantity,
+                    trigger_price=trigger_price,
+                    reduce_only=True,
+                )
+                bracket.append({"type": label, "quantity": plan_quantity, "price": trigger_price, "res": result})
+                if not result or not result.get("success"):
+                    errors.append(f"{label}: {(result or {}).get('message', 'not confirmed')}")
+            except Exception as exc:
+                bracket.append({"type": label, "quantity": plan_quantity, "price": trigger_price, "error": str(exc)})
+                errors.append(f"{label}: {exc}")
+
+        return {"success": not errors, "bracket": bracket, "errors": errors}
+
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str = "MARKET",
+        quantity: float = 0.0,
+        price: Optional[float] = None,
+        leverage: int = 50,
+        entry_price: float = 0.0,
+        stop_loss: float = 0.0,
+        take_profit_1: float = 0.0,
+        take_profit_2: float = 0.0
+    ) -> Dict[str, Any]:
+        """
+        Execute an order on Toobit futures.
+        Side: BUY (Long), SELL (Short).
+        Supports live authenticated orders and simulated demo execution.
+        """
+        toobit_sym = to_toobit_symbol(symbol)
+        side_norm = side.upper()
+        if side_norm in ("LONG", "BUY", "BUY_OPEN"):
+            order_side = "BUY"
+            pos_side = "LONG"
+            toobit_side = "BUY_OPEN"
+        elif side_norm in ("BUY_CLOSE",):
+            order_side = "BUY"
+            pos_side = "LONG"
+            toobit_side = "BUY_CLOSE"
+        elif side_norm in ("SELL_CLOSE",):
+            order_side = "SELL"
+            pos_side = "SHORT"
+            toobit_side = "SELL_CLOSE"
+        else:
+            order_side = "SELL"
+            pos_side = "SHORT"
+            toobit_side = "SELL_OPEN"
+
+        if self.is_demo:
+            pos = self.simulate_position(
+                symbol=symbol,
+                side=pos_side,
+                quantity=quantity,
+                entry_price=entry_price,
+                leverage=leverage,
+                stop_loss=stop_loss,
+                take_profit_1=take_profit_1,
+                take_profit_2=take_profit_2
+            )
+            return {
+                "success": True,
+                "mode": "demo",
+                "orderId": f"demo_{int(time.time() * 1000)}",
+                "symbol": toobit_sym,
+                "side": order_side,
+                "quantity": quantity,
+                "price": entry_price,
+                "position": pos
+            }
+
+        try:
+            # 1. Set leverage and margin mode before any live entry is dispatched
+            if "CLOSE" not in toobit_side:
+                margin_result = await self.set_margin_type(toobit_sym, "ISOLATED")
+                if not margin_result or not margin_result.get("success"):
+                    message = (margin_result or {}).get("message", "isolated margin setup was not confirmed")
+                    return {
+                        "success": False,
+                        "mode": "live",
+                        "symbol": toobit_sym,
+                        "message": f"Margin setup failed: {message}",
+                    }
+
+                leverage_result = await self.set_leverage(toobit_sym, leverage)
+                if not leverage_result or not leverage_result.get("success"):
+                    message = (leverage_result or {}).get("message", "leverage setup was not confirmed")
+                    return {
+                        "success": False,
+                        "mode": "live",
+                        "symbol": toobit_sym,
+                        "message": f"Leverage setup failed: {message}",
+                    }
+
+            # 2. Prepare order params
+            is_market = order_type.upper() == "MARKET"
+            params = {
+                "symbol": toobit_sym,
+                "side": toobit_side,
+                "type": "LIMIT",
+                "priceType": "MARKET" if is_market else "LIMIT",
+                "quantity": str(quantity),
+                "newClientOrderId": f"laya_{int(time.time() * 1000)}",
+            }
+            if is_market:
+                params["timeInForce"] = "IOC"
+            else:
+                params["price"] = str(price if price else entry_price)
+                params["timeInForce"] = "GTC"
+
+            # Execute order on Toobit futures endpoint
+            try:
+                res = await self._send_signed_request("POST", "/api/v1/futures/order", params)
+            except Exception as e:
+                # If BUY_OPEN/SELL_OPEN fails because exchange expects standard BUY/SELL
+                if "side" in str(e).lower():
+                    params["side"] = order_side
+                    res = await self._send_signed_request("POST", "/api/v1/futures/order", params)
+                else:
+                    raise e
+
+            # 3. Attach and verify protective orders before reporting success
+            protection = await self._attach_entry_protection(
+                symbol=toobit_sym,
+                position_side=pos_side,
+                quantity=quantity,
+                stop_loss=stop_loss,
+                take_profit_1=take_profit_1,
+                take_profit_2=take_profit_2,
+            )
+            if not protection["success"]:
+                cleanup = None
+                if not getattr(self, "_last_positions", []):
+                    try:
+                        cleanup = await self.flash_close(toobit_sym)
+                    except Exception as exc:
+                        cleanup = {"success": False, "message": str(exc)}
+                return {
+                    "success": False,
+                    "mode": "live",
+                    "symbol": toobit_sym,
+                    "message": "Protective orders could not be confirmed: " + "; ".join(protection["errors"]),
+                    "data": res,
+                    "bracket": protection["bracket"],
+                    "cleanup": cleanup,
+                }
+
+            return {
+                "success": True,
+                "mode": "live",
+                "symbol": toobit_sym,
+                "side": order_side,
+                "quantity": quantity,
+                "data": res,
+                "bracket": protection["bracket"],
+            }
+        except Exception as e:
+            logger.error(f"Failed to create order on {toobit_sym}: {e}")
+            return {
+                "success": False,
+                "mode": "live",
+                "symbol": toobit_sym,
+                "error": str(e),
+                "message": f"Order placement failed: {str(e)}"
+            }
+
+    async def set_position_tpsl(
+        self,
+        symbol: str,
+        side: str,
+        stop_loss: float = 0.0,
+        take_profit: float = 0.0
+    ) -> Dict[str, Any]:
+        """
+        Configure exchange-level Take Profit and Stop Loss directly on the position.
+        Uses Toobit's POST /api/v1/futures/position/trading-stop.
+        Required parameters: symbol, side (LONG/SHORT), stopLoss, takeProfit.
+        """
+        toobit_sym = to_toobit_symbol(symbol)
+        pos_side = "LONG" if "LONG" in side.upper() or "BUY" in side.upper() else "SHORT"
+
+        self._position_tpsl_cache[toobit_sym] = {
+            "stopLoss": stop_loss,
+            "takeProfit": take_profit,
+            "side": pos_side,
+            "updatedAt": time.time()
+        }
+
+        if self.is_demo:
+            if toobit_sym in self._demo_positions:
+                if stop_loss > 0:
+                    self._demo_positions[toobit_sym]["stopLoss"] = stop_loss
+                if take_profit > 0:
+                    self._demo_positions[toobit_sym]["takeProfit1"] = take_profit
+            return {
+                "success": True,
+                "mode": "demo",
+                "symbol": toobit_sym,
+                "side": pos_side,
+                "stopLoss": stop_loss,
+                "takeProfit": take_profit
+            }
+
+        # Format price with appropriate tick precision from contract rules
+        rules = await self.get_symbol_rules(toobit_sym)
+        tick_size = float(rules.get("tick_size", 0.1))
+
+        def _fmt_price(p: float) -> str:
+            if p <= 0:
+                return "0"
+            if tick_size > 0:
+                tick_str = f"{tick_size:.8f}".rstrip('0')
+                prec = len(tick_str.split('.')[1]) if '.' in tick_str else 0
+                return f"{p:.{prec}f}"
+            return f"{p:.2f}"
+
+        sl_str = _fmt_price(stop_loss)
+        tp_str = _fmt_price(take_profit)
+
+        params = {
+            "symbol": toobit_sym,
+            "side": pos_side,
+            "stopLoss": sl_str,
+            "takeProfit": tp_str
+        }
+
+        try:
+            res = await self._send_signed_request("POST", "/api/v1/futures/position/trading-stop", params)
+            logger.info(f"[TPSL] Successfully configured exchange TP/SL on Toobit for {toobit_sym} ({pos_side}): SL={sl_str}, TP={tp_str} -> {res}")
+            return {
+                "success": True,
+                "mode": "live",
+                "symbol": toobit_sym,
+                "side": pos_side,
+                "stopLoss": stop_loss,
+                "takeProfit": take_profit,
+                "data": res
+            }
+        except Exception as e:
+            logger.error(f"[TPSL] Failed to configure exchange TP/SL for {toobit_sym} ({pos_side}): {e}")
+            return {
+                "success": False,
+                "mode": "live",
+                "symbol": toobit_sym,
+                "side": pos_side,
+                "error": str(e),
+                "message": f"Failed to set TP/SL: {str(e)}"
+            }
+
+    async def create_plan_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str = "STOP_MARKET",
+        quantity: float = 0.0,
+        trigger_price: float = 0.0,
+        reduce_only: bool = True
+    ) -> Dict[str, Any]:
+        """Create conditional / stop trigger order (Stop Loss / Take Profit)."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            if toobit_sym in self._demo_positions:
+                if "STOP" in order_type:
+                    self._demo_positions[toobit_sym]["stopLoss"] = trigger_price
+                elif "PROFIT" in order_type:
+                    self._demo_positions[toobit_sym]["takeProfit1"] = trigger_price
+            return {
+                "success": True,
+                "mode": "demo",
+                "symbol": toobit_sym,
+                "triggerPrice": trigger_price,
+                "type": order_type
+            }
+
+        norm_side = side.upper()
+        if norm_side not in ("BUY_CLOSE", "SELL_CLOSE", "BUY_OPEN", "SELL_OPEN", "BUY", "SELL"):
+            norm_side = "SELL_CLOSE" if "SELL" in norm_side else "BUY_CLOSE"
+
+        # Try setting position trading stop first
+        try:
+            pos_side = "LONG" if "LONG" in norm_side or "BUY" in norm_side else "SHORT"
+            ts_params = {
+                "symbol": toobit_sym,
+                "side": pos_side,
+                "stopLoss": str(trigger_price) if "STOP" in order_type else "0",
+                "takeProfit": str(trigger_price) if "PROFIT" in order_type else "0"
+            }
+            res = await self._send_signed_request("POST", "/api/v1/futures/position/trading-stop", ts_params)
+            return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
+        except Exception:
+            pass
+
+        # Try standard STOP order on /api/v1/futures/order
+        order_params = {
+            "symbol": toobit_sym,
+            "side": norm_side,
+            "type": "STOP",
+            "priceType": "MARKET",
+            "quantity": str(quantity),
+            "stopPrice": str(trigger_price),
+            "reduceOnly": "true" if reduce_only else "false",
+            "newClientOrderId": f"laya_plan_{int(time.time() * 1000)}"
+        }
+        for ep in ["/api/v1/futures/order", "/api/v1/futures/planOrder"]:
+            try:
+                res = await self._send_signed_request("POST", ep, order_params)
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
+            except Exception:
+                continue
+
+        return {"success": False, "mode": "live", "symbol": toobit_sym, "message": "Could not place plan order"}
+
+    async def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
+        """Cancel all resting and plan orders for a given symbol."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            if toobit_sym in self._demo_positions:
+                self._demo_positions[toobit_sym]["stopLoss"] = 0.0
+                self._demo_positions[toobit_sym]["takeProfit1"] = 0.0
+                self._demo_positions[toobit_sym]["takeProfit2"] = 0.0
+            return {"success": True, "mode": "demo", "symbol": toobit_sym, "message": "All orders cancelled"}
+
+        params = {"symbol": toobit_sym}
+        for ep in ["/api/v1/futures/allOpenOrders", "/api/v1/futures/batchOrders"]:
+            try:
+                res = await self._send_signed_request("DELETE", ep, params)
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
+            except Exception as e:
+                continue
+
+        return {
+            "success": False,
+            "mode": "live",
+            "symbol": toobit_sym,
+            "message": "Cancel orders could not be confirmed",
+        }
+
+    async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        """Cancel a specific open order by ID."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            return {"success": True, "mode": "demo", "orderId": order_id}
+
+        params = {"symbol": toobit_sym, "orderId": order_id}
+        try:
+            res = await self._send_signed_request("DELETE", "/api/v1/futures/order", params)
+            return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
+        except Exception as e:
+            logger.warning(f"Failed to cancel order {order_id}: {e}")
+
+        return {"success": False, "mode": "live", "symbol": toobit_sym, "error": f"Failed to cancel order {order_id}"}
 
     async def close(self):
         await self._http_client.aclose()
@@ -597,13 +1151,16 @@ def generate_position_suggestion(
                 "badgeText": "BULLISH SETUP 🟢",
                 "badgeClass": "badge-profit",
                 "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects bullish confluence ({confidence}% confidence). Recommended setup: Buy near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}.",
+                "suggestion": f"No active position. Laya System-1 detects bullish confluence ({confidence}% confidence). Recommended setup: Buy near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}. Use fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin to prevent compounding volatility drag.",
                 "steps": [
                     f"Consider opening LONG near {fmt_p(entry)}",
+                    f"Position Sizing: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
                     f"Set Target Take Profit 1 at {fmt_p(tp1)}",
                     f"Set Stop Loss at {fmt_p(sl)}"
                 ],
                 "canFlashClose": False,
+                "recommendedMarginUsd": DEFAULT_POSITION_MARGIN_USD,
+                "sizingRule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
                 "recommendedSl": sl,
                 "recommendedTp": tp1
             }
@@ -617,13 +1174,16 @@ def generate_position_suggestion(
                 "badgeText": "BEARISH SETUP 🔴",
                 "badgeClass": "badge-danger",
                 "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects downward momentum ({confidence}% confidence). Recommended setup: Short near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1_s)}, Protective SL at {fmt_p(sl_s)}.",
+                "suggestion": f"No active position. Laya System-1 detects downward momentum ({confidence}% confidence). Recommended setup: Short near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1_s)}, Protective SL at {fmt_p(sl_s)}. Use fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin to prevent compounding volatility drag.",
                 "steps": [
                     f"Consider opening SHORT near {fmt_p(entry)}",
+                    f"Position Sizing: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
                     f"Set Target Take Profit 1 at {fmt_p(tp1_s)}",
                     f"Set Stop Loss at {fmt_p(sl_s)}"
                 ],
                 "canFlashClose": False,
+                "recommendedMarginUsd": DEFAULT_POSITION_MARGIN_USD,
+                "sizingRule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
                 "recommendedSl": sl_s,
                 "recommendedTp": tp1_s
             }

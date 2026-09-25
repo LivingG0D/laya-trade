@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+import pytest
 
 # Add root directory to pythonpath
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -130,6 +131,139 @@ async def run_tests():
     await client.close()
     await auth_client.close()
     print("\n>>> ALL TESTS PASSED SUCCESSFULLY! <<<")
+
+
+def test_live_position_query_failure_is_not_flat(monkeypatch):
+    """A live position query failure must remain unknown, never look flat."""
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+
+    async def fail_request(*_args, **_kwargs):
+        raise RuntimeError("position service unavailable")
+
+    monkeypatch.setattr(client, "_send_signed_request", fail_request)
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match="position service unavailable"):
+            await client.get_positions()
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_all_orders_reports_failure_when_exchange_rejects(monkeypatch):
+    """A failed cancel-all operation must never be reported as successful."""
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+
+    async def fail_request(*_args, **_kwargs):
+        raise RuntimeError("cancel endpoint unavailable")
+
+    monkeypatch.setattr(client, "_send_signed_request", fail_request)
+
+    async def scenario():
+        result = await client.cancel_all_orders("BTCUSDT.P")
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is False
+    assert "cancel" in result["message"].lower()
+
+
+def test_live_entry_stops_when_margin_setup_fails(monkeypatch):
+    """A live entry must not dispatch after an unconfirmed margin setup."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.set_margin_type = AsyncMock(return_value={"success": False, "message": "margin rejected"})
+    client.set_leverage = AsyncMock(return_value={"success": True})
+    client._send_signed_request = AsyncMock(return_value={"orderId": "should-not-submit"})
+
+    async def scenario():
+        result = await client.create_order(
+            symbol="BTCUSDT.P",
+            side="BUY",
+            order_type="MARKET",
+            quantity=0.01,
+            leverage=50,
+            entry_price=100.0,
+            stop_loss=99.0,
+            take_profit_1=102.0,
+            take_profit_2=104.0,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is False
+    assert client._send_signed_request.await_count == 0
+
+
+def test_live_entry_fails_when_protection_cannot_be_confirmed(monkeypatch):
+    """A filled entry with failed protection must be reported as unsafe."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.set_margin_type = AsyncMock(return_value={"success": True})
+    client.set_leverage = AsyncMock(return_value={"success": True})
+    client._send_signed_request = AsyncMock(return_value={"orderId": "entry-order"})
+    client.create_plan_order = AsyncMock(return_value={"success": False, "message": "plan rejected"})
+    client.flash_close = AsyncMock(return_value={"success": True, "message": "closed"})
+
+    async def scenario():
+        result = await client.create_order(
+            symbol="BTCUSDT.P",
+            side="BUY",
+            order_type="MARKET",
+            quantity=0.01,
+            leverage=50,
+            entry_price=100.0,
+            stop_loss=99.0,
+            take_profit_1=102.0,
+            take_profit_2=104.0,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is False
+    assert client.flash_close.await_count == 1
+
+
+def test_live_entry_places_both_take_profits_when_confirmed(monkeypatch):
+    """A confirmed bracket must include both configured profit targets."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.set_margin_type = AsyncMock(return_value={"success": True})
+    client.set_leverage = AsyncMock(return_value={"success": True})
+    client._send_signed_request = AsyncMock(return_value={"orderId": "entry-order"})
+    client.create_plan_order = AsyncMock(return_value={"success": True})
+
+    async def scenario():
+        result = await client.create_order(
+            symbol="BTCUSDT.P",
+            side="BUY",
+            order_type="MARKET",
+            quantity=0.01,
+            leverage=50,
+            entry_price=100.0,
+            stop_loss=99.0,
+            take_profit_1=102.0,
+            take_profit_2=104.0,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+    labels = [call.kwargs["order_type"] for call in client.create_plan_order.await_args_list]
+
+    assert result["success"] is True
+    assert labels == ["STOP_MARKET", "TAKE_PROFIT_MARKET", "TAKE_PROFIT_MARKET"]
+    quantities = [call.kwargs["quantity"] for call in client.create_plan_order.await_args_list]
+    assert sum(quantities) == 0.01
 
 
 if __name__ == "__main__":

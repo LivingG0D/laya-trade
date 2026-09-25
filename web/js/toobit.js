@@ -13,6 +13,7 @@ let deps = {
   getFallbackPrice: () => null,
   updateChartPositionLines: () => {},
   clearPositionLines: () => {},
+  switchSymbol: () => {},
 };
 
 // DOM Elements — Toobit modal & nav
@@ -216,25 +217,53 @@ async function fetchToobitStatus() {
   }
 }
 
+// Helper: Check if an active position matches a chart symbol
+export function posMatchesChart(pos, chartSym) {
+  if (!pos || !chartSym) return false;
+  const normPos = (pos.rawSymbol || pos.symbol || pos.displaySymbol || "")
+    .toUpperCase()
+    .replace(/[-_.]/g, "")
+    .replace("SWAP", "")
+    .replace("P", "");
+  const normChart = chartSym
+    .toUpperCase()
+    .replace(/[-_.]/g, "")
+    .replace("SWAP", "")
+    .replace("P", "");
+  return normPos === normChart;
+}
+
 // Fetch Positions and AI Suggestions
 export async function fetchToobitPositions() {
   try {
-    const [posRes, sugRes] = await Promise.all([
-      fetch(`/api/toobit/positions?symbol=${encodeURIComponent(deps.getSymbol())}`),
-      fetch(`/api/toobit/suggestions?symbol=${encodeURIComponent(deps.getSymbol())}`)
-    ]);
+    const currentSym = deps.getSymbol();
+    // 1. Query all positions across the user's Toobit account (no symbol filtering)
+    const posRes = await fetch("/api/toobit/positions");
 
-    let positions = [];
+    let allPositions = [];
     if (posRes.ok) {
       const posData = await posRes.json();
-      positions = posData.positions || [];
-      activeToobitPositions = positions;
+      allPositions = posData.positions || posData.all_positions || [];
     }
 
+    // 2. Identify if an active position matches the currently viewed chart symbol
+    const matchingPos = allPositions.find((p) => posMatchesChart(p, currentSym));
+    // If not matching current chart, prioritize the user's open position (e.g. SOL)
+    const activePos = matchingPos || (allPositions.length > 0 ? allPositions[0] : null);
+    const positions = activePos ? [activePos] : [];
+    activeToobitPositions = positions;
+
+    // 3. Fetch suggestion for active position's symbol (or current chart coin if no position)
+    const sugSym = activePos ? (activePos.displaySymbol || activePos.symbol) : currentSym;
     let suggestionData = null;
-    if (sugRes.ok) {
-      suggestionData = await sugRes.json();
-      currentPositionSuggestion = suggestionData.suggestion;
+    try {
+      const sugRes = await fetch(`/api/toobit/suggestions?symbol=${encodeURIComponent(sugSym)}`);
+      if (sugRes.ok) {
+        suggestionData = await sugRes.json();
+        currentPositionSuggestion = suggestionData.suggestion;
+      }
+    } catch (e) {
+      console.warn("Failed to fetch Toobit suggestion:", e);
     }
 
     renderToobitPositions(positions, suggestionData?.suggestion);
@@ -246,8 +275,10 @@ export async function fetchToobitPositions() {
 // Live tick from the market websocket: keep the mark price fresh
 export function handlePositionTick(price) {
   if (activeToobitPositions && activeToobitPositions.length > 0) {
-    activeToobitPositions[0].markPrice = price;
-    deps.updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
+    if (posMatchesChart(activeToobitPositions[0], deps.getSymbol())) {
+      activeToobitPositions[0].markPrice = price;
+      deps.updateChartPositionLines(activeToobitPositions, currentPositionSuggestion);
+    }
   }
 }
 
@@ -276,7 +307,7 @@ function fillPositionCard(card, pos) {
   const liq = Number(pos.liquidationPrice) || 0;
   const qty = Number(pos.quantity) || 0;
   const margin = Number(pos.margin) || 0;
-  const leverage = Number(pos.leverage) || 0;
+  const leverage = Number(pos.leverage) || 50;
   const pnl = Number(pos.unrealizedPnl) || 0;
   const pnlPct = Number(pos.pnlPercentage) || 0;
   const profitable = pnl >= 0;
@@ -295,7 +326,10 @@ function fillPositionCard(card, pos) {
   };
 
   // Identity
-  set("symbol", pos.displaySymbol || pos.symbol || deps.getSymbol());
+  const posDisplaySym = pos.displaySymbol || pos.symbol || deps.getSymbol();
+  const cleanSym = posDisplaySym.replace("-SWAP-", "").replace(".P", "").replace("USDT", "");
+  set("symbol", cleanSym);
+
   const sideEl = field("side");
   if (sideEl) {
     sideEl.textContent = leverage > 0 ? `${isLong ? "LONG" : "SHORT"} ${leverage}x` : isLong ? "LONG" : "SHORT";
@@ -306,6 +340,25 @@ function fillPositionCard(card, pos) {
     const isLive = toobitAccountStatus.mode === "live";
     modeEl.textContent = isLive ? "Live" : "Demo";
     modeEl.className = `badge-mini ${isLive ? "badge-live" : "badge-demo"}`;
+  }
+
+  // View on Chart switch button
+  const switchBtn = card.querySelector('[data-pos="switchBtn"]');
+  if (switchBtn) {
+    const isChartMatch = posMatchesChart(pos, deps.getSymbol());
+    if (!isChartMatch) {
+      switchBtn.classList.remove("hide");
+      switchBtn.textContent = `View ${cleanSym} Chart ↗`;
+      switchBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (deps.switchSymbol) {
+          deps.switchSymbol(pos.displaySymbol || pos.symbol);
+        }
+      };
+    } else {
+      switchBtn.classList.add("hide");
+    }
   }
 
   // PnL hero
@@ -323,8 +376,12 @@ function fillPositionCard(card, pos) {
   set("mark", mark > 0 ? `$${formatPrice(mark)}` : "--");
   set("entry", entry > 0 ? `$${formatPrice(entry)}` : "--");
   set("liq", liq > 0 ? `$${formatPrice(liq)}` : "--");
+  const posSl = Number(pos.stopLoss) || 0;
+  const posTp = Number(pos.takeProfit || pos.takeProfit1) || 0;
+  set("sl", posSl > 0 ? `$${formatPrice(posSl)}` : "--");
+  set("tp", posTp > 0 ? `$${formatPrice(posTp)}` : "--");
 
-  // Liquidation distance bar: liq sits at 0%, twice the entry distance at 100% (break-even at 50%)
+  // Liquidation distance bar
   const pin = field("pin");
   const liqVal = field("liqDist");
   if (liq > 0 && entry > 0) {
@@ -338,8 +395,6 @@ function fillPositionCard(card, pos) {
     const distPct = mark > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
     if (liqVal) {
       liqVal.textContent = `${distPct.toFixed(1)}% away`;
-      // Colour tracks the price's position on the track, not the raw distance
-      // (a fresh 10x position always starts ~9% from liquidation)
       liqVal.className = `pos-risk-val${pct < 15 ? " danger" : pct < 50 ? " warn" : ""}`;
     }
   } else {
@@ -393,10 +448,10 @@ function renderToobitPositions(positions, suggestion) {
         }
       }
       if (proSugSl) {
-        proSugSl.textContent = suggestion.recommendedSl > 0 ? `$${suggestion.recommendedSl.toFixed(6)}` : "--";
+        proSugSl.textContent = suggestion.recommendedSl > 0 ? `$${suggestion.recommendedSl.toFixed(4)}` : "--";
       }
       if (proSugTp) {
-        proSugTp.textContent = suggestion.recommendedTp > 0 ? `$${suggestion.recommendedTp.toFixed(6)}` : "--";
+        proSugTp.textContent = suggestion.recommendedTp > 0 ? `$${suggestion.recommendedTp.toFixed(4)}` : "--";
       }
       if (proSugText) {
         proSugText.textContent = suggestion.suggestion || "Monitoring live order book and tick flow...";
@@ -405,13 +460,21 @@ function renderToobitPositions(positions, suggestion) {
   }
 
   // --- CHART POSITION LINES & FLOATING HUD ---
-  deps.updateChartPositionLines(positions, suggestion);
+  // Only draw lines on chart if the position corresponds to the active chart coin!
+  const isChartMatch = posMatchesChart(activePos, deps.getSymbol());
+  if (isChartMatch) {
+    deps.updateChartPositionLines(positions, suggestion);
+  } else {
+    deps.clearPositionLines();
+    if (chartPositionBadge) chartPositionBadge.classList.add("hide");
+  }
 }
 
 // Flash Close Execution
 async function executeFlashClose() {
   try {
-    const symbolToClose = deps.getSymbol();
+    const activePos = activeToobitPositions && activeToobitPositions.length > 0 ? activeToobitPositions[0] : null;
+    const symbolToClose = activePos ? (activePos.rawSymbol || activePos.symbol || activePos.displaySymbol) : deps.getSymbol();
     showToast(`⚡ Sending Flash Close market order for ${symbolToClose}...`, "info");
 
     const res = await fetch("/api/toobit/close", {
@@ -448,12 +511,12 @@ async function simulateDemoTrade(side) {
         side: side,
         quantity: 100000,
         entryPrice: deps.getFallbackPrice() || null,
-        leverage: 10
+        leverage: 50
       })
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Simulated ${side} 10x position opened for ${deps.getSymbol()}!`, "bull");
+      showToast(`Simulated ${side} 50x position opened for ${deps.getSymbol()}!`, "bull");
       playSignalChime(side === "LONG");
     }
     await fetchToobitPositions();
@@ -494,6 +557,8 @@ async function saveToobitCredentials(e) {
     const data = await res.json();
 
     if (data.success) {
+      localStorage.setItem("toobit_api_key", apiKey);
+      localStorage.setItem("toobit_api_secret", apiSecret);
       hideToobitConnectError();
       showToast("Toobit Futures API Connected Successfully!", "bull");
       closeToobitModal();
@@ -520,6 +585,8 @@ async function saveToobitCredentials(e) {
 // Disconnect
 async function disconnectToobit() {
   try {
+    localStorage.removeItem("toobit_api_key");
+    localStorage.removeItem("toobit_api_secret");
     const res = await fetch("/api/toobit/disconnect", { method: "POST" });
     const data = await res.json();
     hideToobitConnectError();
@@ -584,6 +651,34 @@ export function initToobitManager(injectedDeps = {}) {
   btnSimpleSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
   btnProSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
   btnProSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
+
+  // Auto-restore credentials from localStorage if present
+  const savedKey = localStorage.getItem("toobit_api_key");
+  const savedSecret = localStorage.getItem("toobit_api_secret");
+  if (savedKey && savedSecret) {
+    if (toobitApiKey) toobitApiKey.value = savedKey;
+    if (toobitApiSecret) toobitApiSecret.value = savedSecret;
+    fetch("/api/toobit/status")
+      .then((r) => r.json())
+      .then((status) => {
+        if (!status.connected || status.mode !== "live") {
+          fetch("/api/toobit/connect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ apiKey: savedKey, apiSecret: savedSecret, isDemo: false })
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.success) {
+                fetchToobitStatus();
+                fetchToobitPositions();
+              }
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
 
   // Start periodic polling for positions (every 8 seconds to prevent API flooding)
   fetchToobitStatus();
