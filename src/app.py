@@ -61,6 +61,9 @@ class ToobitSimulateRequest(BaseModel):
     quantity: float = 100000.0
     entryPrice: Optional[float] = None
     leverage: int = 50
+    stopLoss: Optional[float] = None
+    takeProfit1: Optional[float] = None
+    takeProfit2: Optional[float] = None
 
 class ToobitTPSLRequest(BaseModel):
     symbol: str
@@ -491,7 +494,10 @@ async def simulate_demo_position(req: ToobitSimulateRequest):
         side=req.side,
         quantity=req.quantity,
         entry_price=entry_price,
-        leverage=req.leverage
+        leverage=req.leverage,
+        stop_loss=float(req.stopLoss or 0.0),
+        take_profit_1=float(req.takeProfit1 or 0.0),
+        take_profit_2=float(req.takeProfit2 or 0.0),
     )
     return {
         "success": True,

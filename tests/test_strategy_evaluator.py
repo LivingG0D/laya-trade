@@ -1,0 +1,152 @@
+import pytest
+
+from src.indicators import compute_all_indicators
+from src.signal_generator import SignalGenerator
+from src.strategy_evaluator import (
+    CostModel,
+    EvaluationConfig,
+    evaluate_signal_sequence,
+    walk_forward_windows,
+)
+
+
+def candle(time, open_price, high, low, close):
+    return {
+        "time": time,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": 1.0,
+    }
+
+
+def signal(action="LONG", stop=95.0, tp1=110.0, tp2=120.0, confidence=80.0):
+    return {
+        "action": action,
+        "confidence_pct": confidence,
+        "stop_loss": stop,
+        "take_profit_1": tp1,
+        "take_profit_2": tp2,
+    }
+
+
+def test_evaluator_enters_on_next_candle_open():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 110, 112, 109, 111),
+        candle(3, 111, 113, 110, 112),
+    ]
+    signals = [signal(stop=105, tp1=125, tp2=0), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles,
+        signals,
+        EvaluationConfig(risk_per_trade=0.01, max_leverage=10),
+        CostModel(fee_bps=0, slippage_bps=0, funding_bps_per_bar=0),
+    )
+
+    assert result["trade_count"] == 1
+    assert result["trades"][0]["entry_price"] == 110.0
+
+
+def test_evaluator_assumes_stop_before_target_on_same_candle():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 110, 90, 100),
+        candle(3, 100, 101, 99, 100),
+    ]
+    signals = [signal(stop=95, tp1=105), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles,
+        signals,
+        EvaluationConfig(risk_per_trade=0.01, max_leverage=10),
+        CostModel(fee_bps=0, slippage_bps=0, funding_bps_per_bar=0),
+    )
+
+    assert result["trades"][0]["exit_reason"] == "STOP"
+    assert result["net_profit"] < 0
+
+
+def test_evaluator_costs_reduce_net_result():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 106, 99, 105),
+        candle(3, 105, 107, 104, 106),
+    ]
+    signals = [signal(stop=95, tp1=106, tp2=110), {}, {}]
+
+    free = evaluate_signal_sequence(
+        candles,
+        signals,
+        EvaluationConfig(),
+        CostModel(fee_bps=0, slippage_bps=0, funding_bps_per_bar=0),
+    )
+    costed = evaluate_signal_sequence(
+        candles,
+        signals,
+        EvaluationConfig(),
+        CostModel(fee_bps=8, slippage_bps=5, funding_bps_per_bar=1),
+    )
+
+    assert costed["net_profit"] < free["net_profit"]
+
+
+def test_indicator_rejects_malformed_or_unordered_candles():
+    with pytest.raises(ValueError, match="strictly ordered"):
+        compute_all_indicators([
+            candle(1, 100, 101, 99, 100),
+            candle(1, 100, 101, 99, 100),
+        ])
+
+    with pytest.raises(ValueError, match="inconsistent high/low"):
+        compute_all_indicators([candle(1, 100, 98, 99, 100)])
+
+
+def test_signal_uses_configured_market_leverage():
+    signal = SignalGenerator(leverage=50).generate_signal(
+        {
+            "price": 100.0,
+            "symbol": "BTCUSDT.P",
+            "interval": "5m",
+            "leverage": 10,
+            "atr": 2.0,
+            "atr_pct": 2.0,
+            "support": 98.0,
+            "resistance": 102.0,
+            "rsi": 55.0,
+            "adx": 30.0,
+            "trend_state": "BULLISH",
+            "htf": {"trend": "BULLISH"},
+        },
+        {
+            "position": "STRONG_LONG",
+            "long_prob": 0.7,
+            "short_prob": 0.2,
+            "hold_prob": 0.1,
+            "directional_conviction": 0.77,
+            "confidence_score": 3,
+        },
+    )
+
+    assert signal["leverage"] == 10.0
+    assert "10x" in signal["reasons"][0]
+    assert "50x" not in signal["reasons"][0]
+
+
+def test_walk_forward_windows_are_chronological_and_expanding():
+    windows = list(walk_forward_windows(10, train_size=4, test_size=3, step=3))
+
+    assert windows == [
+        {"train_start": 0, "train_end": 4, "test_start": 4, "test_end": 7},
+        {"train_start": 0, "train_end": 7, "test_start": 7, "test_end": 10},
+    ]
+
+
+def test_evaluator_rejects_mismatched_signal_length():
+    with pytest.raises(ValueError, match="same length"):
+        evaluate_signal_sequence(
+            [candle(1, 100, 101, 99, 100), candle(2, 100, 101, 99, 100)],
+            [signal()],
+        )

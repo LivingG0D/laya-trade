@@ -558,6 +558,9 @@ class AutoTrader:
                 latest = calc["latest"]
                 latest["symbol"] = pos_sym
                 latest["interval"] = self.market_service.current_interval
+                latest["leverage"] = int(self.settings["leverage"])
+                if not latest.get("is_closed", True):
+                    return
                 dec = await self.laya_engine.decide(latest)
                 analysis = self.signal_generator.generate_signal(latest, dec)
             except Exception:
@@ -596,8 +599,6 @@ class AutoTrader:
                             if calc_tp <= 0:
                                 calc_tp = entry_p * (1.0 - tp_dist_pct)
 
-                    self._active_trade["stop_loss"] = calc_sl
-                    self._active_trade["take_profit_1"] = calc_tp
                     raw_sym = pos.get("rawSymbol") or pos.get("symbol")
                     try:
                         tpsl_res = await self.toobit_client.set_position_tpsl(
@@ -607,13 +608,25 @@ class AutoTrader:
                             take_profit=calc_tp
                         )
                         if tpsl_res.get("success"):
+                            self._active_trade["stop_loss"] = calc_sl
+                            self._active_trade["take_profit_1"] = calc_tp
                             self.add_log(
                                 "success",
                                 "BRACKET",
                                 f"🎯 Exchange TP/SL Active: SL ${calc_sl:.2f} | TP ${calc_tp:.2f} armed directly on Toobit for {pos_side} {pos_sym}!"
                             )
+                        else:
+                            self.add_log(
+                                "danger",
+                                "BRACKET",
+                                f"Exchange TP/SL was not confirmed for {pos_sym}: {tpsl_res.get('message', 'unknown error')}",
+                            )
                     except Exception as e:
-                        logger.warning(f"Could not auto-arm position TP/SL: {e}")
+                        self.add_log(
+                            "danger",
+                            "BRACKET",
+                            f"Could not auto-arm position TP/SL for {pos_sym}: {e}",
+                        )
 
             # Rule 1: Break-Even Profit Lock at TP1 or +9% ROE (+0.45R)
             if self.settings["auto_breakeven"] and not self._active_trade.get("be_moved"):
@@ -747,6 +760,9 @@ class AutoTrader:
             latest = calc["latest"]
             latest["symbol"] = target_sym
             latest["interval"] = self.market_service.current_interval
+            latest["leverage"] = int(self.settings["leverage"])
+            if not latest.get("is_closed", True):
+                return
 
             idx = 1
             if has_htf:

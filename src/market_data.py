@@ -93,7 +93,9 @@ class MarketDataService:
         Fetch historical klines from Toobit (primary) with Binance fallback.
         Returns parsed list sorted from oldest to newest with smart 3-second cache.
         """
-        sym_key = f"{symbol.upper()}_{interval}"
+        normalized_limit = min(max(int(limit), 1), 1000)
+        sym_key = f"{symbol.upper()}_{interval}_{normalized_limit}"
+        limit = normalized_limit
         now = time.time()
 
         # Check TTL cache (5 seconds)
@@ -358,15 +360,24 @@ class MarketDataService:
                 from .indicators import calculate_ema, calculate_rsi
                 c = np.array([k["close"] for k in htf_klines], dtype=float)
                 ema50 = calculate_ema(c, 50)
-                ema200 = calculate_ema(c, 200) if len(c) >= 200 else calculate_ema(c, len(c))
+                ema200 = calculate_ema(c, 200) if len(c) >= 200 else None
                 rsi14 = calculate_rsi(c, 14)
 
                 cur_p = c[-1]
                 e50 = ema50[-1] if not np.isnan(ema50[-1]) else cur_p
-                e200 = ema200[-1] if not np.isnan(ema200[-1]) else e50
+                e200 = None
+                if ema200 is not None and not np.isnan(ema200[-1]):
+                    e200 = float(ema200[-1])
                 r14 = rsi14[-1] if not np.isnan(rsi14[-1]) else 50.0
 
-                if cur_p > e50 > e200:
+                if e200 is None:
+                    if cur_p > e50:
+                        trend = "BULLISH"
+                    elif cur_p < e50:
+                        trend = "BEARISH"
+                    else:
+                        trend = "NEUTRAL"
+                elif cur_p > e50 > e200:
                     trend = "STRONG_BULLISH"
                 elif cur_p > e50:
                     trend = "BULLISH"
@@ -386,8 +397,8 @@ class MarketDataService:
                     "htf_rsi": round(float(r14), 1),
                     "ema50": round(float(e50), 6),
                     "htf_ema50": round(float(e50), 6),
-                    "ema200": round(float(e200), 6),
-                    "htf_ema200": round(float(e200), 6),
+                    "ema200": round(e200, 6) if e200 is not None else None,
+                    "htf_ema200": round(e200, 6) if e200 is not None else None,
                     "is_bullish": "BULLISH" in trend,
                     "is_bearish": "BEARISH" in trend,
                 }
@@ -405,8 +416,8 @@ class MarketDataService:
             "htf_rsi": 50.0,
             "ema50": 0.0,
             "htf_ema50": 0.0,
-            "ema200": 0.0,
-            "htf_ema200": 0.0,
+            "ema200": None,
+            "htf_ema200": None,
             "is_bullish": False,
             "is_bearish": False,
         }
@@ -423,11 +434,13 @@ class MarketDataService:
     async def _notify_subscribers(self, candle_update: Dict[str, Any]):
         sym = candle_update.get("symbol", self.current_symbol).upper()
         intv = candle_update.get("interval", self.current_interval)
-        sym_key = f"{sym}_{intv}"
-        
-        # Keep real-time candle updated in klines cache
-        if sym_key in self._klines_cache:
-            ts, klines = self._klines_cache[sym_key]
+        cache_prefix = f"{sym}_{intv}_"
+
+        # Keep every cached history length updated from the live candle stream.
+        for cache_key in list(self._klines_cache):
+            if not cache_key.startswith(cache_prefix):
+                continue
+            ts, klines = self._klines_cache[cache_key]
             if klines and len(klines) > 0:
                 last_bar = klines[-1]
                 if last_bar["time"] == candle_update["time"]:

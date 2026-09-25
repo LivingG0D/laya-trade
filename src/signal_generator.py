@@ -42,6 +42,11 @@ class SignalGenerator:
         symbol = str(market_state.get("symbol", "BTCUSDT.P")).upper()
         interval = market_state.get("interval", "5m")
         candle_time = market_state.get("time", int(time.time()))
+        try:
+            effective_leverage = float(market_state.get("leverage", self.leverage))
+        except (TypeError, ValueError):
+            effective_leverage = float(self.leverage)
+        effective_leverage = min(125.0, max(1.0, effective_leverage))
 
         atr = market_state.get("atr", cur_price * 0.01)
         atr_pct = market_state.get("atr_pct", 1.0)
@@ -141,11 +146,11 @@ class SignalGenerator:
             marker_pos = "belowBar"
             dir_prob = raw_prob
 
-            # Calculate estimated liquidation price for 50x leverage (~1.80% maintenance margin cushion)
-            liq_dist_pct = 0.90 / self.leverage
+            # Calculate estimated liquidation price for the configured leverage
+            liq_dist_pct = 0.90 / effective_leverage
             liq_price = cur_price * (1.0 - liq_dist_pct)
             
-            # SL strictly bounded within safe envelope (0.45% to 1.20% maximum)
+            # SL strictly bounded within the configured leverage envelope
             max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
             min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
             raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
@@ -162,18 +167,18 @@ class SignalGenerator:
             tp1 = cur_price + (risk * self.tp1_rr) # +1.2R (Take 50% profit)
             tp2 = cur_price + (risk * self.tp2_rr) # +2.2R (Runner target)
 
-            # Return on Equity (ROE) under 50x leverage
-            sl_roe = round(-(risk / cur_price) * self.leverage * 100, 1)
-            be_roe = round(+(risk * self.be_rr / cur_price) * self.leverage * 100, 1)
-            tp1_roe = round(+((tp1 - cur_price) / cur_price) * self.leverage * 100, 1)
-            tp2_roe = round(+((tp2 - cur_price) / cur_price) * self.leverage * 100, 1)
+            # Return on Equity (ROE) under the configured leverage
+            sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
+            be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
+            tp1_roe = round(+((tp1 - cur_price) / cur_price) * effective_leverage * 100, 1)
+            tp2_roe = round(+((tp2 - cur_price) / cur_price) * effective_leverage * 100, 1)
 
-            reasons.append(f"⚡ 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: ${fmt(liq_price)} (-{round(liq_dist_pct*100, 2)}%).")
+            reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} (-{round(liq_dist_pct*100, 2)}%).")
             reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe above liquidation.")
             reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
             reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
-            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry for 100% risk-free trade.")
-            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {self.leverage}x.")
+            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry to reduce risk; fees and slippage still apply.")
+            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {effective_leverage}x.")
             if is_squeeze:
                 reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
             if htf_trend != "NEUTRAL":
@@ -189,11 +194,11 @@ class SignalGenerator:
             marker_pos = "aboveBar"
             dir_prob = raw_prob
 
-            # Calculate estimated liquidation price for 50x leverage (~1.80% maintenance margin cushion)
-            liq_dist_pct = 0.90 / self.leverage
+            # Calculate estimated liquidation price for the configured leverage
+            liq_dist_pct = 0.90 / effective_leverage
             liq_price = cur_price * (1.0 + liq_dist_pct)
             
-            # SL strictly bounded within 50x leverage safe envelope (0.25% to 0.80% maximum)
+            # SL strictly bounded within the configured leverage envelope
             max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
             min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
             raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
@@ -210,18 +215,18 @@ class SignalGenerator:
             tp1 = cur_price - (risk * self.tp1_rr) # +1.2R (Take 50% profit)
             tp2 = cur_price - (risk * self.tp2_rr) # +2.2R (Runner target)
 
-            # Return on Equity (ROE) under 50x leverage
-            sl_roe = round(-(risk / cur_price) * self.leverage * 100, 1)
-            be_roe = round(+(risk * self.be_rr / cur_price) * self.leverage * 100, 1)
-            tp1_roe = round(+((cur_price - tp1) / cur_price) * self.leverage * 100, 1)
-            tp2_roe = round(+((cur_price - tp2) / cur_price) * self.leverage * 100, 1)
+            # Return on Equity (ROE) under the configured leverage
+            sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
+            be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
+            tp1_roe = round(+((cur_price - tp1) / cur_price) * effective_leverage * 100, 1)
+            tp2_roe = round(+((cur_price - tp2) / cur_price) * effective_leverage * 100, 1)
 
-            reasons.append(f"⚡ 50x Leverage Spec: Margin = $20 per $1,000 | Est. Liquidation: ${fmt(liq_price)} (+{round(liq_dist_pct*100, 2)}%).")
+            reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} (+{round(liq_dist_pct*100, 2)}%).")
             reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe below liquidation.")
             reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
             reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
-            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry for 100% risk-free trade.")
-            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {self.leverage}x.")
+            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry to reduce risk; fees and slippage still apply.")
+            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {effective_leverage}x.")
             if is_squeeze:
                 reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
             if htf_trend != "NEUTRAL":
@@ -263,7 +268,7 @@ class SignalGenerator:
             "action": action,
             "direction": direction,
             "signal_type": pos,
-            "leverage": self.leverage,
+            "leverage": effective_leverage,
             "liquidation_price": fmt(liq_price),
             "roe_targets": {
                 "stop_loss_roe": f"{sl_roe}%" if action != "NEUTRAL" else "0.0%",

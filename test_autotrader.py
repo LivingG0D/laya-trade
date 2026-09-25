@@ -243,5 +243,48 @@ def test_emergency_stop_reports_failed_close(monkeypatch, tmp_path):
     assert result["closed_count"] == 0
 
 
+def test_failed_exchange_bracket_is_retried_instead_of_marked_protected(monkeypatch, tmp_path):
+    """A failed TP/SL update must not populate the local protected-trade state."""
+    import src.auto_trader as auto_trader_module
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(auto_trader_module, "STATE_FILE", tmp_path / "state.json")
+
+    client = SimpleNamespace(
+        is_demo=True,
+        api_key="",
+        get_positions=AsyncMock(return_value=[{
+            "rawSymbol": "BTC-SWAP-USDT",
+            "displaySymbol": "BTCUSDT.P",
+            "side": "LONG",
+            "quantity": 1.0,
+            "entryPrice": 100.0,
+            "markPrice": 100.0,
+            "unrealizedPnl": 0.0,
+            "pnlPercentage": 0.0,
+            "margin": 10.0,
+            "stopLoss": 0.0,
+            "takeProfit1": 0.0,
+        }]),
+        set_position_tpsl=AsyncMock(return_value={"success": False, "message": "exchange rejected bracket"}),
+    )
+    trader = AutoTrader(
+        toobit_client=client,
+        market_service=MockMarketService(),
+        laya_engine=MockLayaEngine(),
+        signal_generator=MockSignalGenerator(),
+    )
+    trader.enabled = True
+    trader.settings["auto_breakeven"] = False
+    trader.settings["opposing_reversal_exit"] = False
+
+    asyncio.run(trader.tick())
+
+    assert client.set_position_tpsl.await_count == 1
+    assert trader._active_trade["stop_loss"] == 0.0
+    assert trader._active_trade["take_profit_1"] == 0.0
+
+
 if __name__ == "__main__":
     asyncio.run(run_tests())

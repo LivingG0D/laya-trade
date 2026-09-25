@@ -1,5 +1,42 @@
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Mapping, Optional
+
+
+def validate_klines(klines: List[Mapping[str, Any]]) -> None:
+    """Reject malformed or out-of-order candles before indicator calculations."""
+    if not isinstance(klines, list) or not klines:
+        raise ValueError("At least one candle is required")
+
+    required = ("time", "open", "high", "low", "close", "volume")
+    previous_time = None
+    for index, candle in enumerate(klines):
+        if not isinstance(candle, Mapping):
+            raise ValueError(f"Candle {index} must be a mapping")
+        missing = [field for field in required if field not in candle]
+        if missing:
+            raise ValueError(f"Candle {index} missing fields: {', '.join(missing)}")
+
+        try:
+            timestamp = float(candle["time"])
+            open_price = float(candle["open"])
+            high_price = float(candle["high"])
+            low_price = float(candle["low"])
+            close_price = float(candle["close"])
+            volume = float(candle["volume"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Candle {index} contains non-numeric OHLCV data") from exc
+
+        if not np.isfinite(timestamp):
+            raise ValueError(f"Candle {index} has an invalid timestamp")
+        if previous_time is not None and timestamp <= previous_time:
+            raise ValueError("Candles must be strictly ordered by timestamp")
+        if not all(np.isfinite(value) and value > 0 for value in (open_price, high_price, low_price, close_price)):
+            raise ValueError(f"Candle {index} has non-positive or non-finite prices")
+        if volume < 0 or not np.isfinite(volume):
+            raise ValueError(f"Candle {index} has invalid volume")
+        if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
+            raise ValueError(f"Candle {index} has inconsistent high/low bounds")
+        previous_time = timestamp
 
 def calculate_ema(prices: np.ndarray, period: int) -> np.ndarray:
     """Calculate Exponential Moving Average."""
@@ -275,6 +312,7 @@ def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = 
     """
     if not klines:
         return {"series": [], "latest": {}}
+    validate_klines(klines)
 
     closes = np.array([k["close"] for k in klines], dtype=float)
     highs = np.array([k["high"] for k in klines], dtype=float)
@@ -353,6 +391,7 @@ def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = 
     market_regime = "STRONG_TREND" if latest_adx >= 25 else ("CHOP_RANGE" if latest_adx < 20 else "MODERATE_TREND")
 
     latest_telemetry = {
+        "is_closed": bool(klines[-1].get("is_closed", True)),
         "price": float(cur_price),
         "change_pct": round(float(price_change_pct), 3),
         "rsi": round(float(rsi[last_idx]), 2) if not np.isnan(rsi[last_idx]) else 50.0,

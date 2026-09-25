@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+import time
 import pytest
 
 # Add root directory to pythonpath
@@ -232,15 +233,16 @@ def test_live_entry_fails_when_protection_cannot_be_confirmed(monkeypatch):
     assert client.flash_close.await_count == 1
 
 
-def test_live_entry_places_both_take_profits_when_confirmed(monkeypatch):
-    """A confirmed bracket must include both configured profit targets."""
+def test_live_entry_places_position_bracket_and_separate_tp2(monkeypatch):
+    """A confirmed entry must use position-level SL/TP1 plus a separate TP2."""
     from unittest.mock import AsyncMock
 
     client = ToobitClient("test-key", "test-secret", is_demo=False)
     client.set_margin_type = AsyncMock(return_value={"success": True})
     client.set_leverage = AsyncMock(return_value={"success": True})
     client._send_signed_request = AsyncMock(return_value={"orderId": "entry-order"})
-    client.create_plan_order = AsyncMock(return_value={"success": True})
+    client.set_position_tpsl = AsyncMock(return_value={"success": True, "verified": True})
+    client.create_plan_order = AsyncMock(return_value={"success": True, "orderId": "tp2-order"})
 
     async def scenario():
         result = await client.create_order(
@@ -258,12 +260,180 @@ def test_live_entry_places_both_take_profits_when_confirmed(monkeypatch):
         return result
 
     result = asyncio.run(scenario())
-    labels = [call.kwargs["order_type"] for call in client.create_plan_order.await_args_list]
 
     assert result["success"] is True
-    assert labels == ["STOP_MARKET", "TAKE_PROFIT_MARKET", "TAKE_PROFIT_MARKET"]
-    quantities = [call.kwargs["quantity"] for call in client.create_plan_order.await_args_list]
-    assert sum(quantities) == 0.01
+    client.set_position_tpsl.assert_awaited_once_with(
+        symbol="BTC-SWAP-USDT",
+        side="LONG",
+        stop_loss=99.0,
+        take_profit=102.0,
+        stop_loss_size=0.01,
+        take_profit_size=0.005,
+    )
+    client.create_plan_order.assert_awaited_once_with(
+        symbol="BTC-SWAP-USDT",
+        side="SELL_CLOSE",
+        order_type="TAKE_PROFIT_MARKET",
+        quantity=0.005,
+        trigger_price=104.0,
+        reduce_only=True,
+        position_side="LONG",
+        take_profit_slot="takeProfit2",
+    )
+
+
+@pytest.mark.parametrize(
+    ("position_side", "stop_loss", "take_profit", "expected_exit_side"),
+    [
+        ("LONG", 90.0, 110.0, "SELL_CLOSE"),
+        ("SHORT", 110.0, 90.0, "BUY_CLOSE"),
+    ],
+)
+def test_protection_payload_uses_position_side_and_separate_tp2(
+    position_side,
+    stop_loss,
+    take_profit,
+    expected_exit_side,
+):
+    """LONG/SHORT protection must never be sent to the opposite position side."""
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client._contract_rules_cache["BTC-SWAP-USDT"] = {"tick_size": 0.01}
+    calls = []
+
+    async def fake_send(method, endpoint, params=None, **_kwargs):
+        params = dict(params or {})
+        calls.append((endpoint, params))
+        if endpoint.endswith("/position/trading-stop"):
+            return {
+                "code": 0,
+                "side": params["side"],
+                "stopLoss": params.get("stopLoss", ""),
+                "takeProfit": params.get("takeProfit", ""),
+            }
+        return {"code": 0, "orderId": "tp2-order"}
+
+    client._send_signed_request = fake_send
+
+    async def scenario():
+        result = await client._attach_entry_protection(
+            symbol="BTC-SWAP-USDT",
+            position_side=position_side,
+            quantity=10,
+            stop_loss=stop_loss,
+            take_profit_1=take_profit,
+            take_profit_2=take_profit + (5 if position_side == "LONG" else -5),
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is True
+    assert len(calls) == 2
+    assert calls[0][0].endswith("/position/trading-stop")
+    assert calls[0][1]["side"] == position_side
+    assert calls[1][0].endswith("/futures/order")
+    assert calls[1][1]["side"] == expected_exit_side
+    assert calls[1][1]["type"] == "STOP"
+
+
+def test_demo_positions_receive_default_protection():
+    client = ToobitClient(is_demo=True)
+    client._demo_positions.clear()
+
+    position = client.simulate_position(
+        "BTCUSDT.P",
+        "LONG",
+        quantity=1,
+        entry_price=100.0,
+        leverage=10,
+    )
+
+    assert position["stopLoss"] > 0
+    assert position["takeProfit1"] > 0
+    assert position["takeProfit2"] > 0
+
+
+def test_low_price_protection_is_not_rounded_to_zero():
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client._contract_rules_cache["ETH-SWAP-USDT"] = {"tick_size": 0.01}
+    client._last_rules_cache_time = time.time()
+    captured = {}
+
+    async def fake_send(method, endpoint, params=None, **_kwargs):
+        captured.update(params or {})
+        return {
+            "code": 0,
+            "side": "LONG",
+            "stopLoss": params["stopLoss"],
+            "takeProfit": params["takeProfit"],
+        }
+
+    client._send_signed_request = fake_send
+
+    async def scenario():
+        result = await client.set_position_tpsl(
+            "ETHUSDT.P",
+            "LONG",
+            stop_loss=0.004,
+            take_profit=0.005,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is True
+    assert float(captured["stopLoss"]) > 0
+    assert float(captured["takeProfit"]) > 0
+
+
+def test_position_advice_accepts_current_uppercase_decision_schema():
+    """Current Laya output must not fall back to legacy default probabilities."""
+    result = generate_position_suggestion(
+        position=None,
+        current_price=100.0,
+        signal={},
+        laya_decision={
+            "position": "STRONG_LONG",
+            "confidence_prob": 0.81,
+            "probabilities": {
+                "STRONG_LONG": 0.70,
+                "SCALP_LONG": 0.10,
+                "SCALP_SHORT": 0.05,
+                "STRONG_SHORT": 0.05,
+                "NEUTRAL_HOLD": 0.10,
+            },
+        },
+    )
+
+    assert result["action"] == "ENTER_SETUP"
+    assert "81.0% confidence" in result["suggestion"]
+
+    active_result = generate_position_suggestion(
+        position={
+            "side": "LONG",
+            "entryPrice": 100.0,
+            "unrealizedPnl": 0.0,
+            "pnlPercentage": 0.0,
+            "quantity": 1.0,
+            "displaySymbol": "BTCUSDT.P",
+        },
+        current_price=100.0,
+        signal={},
+        laya_decision={
+            "position": "STRONG_LONG",
+            "confidence_prob": 0.81,
+            "probabilities": {
+                "STRONG_LONG": 0.70,
+                "SCALP_LONG": 0.10,
+                "SCALP_SHORT": 0.05,
+                "STRONG_SHORT": 0.05,
+                "NEUTRAL_HOLD": 0.10,
+            },
+        },
+    )
+    assert "80% bullish" in active_result["suggestion"]
 
 
 if __name__ == "__main__":
