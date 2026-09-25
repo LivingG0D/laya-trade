@@ -877,6 +877,49 @@ class ToobitClient:
             logger.warning(f"Could not set leverage on {toobit_sym}: {e}")
             return {"success": False, "mode": "live", "symbol": toobit_sym, "error": str(e)}
 
+    async def get_symbol_leverage_config(self, symbol: str) -> Dict[str, Any]:
+        """Read the leverage and margin mode the account already uses for a symbol."""
+        toobit_sym = to_toobit_symbol(symbol)
+        if self.is_demo:
+            return {"success": True, "mode": "demo", "symbol": toobit_sym, "marginType": None, "leverage": None}
+
+        try:
+            res = await self._send_signed_request("GET", "/api/v1/futures/accountLeverage", {"symbol": toobit_sym})
+        except Exception as e:
+            logger.warning(f"Could not read margin config for {toobit_sym}: {e}")
+            return {"success": False, "mode": "live", "symbol": toobit_sym, "error": str(e)}
+
+        if isinstance(res, list):
+            rows: List[Any] = res
+        elif isinstance(res, dict):
+            data = res.get("data")
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = [data]
+            else:
+                rows = [res]
+        else:
+            rows = []
+
+        row = None
+        for candidate in rows:
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("symbolId") or candidate.get("symbol") or "").upper() == toobit_sym.upper():
+                row = candidate
+                break
+        if row is None:
+            row = next((c for c in rows if isinstance(c, dict)), None)
+
+        return {
+            "success": True,
+            "mode": "live",
+            "symbol": toobit_sym,
+            "marginType": str((row or {}).get("marginType") or "").upper() or None,
+            "leverage": (row or {}).get("leverage"),
+        }
+
     async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> Dict[str, Any]:
         """Configure margin mode: ISOLATED or CROSSED."""
         toobit_sym = to_toobit_symbol(symbol)
@@ -892,6 +935,36 @@ class ToobitClient:
                 return {"success": True, "mode": "live", "symbol": toobit_sym, "marginType": margin_type, "message": "Already set"}
             logger.warning(f"Could not set margin type on {toobit_sym}: {e}")
             return {"success": False, "mode": "live", "symbol": toobit_sym, "error": str(e)}
+
+    async def _ensure_isolated_margin(self, symbol: str) -> Dict[str, Any]:
+        """Confirm isolated margin for a live entry, writing only when it is needed.
+
+        Toobit refuses a margin-mode change while a position or open order exists
+        (-4047/-4048), so an already-isolated symbol is detected instead of having
+        the rejected change re-issued on every entry.
+        """
+        toobit_sym = to_toobit_symbol(symbol)
+        config = await self.get_symbol_leverage_config(toobit_sym)
+        current = config.get("marginType") if config.get("success") else None
+        if current == "ISOLATED":
+            return {
+                "success": True,
+                "mode": "live",
+                "symbol": toobit_sym,
+                "marginType": "ISOLATED",
+                "message": "Already set",
+            }
+
+        result = await self.set_margin_type(toobit_sym, "ISOLATED")
+        if not result.get("success") and current == "CROSS":
+            reason = result.get("error") or result.get("message") or "isolated margin setup was not confirmed"
+            result = dict(result)
+            result.pop("message", None)
+            result["error"] = (
+                f"{reason} | {toobit_sym} is still cross-margined: close the position "
+                f"or switch it to isolated on the exchange first"
+            )
+        return result
 
     async def _attach_entry_protection(
         self,
@@ -1035,9 +1108,13 @@ class ToobitClient:
         try:
             # 1. Set leverage and margin mode before any live entry is dispatched
             if "CLOSE" not in toobit_side:
-                margin_result = await self.set_margin_type(toobit_sym, "ISOLATED")
+                margin_result = await self._ensure_isolated_margin(toobit_sym)
                 if not margin_result or not margin_result.get("success"):
-                    message = (margin_result or {}).get("message", "isolated margin setup was not confirmed")
+                    message = (
+                        (margin_result or {}).get("message")
+                        or (margin_result or {}).get("error")
+                        or "isolated margin setup was not confirmed"
+                    )
                     return {
                         "success": False,
                         "mode": "live",
@@ -1047,7 +1124,11 @@ class ToobitClient:
 
                 leverage_result = await self.set_leverage(toobit_sym, leverage)
                 if not leverage_result or not leverage_result.get("success"):
-                    message = (leverage_result or {}).get("message", "leverage setup was not confirmed")
+                    message = (
+                        (leverage_result or {}).get("message")
+                        or (leverage_result or {}).get("error")
+                        or "leverage setup was not confirmed"
+                    )
                     return {
                         "success": False,
                         "mode": "live",

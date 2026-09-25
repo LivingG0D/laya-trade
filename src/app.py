@@ -399,9 +399,8 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
                 if norm_target == norm_pos or p_sym == symbol:
                     matching_positions.append(p)
 
-        # If auto_trader has active trade info with TP/SL, enrich positions
-        if auto_trader._active_trade:
-            act = auto_trader._active_trade
+        # If AutoTrader has active trade metadata, enrich each matching position.
+        for act in auto_trader.get_active_trades():
             act_sym = act.get("symbol", "")
             norm_act = act_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
             for p in all_positions:
@@ -443,16 +442,13 @@ async def set_toobit_tpsl(req: ToobitTPSLRequest):
             stop_loss=req.stopLoss,
             take_profit=req.takeProfit
         )
-        # Update auto_trader active trade if matching
-        if auto_trader._active_trade:
-            pos_sym = auto_trader._active_trade.get("symbol", "")
-            norm_target = req.symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
-            norm_active = pos_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
-            if norm_target == norm_active:
-                if req.stopLoss > 0:
-                    auto_trader._active_trade["stop_loss"] = req.stopLoss
-                if req.takeProfit > 0:
-                    auto_trader._active_trade["take_profit_1"] = req.takeProfit
+        # Update the matching managed trade, not only the primary position.
+        active_trade = auto_trader.get_active_trade(req.symbol)
+        if active_trade:
+            if req.stopLoss > 0:
+                active_trade["stop_loss"] = req.stopLoss
+            if req.takeProfit > 0:
+                active_trade["take_profit_1"] = req.takeProfit
         return res
     except Exception as e:
         logger.error(f"Error setting Toobit TP/SL: {e}")
@@ -463,6 +459,8 @@ async def close_toobit_position(req: ToobitCloseRequest):
     """Execute flashClose order on Toobit."""
     try:
         res = await toobit_client.flash_close(req.symbol)
+        if res.get("success"):
+            auto_trader._remove_active_trade(req.symbol)
         return res
     except Exception as e:
         logger.error(f"Error closing position {req.symbol}: {e}")

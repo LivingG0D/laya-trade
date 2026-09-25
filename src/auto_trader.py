@@ -11,20 +11,51 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import (
     DEFAULT_SYMBOL,
     DEFAULT_LEVERAGE,
     LEVERAGE_MAX_SL_PCT,
     LEVERAGE_MIN_SL_PCT,
-    BASE_DIR
+    BASE_DIR,
+    SUPPORTED_SYMBOLS,
+    SUPPORTED_TIMEFRAMES,
 )
 from .market_data import to_toobit_symbol
 
 logger = logging.getLogger("auto_trader")
 
 STATE_FILE = BASE_DIR / "scratch" / "autotrade_state.json"
+
+
+def _position_key(symbol: str) -> str:
+    """Normalize display and exchange symbol forms to one map key."""
+    return to_toobit_symbol(str(symbol or "").strip())
+
+
+def _timeframe_seconds(timeframe: str) -> int:
+    """Return the nominal duration of a supported timeframe in seconds."""
+    value = str(timeframe or "").lower()
+    if value.endswith("m"):
+        return int(value[:-1]) * 60
+    if value.endswith("h"):
+        return int(value[:-1]) * 3600
+    if value.endswith("d"):
+        return int(value[:-1]) * 86400
+    return 300
+
+
+def _is_fresh_timestamp(timestamp: Any, timeframe: str) -> bool:
+    """Allow a short clock skew while rejecting stale closed-candle data."""
+    try:
+        candle_time = float(timestamp)
+    except (TypeError, ValueError):
+        return False
+    if candle_time <= 0:
+        return False
+    age = time.time() - candle_time
+    return -60 <= age <= _timeframe_seconds(timeframe) * 2 + 30
 
 
 class AutoTrader:
@@ -59,7 +90,15 @@ class AutoTrader:
             "fixed_margin_usd": 1.0,  # $1.00 USDT safe default
             "equity_risk_pct": 1.0,  # 1.0% equity
             "min_confidence": 65.0,  # 65% minimum confidence
-            "max_positions": 1,  # 1 position maximum to prevent overexposure
+            "symbols": ["BTCUSDT.P", "ETHUSDT.P", "SOLUSDT.P"],
+            "timeframes": ["5m", "15m", "1h"],
+            "max_positions": 2,
+            "scan_interval_seconds": 5,
+            "signal_ttl_seconds": 15,
+            "per_symbol_cooldown_seconds": 60,
+            "max_concurrent_fetches": 6,
+            "max_concurrent_decisions": 1,
+            "shadow_mode": True,
             "auto_bracket": True,  # Always attach protective Stop-Loss & Take-Profit
             "auto_breakeven": True,  # Move SL to Entry at TP1 (+0.45R)
             "opposing_reversal_exit": True,  # Flash close if opposite high-conviction signal emerges
@@ -82,8 +121,13 @@ class AutoTrader:
         }
 
         # Active Trade Management State
+        self._active_trades: Dict[str, Dict[str, Any]] = {}
         self._active_trade: Optional[Dict[str, Any]] = None
+        self._analysis_results: Dict[str, Dict[str, Any]] = {}
+        self._symbol_cooldowns: Dict[str, float] = {}
         self._lock = asyncio.Lock()
+        self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
+        self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
         self._is_running: bool = False
         self._loop_task: Optional[asyncio.Task] = None
         self._last_scan_time: float = 0.0
@@ -93,6 +137,8 @@ class AutoTrader:
 
         # Load persisted settings and state
         self._load_state()
+        self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
+        self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
 
         self.add_log(
             "info",
@@ -129,6 +175,12 @@ class AutoTrader:
                 self.stats["winning_trades"] = int(saved_stats.get("winning_trades", 0))
                 self.stats["losing_trades"] = int(saved_stats.get("losing_trades", 0))
                 self.stats["total_realized_pnl"] = float(saved_stats.get("total_realized_pnl", 0.0))
+
+                for trade in data.get("active_trades", []):
+                    symbol = trade.get("symbol")
+                    if symbol:
+                        self._active_trades[_position_key(symbol)] = dict(trade)
+                self._active_trade = next(iter(self._active_trades.values()), None)
         except Exception as e:
             logger.warning(f"Could not load AutoTrader state: {e}")
 
@@ -139,6 +191,7 @@ class AutoTrader:
             data = {
                 "settings": self.settings,
                 "stats": self.stats,
+                "active_trades": list(self._active_trades.values()),
                 "updated_at": time.time()
             }
             STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -203,8 +256,34 @@ class AutoTrader:
                 "cooldown_remaining": cooldown_remaining,
             },
             "active_trade": self._active_trade,
+            "active_trades": list(self._active_trades.values()),
+            "analysis": dict(self._analysis_results),
             "logs": self.logs[:30]  # latest 30 logs for snappy frontend rendering
         }
+
+    def get_active_trade(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Return managed trade metadata for a display or exchange symbol."""
+        return self._active_trades.get(_position_key(symbol))
+
+    def get_active_trades(self) -> List[Dict[str, Any]]:
+        """Return a snapshot of all managed trades."""
+        return list(self._active_trades.values())
+
+    def _set_active_trade(self, trade: Optional[Dict[str, Any]]) -> None:
+        """Synchronize the legacy primary trade view with the multi-trade map."""
+        if trade is None:
+            self._active_trade = None
+            return
+        symbol = trade.get("symbol")
+        if not symbol:
+            return
+        self._active_trades[_position_key(symbol)] = trade
+        self._active_trade = trade
+
+    def _remove_active_trade(self, symbol: str) -> None:
+        """Remove one managed trade without affecting other symbols."""
+        self._active_trades.pop(_position_key(symbol), None)
+        self._active_trade = next(iter(self._active_trades.values()), None)
 
     def _mode_mismatch_reason(self) -> Optional[str]:
         """Return a safety reason when configured and exchange modes differ."""
@@ -250,8 +329,12 @@ class AutoTrader:
 
                 self.enabled = True
                 self.status = "SCANNING"
-                self.status_message = "Auto-trading armed: Monitoring market for high-conviction setups."
-                self.add_log("success", "SYSTEM", f"🟢 Auto-trading ENABLED in {self.settings['mode'].upper()} mode. 50x Risk Engine active.")
+                if self.settings.get("shadow_mode", True):
+                    self.status_message = "Auto-trading armed in SHADOW mode: no orders will be submitted."
+                    self.add_log("success", "SYSTEM", f"🟢 Auto-trading ENABLED in {self.settings['mode'].upper()} SHADOW mode.")
+                else:
+                    self.status_message = "Auto-trading armed: Monitoring configured symbols for high-conviction setups."
+                    self.add_log("success", "SYSTEM", f"🟢 Auto-trading ENABLED in {self.settings['mode'].upper()} mode.")
             else:
                 self.enabled = False
                 self.status = "IDLE"
@@ -295,6 +378,50 @@ class AutoTrader:
                 if m in ("demo", "live"):
                     self.settings["mode"] = m
 
+            if "symbols" in new_settings:
+                raw_symbols = new_settings["symbols"]
+                if isinstance(raw_symbols, str):
+                    raw_symbols = [raw_symbols]
+                allowed = {to_toobit_symbol(str(symbol)) for symbol in SUPPORTED_SYMBOLS}
+                normalized_symbols = []
+                seen_symbols = set()
+                for symbol in raw_symbols if isinstance(raw_symbols, list) else []:
+                    normalized = to_toobit_symbol(str(symbol))
+                    display_symbol = str(symbol).upper()
+                    if normalized in allowed and normalized not in seen_symbols:
+                        seen_symbols.add(normalized)
+                        normalized_symbols.append(display_symbol)
+                if normalized_symbols:
+                    self.settings["symbols"] = normalized_symbols[:10]
+
+            if "timeframes" in new_settings:
+                raw_timeframes = new_settings["timeframes"]
+                if isinstance(raw_timeframes, str):
+                    raw_timeframes = [raw_timeframes]
+                normalized_timeframes = [
+                    str(timeframe).lower()
+                    for timeframe in raw_timeframes if isinstance(raw_timeframes, list)
+                    if str(timeframe).lower() in SUPPORTED_TIMEFRAMES
+                ]
+                if normalized_timeframes:
+                    self.settings["timeframes"] = list(dict.fromkeys(normalized_timeframes))
+
+            if "max_positions" in new_settings:
+                self.settings["max_positions"] = max(1, min(2, int(new_settings["max_positions"])))
+
+            for key, minimum, maximum in (
+                ("scan_interval_seconds", 2, 60),
+                ("signal_ttl_seconds", 5, 120),
+                ("per_symbol_cooldown_seconds", 10, 3600),
+                ("max_concurrent_fetches", 1, 12),
+                ("max_concurrent_decisions", 1, 2),
+            ):
+                if key in new_settings:
+                    self.settings[key] = max(minimum, min(maximum, int(new_settings[key])))
+
+            if "shadow_mode" in new_settings:
+                self.settings["shadow_mode"] = bool(new_settings["shadow_mode"])
+
             if self.enabled:
                 mode_error = self._mode_mismatch_reason()
                 if mode_error:
@@ -313,6 +440,8 @@ class AutoTrader:
             if "cooldown_seconds" in new_settings:
                 self.settings["cooldown_seconds"] = max(10, int(new_settings["cooldown_seconds"]))
 
+            self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
+            self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
             self._save_state()
             self.add_log(
                 "info",
@@ -376,7 +505,9 @@ class AutoTrader:
                 errors.append(f"position query: {exc}")
 
             current_symbol = getattr(self.market_service, "current_symbol", None)
-            symbols = [current_symbol] if current_symbol else []
+            symbols = list(self.settings.get("symbols", []))
+            if current_symbol:
+                symbols.append(current_symbol)
             symbols.extend(
                 position.get("rawSymbol") or position.get("symbol")
                 for position in open_positions
@@ -399,6 +530,7 @@ class AutoTrader:
 
             success = not errors
             if success:
+                self._active_trades.clear()
                 self._active_trade = None
                 self.status_message = f"Emergency stop complete: {closed_count} position(s) closed."
                 log_level = "warning"
@@ -459,6 +591,331 @@ class AutoTrader:
             except Exception as e:
                 logger.error(f"Unexpected error in AutoTrader supervisor loop: {e}", exc_info=True)
             await asyncio.sleep(5)
+
+    async def _fetch_timeframe_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
+        """Fetch, validate, and calculate one closed-candle timeframe."""
+        from .indicators import compute_all_indicators
+
+        async with self._fetch_semaphore:
+            raw_klines = await self.market_service.fetch_klines(
+                symbol=symbol,
+                interval=timeframe,
+                limit=150,
+            )
+        if not raw_klines:
+            raise RuntimeError(f"No {timeframe} candles returned for {symbol}")
+        calculated = compute_all_indicators(raw_klines)
+        latest = dict(calculated["latest"])
+        latest["symbol"] = symbol
+        latest["interval"] = timeframe
+        latest["time"] = calculated.get("series", [{}])[-1].get("time", raw_klines[-1].get("time", 0))
+        latest["leverage"] = int(self.settings["leverage"])
+        if not latest.get("is_closed", True):
+            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is not closed")
+        if not _is_fresh_timestamp(latest.get("time"), timeframe):
+            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is stale")
+        return latest
+
+    async def _analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Analyze one symbol using parallel timeframe data and bounded inference."""
+        timeframes = [
+            timeframe for timeframe in self.settings.get("timeframes", ["5m"])
+            if timeframe in SUPPORTED_TIMEFRAMES
+        ] or ["5m"]
+        started = time.perf_counter()
+        try:
+            snapshots = await asyncio.gather(
+                *(self._fetch_timeframe_snapshot(symbol, timeframe) for timeframe in timeframes),
+                return_exceptions=True,
+            )
+            latest_by_timeframe: Dict[str, Dict[str, Any]] = {}
+            for timeframe, snapshot in zip(timeframes, snapshots):
+                if isinstance(snapshot, Exception):
+                    raise snapshot
+                latest_by_timeframe[timeframe] = snapshot
+
+            entry_timeframe = "5m" if "5m" in latest_by_timeframe else timeframes[-1]
+            state = dict(latest_by_timeframe[entry_timeframe])
+            higher = latest_by_timeframe.get("1h") or latest_by_timeframe.get("15m")
+            if higher:
+                state["htf"] = {
+                    "trend": higher.get("trend_state", "NEUTRAL"),
+                    "interval": higher.get("interval"),
+                    "rsi": higher.get("rsi"),
+                    "adx": higher.get("adx"),
+                }
+            state["multi_timeframe"] = {
+                timeframe: {
+                    "time": snapshot.get("time"),
+                    "trend": snapshot.get("trend_state"),
+                    "rsi": snapshot.get("rsi"),
+                    "adx": snapshot.get("adx"),
+                }
+                for timeframe, snapshot in latest_by_timeframe.items()
+            }
+
+            async with self._decision_semaphore:
+                decision = await self.laya_engine.decide(state)
+            signal = self.signal_generator.generate_signal(state, decision)
+            signal["analysis_timestamp"] = time.time()
+            signal["analysis_symbol"] = symbol
+            signal["analysis_timeframes"] = list(timeframes)
+            signal["analysis_latency_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+            self._analysis_results[symbol] = {
+                "symbol": symbol,
+                "state": "READY",
+                "action": signal.get("action", "NEUTRAL"),
+                "confidence_pct": signal.get("confidence_pct", 0.0),
+                "last_candle_timestamp": max(
+                    snapshot.get("time", 0) for snapshot in latest_by_timeframe.values()
+                ),
+                "latency_ms": signal["analysis_latency_ms"],
+                "timeframes": list(timeframes),
+            }
+            return {
+                "symbol": symbol,
+                "signal": signal,
+                "latest": state,
+                "timeframes": list(timeframes),
+            }
+        except Exception as exc:
+            self._analysis_results[symbol] = {
+                "symbol": symbol,
+                "state": "ERROR",
+                "error": str(exc),
+                "last_candle_timestamp": 0,
+                "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "timeframes": list(timeframes),
+            }
+            logger.warning("Parallel analysis failed for %s: %s", symbol, exc)
+            return None
+
+    async def _scan_candidates(self, open_positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Analyze configured symbols concurrently and return ranked candidates."""
+        open_keys = {
+            _position_key(position.get("rawSymbol") or position.get("symbol"))
+            for position in open_positions
+        }
+        now = time.time()
+        symbols = [
+            symbol for symbol in self.settings.get("symbols", [])
+            if _position_key(symbol) not in open_keys
+            and now >= self._symbol_cooldowns.get(_position_key(symbol), 0.0)
+        ]
+        results = await asyncio.gather(
+            *(self._analyze_symbol(symbol) for symbol in symbols),
+            return_exceptions=True,
+        )
+        candidates: List[Dict[str, Any]] = []
+        for result in results:
+            if not isinstance(result, dict) or not result:
+                continue
+            signal = result["signal"]
+            action = str(signal.get("action", "")).upper()
+            confidence = float(signal.get("confidence_pct", 0.0))
+            if action in {"NEUTRAL", "WAIT", ""}:
+                continue
+            if "LONG" not in action and "SHORT" not in action:
+                continue
+            if confidence < float(self.settings["min_confidence"]):
+                continue
+            if time.time() - float(signal.get("analysis_timestamp", 0.0)) > float(self.settings["signal_ttl_seconds"]):
+                continue
+            candidates.append(result)
+        candidates.sort(key=lambda item: float(item["signal"].get("confidence_pct", 0.0)), reverse=True)
+        return candidates
+
+    async def _manage_position(self, position: Dict[str, Any]) -> None:
+        """Supervise one exchange position independently from other symbols."""
+        symbol = position.get("rawSymbol") or position.get("symbol")
+        display_symbol = position.get("displaySymbol") or symbol
+        side = str(position.get("side", "LONG")).upper()
+        key = _position_key(symbol)
+        trade = self._active_trades.get(key)
+        if trade is None:
+            trade = {
+                "symbol": display_symbol,
+                "exchange_symbol": symbol,
+                "side": side,
+                "entry_price": float(position.get("entryPrice", 0.0)),
+                "quantity": float(position.get("quantity", 0.0)),
+                "margin": float(position.get("margin", 0.0)),
+                "stop_loss": float(position.get("stopLoss", 0.0)),
+                "take_profit_1": float(position.get("takeProfit1", position.get("takeProfit", 0.0))),
+                "take_profit_2": float(position.get("takeProfit2", 0.0)),
+                "be_moved": False,
+                "open_time": time.time(),
+            }
+            self._set_active_trade(trade)
+
+        analysis_result = await self._analyze_symbol(display_symbol)
+        analysis = analysis_result["signal"] if analysis_result else None
+        entry_price = float(position.get("entryPrice", trade.get("entry_price", 0.0)))
+        mark_price = float(position.get("markPrice", entry_price))
+        pnl_pct = float(position.get("pnlPercentage", 0.0))
+
+        if self.settings.get("auto_bracket", True):
+            stop_loss = float(trade.get("stop_loss", 0.0))
+            take_profit = float(trade.get("take_profit_1", 0.0))
+            if analysis and analysis.get("targets"):
+                targets = analysis["targets"]
+                stop_loss = stop_loss or float(analysis.get("stop_loss") or targets.get("stop_loss", 0.0))
+                take_profit = take_profit or float(analysis.get("take_profit_1") or targets.get("take_profit_1", 0.0))
+            if (stop_loss <= 0 or take_profit <= 0) and entry_price > 0:
+                distance = 0.25 / max(int(self.settings.get("leverage", 50)), 1)
+                if side == "LONG":
+                    stop_loss = stop_loss or entry_price * (1.0 - distance)
+                    take_profit = take_profit or entry_price * (1.0 + distance * 1.6)
+                else:
+                    stop_loss = stop_loss or entry_price * (1.0 + distance)
+                    take_profit = take_profit or entry_price * (1.0 - distance * 1.6)
+                try:
+                    result = await self.toobit_client.set_position_tpsl(
+                        symbol=symbol,
+                        side=side,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                    if result.get("success"):
+                        trade["stop_loss"] = float(result.get("stopLoss", stop_loss))
+                        trade["take_profit_1"] = float(result.get("takeProfit", take_profit))
+                        self.add_log("success", "BRACKET", f"Exchange TP/SL confirmed for {side} {display_symbol}.")
+                    else:
+                        self.add_log("danger", "BRACKET", f"Exchange TP/SL was not confirmed for {display_symbol}.")
+                except Exception as exc:
+                    self.add_log("danger", "BRACKET", f"Could not confirm exchange TP/SL for {display_symbol}: {exc}")
+
+        if self.settings.get("auto_breakeven", True) and not trade.get("be_moved"):
+            take_profit = float(trade.get("take_profit_1", 0.0))
+            should_move = (pnl_pct >= 9.0 or (side == "LONG" and mark_price >= take_profit > 0)
+                           or (side == "SHORT" and mark_price <= take_profit > 0))
+            if should_move and entry_price > 0:
+                new_stop = entry_price * 1.0005 if side == "LONG" else entry_price * 0.9995
+                try:
+                    result = await self.toobit_client.set_position_tpsl(
+                        symbol=symbol,
+                        side=side,
+                        stop_loss=new_stop,
+                        take_profit=take_profit,
+                    )
+                    if result.get("success"):
+                        trade["be_moved"] = True
+                        trade["stop_loss"] = new_stop
+                        self.add_log("success", "PROFIT_LOCK", f"Break-even stop confirmed for {display_symbol}.")
+                except Exception as exc:
+                    logger.warning("Could not move break-even stop for %s: %s", display_symbol, exc)
+
+        if self.settings.get("opposing_reversal_exit", True) and analysis:
+            action = str(analysis.get("action", "")).upper()
+            confidence = float(analysis.get("confidence_pct", 0.0))
+            opposed = (side == "LONG" and "SHORT" in action) or (side == "SHORT" and "LONG" in action)
+            if opposed and confidence >= 70.0:
+                result = await self.toobit_client.flash_close(symbol)
+                if result.get("success"):
+                    self._handle_trade_closed(position, reason=f"opposing {action}")
+                return
+
+        if self.settings.get("mode") == "demo":
+            stop_loss = float(position.get("stopLoss", trade.get("stop_loss", 0.0)))
+            take_profit = float(position.get("takeProfit2", trade.get("take_profit_2", 0.0)))
+            hit = (side == "LONG" and ((stop_loss > 0 and mark_price <= stop_loss) or (take_profit > 0 and mark_price >= take_profit)))
+            hit = hit or (side == "SHORT" and ((stop_loss > 0 and mark_price >= stop_loss) or (take_profit > 0 and mark_price <= take_profit)))
+            if hit:
+                result = await self.toobit_client.flash_close(symbol)
+                if result.get("success"):
+                    self._handle_trade_closed(position, reason="demo SL/TP")
+
+    async def _execute_candidate(self, candidate: Dict[str, Any]) -> None:
+        """Validate, size, and dispatch one ranked candidate under the portfolio lock."""
+        symbol = candidate["symbol"]
+        signal = candidate["signal"]
+        latest = candidate.get("latest", {})
+        action = str(signal.get("action", "")).upper()
+        if "LONG" in action:
+            side, position_side, order_side = "LONG", "LONG", "BUY"
+        elif "SHORT" in action:
+            side, position_side, order_side = "SHORT", "SHORT", "SELL"
+        else:
+            return
+        del side
+        entry_price = float(signal.get("entry_price", latest.get("price", latest.get("close", 0.0))))
+        if entry_price <= 0:
+            return
+
+        balance = await self.toobit_client.get_balance()
+        available_margin = float(balance.get("availableBalance", 0.0))
+        total_equity = float(balance.get("totalEquity", balance.get("totalBalance", 0.0)))
+        if available_margin < 0.50:
+            self.add_log("warning", "ORDER", f"Pre-flight skipped for {symbol}: insufficient available margin.")
+            return
+        if self.settings["sizing_mode"] == "pct_equity":
+            target_margin = max(0.50, total_equity * float(self.settings["equity_risk_pct"]) / 100.0)
+        else:
+            target_margin = max(0.50, float(self.settings["fixed_margin_usd"]))
+        target_margin = min(target_margin, available_margin * 0.20)
+        leverage = int(self.settings["leverage"])
+        notional_value = target_margin * leverage
+        rules = await self.toobit_client.get_symbol_rules(symbol)
+        multiplier = float(rules.get("multiplier", 1.0))
+        step_size = max(float(rules.get("step_size", 0.001)), 1e-8)
+        min_qty = float(rules.get("min_qty", 0.001))
+        contract_unit_value = entry_price * multiplier
+        if contract_unit_value <= 0 or notional_value <= 0:
+            return
+        raw_quantity = notional_value / contract_unit_value
+        step_text = f"{step_size:.8f}".rstrip("0")
+        decimals = len(step_text.split(".")[1]) if "." in step_text else 0
+        quantity = round((raw_quantity // step_size) * step_size, decimals)
+        if quantity < min_qty:
+            minimum_margin = (min_qty * contract_unit_value) / leverage
+            if minimum_margin > available_margin * 0.40:
+                self.add_log("warning", "ORDER", f"Skipping {symbol}: exchange minimum quantity exceeds safety cap.")
+                return
+            quantity = min_qty
+        final_margin = (quantity * contract_unit_value) / leverage
+        targets = signal.get("targets", {})
+        stop_loss = float(signal.get("stop_loss", targets.get("stop_loss", 0.0)))
+        take_profit_1 = float(signal.get("take_profit_1", targets.get("take_profit_1", 0.0)))
+        take_profit_2 = float(signal.get("take_profit_2", targets.get("take_profit_2", 0.0)))
+        if stop_loss <= 0 or take_profit_1 <= 0:
+            self.add_log("warning", "ORDER", f"Skipping {symbol}: signal is missing a valid SL or TP1.")
+            return
+
+        async with self._lock:
+            result = await self.toobit_client.create_order(
+                symbol=symbol,
+                side=order_side,
+                order_type="MARKET",
+                quantity=quantity,
+                leverage=leverage,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit_1=take_profit_1,
+                take_profit_2=take_profit_2,
+            )
+            if not result.get("success"):
+                self.add_log("danger", "ORDER", f"Order execution failed for {symbol}: {result.get('message', 'rejected')}")
+                return
+            self._set_active_trade({
+                "symbol": symbol,
+                "exchange_symbol": symbol,
+                "side": position_side,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "margin": final_margin,
+                "stop_loss": stop_loss,
+                "take_profit_1": take_profit_1,
+                "take_profit_2": take_profit_2,
+                "be_moved": False,
+                "open_time": time.time(),
+            })
+            self._symbol_cooldowns[_position_key(symbol)] = time.time() + float(self.settings["per_symbol_cooldown_seconds"])
+            self.stats["total_trades"] += 1
+            self.stats["last_trade_time"] = time.time()
+            self.status = "IN_POSITION"
+            self.status_message = f"Opened {leverage}x {position_side} on {symbol}"
+            self._save_state()
+            self.add_log("success", "ORDER", f"Position opened: {leverage}x {position_side} {quantity} {symbol}.")
 
     async def tick(self):
         """Periodic evaluation of market conditions, active trades, and circuit breakers."""
@@ -523,6 +980,55 @@ class AutoTrader:
         # ---------------------------------------------------------------------
         # STAGE A: Active Position Supervision
         # ---------------------------------------------------------------------
+        if open_positions:
+            self.status = "IN_POSITION"
+            self.status_message = f"Managing {len(open_positions)} position(s) across {', '.join(position.get('displaySymbol', '') for position in open_positions)}"
+            for position in open_positions:
+                await self._manage_position(position)
+            self._save_state()
+
+        open_keys = {
+            _position_key(position.get("rawSymbol") or position.get("symbol"))
+            for position in open_positions
+        }
+        for key, trade in list(self._active_trades.items()):
+            if key not in open_keys:
+                self._remove_active_trade(trade.get("symbol", key))
+
+        if len(open_positions) >= int(self.settings["max_positions"]):
+            self.status = "IN_POSITION"
+            self.status_message = f"Maximum {self.settings['max_positions']} positions reached."
+            return
+
+        now = time.time()
+        if now < self.stats["cooldown_until"]:
+            remaining = int(self.stats["cooldown_until"] - now)
+            self.status = "COOLDOWN"
+            self.status_message = f"Cooldown active ({remaining}s remaining)."
+            return
+        if now - self._last_scan_time < float(self.settings["scan_interval_seconds"]):
+            return
+        self._last_scan_time = now
+        self.status = "SCANNING"
+        self.status_message = f"Scanning {len(self.settings['symbols'])} symbols in parallel..."
+        candidates = await self._scan_candidates(open_positions)
+        if not candidates:
+            self.status = "IDLE"
+            self.status_message = "No fresh multi-timeframe candidates."
+            return
+        candidate = candidates[0]
+        if self.settings.get("shadow_mode", True):
+            signal = candidate["signal"]
+            self.status = "SHADOW"
+            self.status_message = (
+                f"Shadow candidate: {signal.get('action')} {candidate['symbol']} "
+                f"({signal.get('confidence_pct', 0.0):.1f}%)"
+            )
+            self.add_log("info", "SCAN", self.status_message)
+            return
+        await self._execute_candidate(candidate)
+        return
+
         if open_positions:
             pos = open_positions[0]
             pos_sym = pos.get("displaySymbol") or pos.get("symbol")
@@ -956,7 +1462,8 @@ class AutoTrader:
         self.stats["cooldown_until"] = time.time() + cooldown
         self.status = "COOLDOWN"
         self.status_message = f"Cooldown active ({cooldown}s remaining). Guarding against volatility whipsaws."
-        self._active_trade = None
+        self._remove_active_trade(sym)
+        self._symbol_cooldowns[_position_key(sym)] = time.time() + int(self.settings["cooldown_seconds"])
         self._save_state()
 
         self.add_log(

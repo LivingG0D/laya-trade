@@ -176,6 +176,7 @@ def test_live_entry_stops_when_margin_setup_fails(monkeypatch):
     from unittest.mock import AsyncMock
 
     client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.get_symbol_leverage_config = AsyncMock(return_value={"success": True, "marginType": "CROSS"})
     client.set_margin_type = AsyncMock(return_value={"success": False, "message": "margin rejected"})
     client.set_leverage = AsyncMock(return_value={"success": True})
     client._send_signed_request = AsyncMock(return_value={"orderId": "should-not-submit"})
@@ -199,6 +200,99 @@ def test_live_entry_stops_when_margin_setup_fails(monkeypatch):
 
     assert result["success"] is False
     assert client._send_signed_request.await_count == 0
+
+
+def test_live_entry_preserves_margin_setup_error(monkeypatch):
+    """A failed margin setup must expose the exchange rejection to the caller."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.get_symbol_leverage_config = AsyncMock(return_value={"success": True, "marginType": "CROSS"})
+    client.set_margin_type = AsyncMock(return_value={
+        "success": False,
+        "error": "Toobit API Error (400): [-4048] Margin type cannot be changed if there exists position.",
+    })
+    client.set_leverage = AsyncMock(return_value={"success": True})
+    client._send_signed_request = AsyncMock(return_value={"orderId": "should-not-submit"})
+
+    async def scenario():
+        result = await client.create_order(
+            symbol="SOLUSDT.P",
+            side="BUY",
+            order_type="MARKET",
+            quantity=1.82,
+            leverage=50,
+            entry_price=120.0,
+            stop_loss=119.0,
+            take_profit_1=122.0,
+            take_profit_2=124.0,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is False
+    assert "[-4048]" in result["message"]
+    assert "position" in result["message"].lower()
+    assert "cross-margined" in result["message"]
+    assert client._send_signed_request.await_count == 0
+
+
+def test_live_entry_skips_margin_change_when_already_isolated():
+    """An already-isolated symbol must enter without re-issuing a blocked margin change."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client.get_symbol_leverage_config = AsyncMock(return_value={"success": True, "marginType": "ISOLATED"})
+    client.set_margin_type = AsyncMock()
+    client.set_leverage = AsyncMock(return_value={"success": True})
+    client._attach_entry_protection = AsyncMock(return_value={"success": True, "bracket": [], "errors": []})
+    client._send_signed_request = AsyncMock(return_value={"orderId": "entry-order"})
+
+    async def scenario():
+        result = await client.create_order(
+            symbol="SOLUSDT.P",
+            side="BUY",
+            order_type="MARKET",
+            quantity=1.82,
+            leverage=50,
+            entry_price=120.0,
+            stop_loss=119.0,
+            take_profit_1=122.0,
+            take_profit_2=124.0,
+        )
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is True
+    assert client.set_margin_type.await_count == 0
+    assert client._send_signed_request.await_args.args[1] == "/api/v1/futures/order"
+
+
+def test_symbol_leverage_config_reads_current_margin_mode():
+    """The account config read must expose the symbol margin mode used to gate the write."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client._send_signed_request = AsyncMock(return_value=[
+        {"symbolId": "SOL-SWAP-USDT", "leverage": "10", "marginType": "ISOLATED"}
+    ])
+
+    async def scenario():
+        result = await client.get_symbol_leverage_config("SOLUSDT.P")
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is True
+    assert result["marginType"] == "ISOLATED"
+    assert result["leverage"] == "10"
+    assert client._send_signed_request.await_args.args[:2] == ("GET", "/api/v1/futures/accountLeverage")
+    assert client._send_signed_request.await_args.args[2] == {"symbol": "SOL-SWAP-USDT"}
 
 
 def test_live_entry_fails_when_protection_cannot_be_confirmed(monkeypatch):
