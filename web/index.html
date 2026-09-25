@@ -1258,7 +1258,7 @@
           </div>
           <div>
             <h2 id="autoTradeModalTitle">Autonomous Trading Desk</h2>
-            <span class="modal-subtitle">Laya System-1 Probabilistic AI with Rejection-Proof 50x Risk Engine</span>
+            <span class="modal-subtitle" id="atDeskSubtitle">Multi-Symbol Probabilistic Execution Desk</span>
           </div>
         </div>
         <div class="modal-header-actions">
@@ -1276,6 +1276,16 @@
       </div>
 
       <div class="modal-body">
+        <!-- Execution State Banner: makes PAPER vs REAL capital unmistakable -->
+        <div class="at-risk-banner" id="atRiskBanner" data-state="shadow" role="status" aria-live="polite">
+          <span class="at-risk-dot" aria-hidden="true"></span>
+          <div class="at-risk-copy">
+            <strong id="atRiskTitle">SHADOW MODE</strong>
+            <span id="atRiskDetail">Signals are evaluated but no orders are sent to the exchange.</span>
+          </div>
+          <span class="at-risk-tag" id="atRiskTag">PAPER</span>
+        </div>
+
         <!-- Live Status Bar -->
         <div class="at-modal-status-bar" id="modalAtStatusBar">
           <div class="status-bar-item">
@@ -1290,6 +1300,10 @@
             <span class="val-tag demo" id="modalAtModeTag">DEMO SIMULATION</span>
           </div>
           <div class="status-bar-item">
+            <span class="lbl">POSITIONS</span>
+            <span class="val-bold" id="modalAtPositionsVal">0 / 2</span>
+          </div>
+          <div class="status-bar-item">
             <span class="lbl">WIN RATE</span>
             <span class="val-bold pnl-green" id="modalAtWinRateVal">--% (0 trades)</span>
           </div>
@@ -1301,7 +1315,10 @@
 
         <!-- Navigation Tabs -->
         <div class="modal-tabs" role="tablist" aria-label="Auto-Trader Sections">
-          <button class="modal-tab-btn active" id="tabAtSettings" role="tab" aria-selected="true" aria-controls="tabContentAtSettings">
+          <button class="modal-tab-btn active" id="tabAtDesk" role="tab" aria-selected="true" aria-controls="tabContentAtDesk">
+            <i data-lucide="layout-dashboard"></i> Live Desk
+          </button>
+          <button class="modal-tab-btn" id="tabAtSettings" role="tab" aria-selected="false" aria-controls="tabContentAtSettings">
             <i data-lucide="sliders"></i> Risk & Strategy Controls
           </button>
           <button class="modal-tab-btn" id="tabAtSafety" role="tab" aria-selected="false" aria-controls="tabContentAtSafety">
@@ -1312,9 +1329,84 @@
           </button>
         </div>
 
+        <!-- Tab 0: Live Desk (positions + signals) -->
+        <div id="tabContentAtDesk" class="tab-content active" role="tabpanel" aria-labelledby="tabAtDesk">
+          <!-- Managed Positions -->
+          <section class="at-desk-section" aria-labelledby="atDeskPositionsHeading">
+            <div class="at-desk-section-head">
+              <div class="at-desk-title">
+                <i data-lucide="layers"></i>
+                <h3 id="atDeskPositionsHeading">Managed Positions</h3>
+                <span class="at-count-chip" id="atDeskPositionCount">0</span>
+              </div>
+              <span class="at-desk-note" id="atDeskBracketNote">Exchange-confirmed brackets only</span>
+            </div>
+            <div class="at-position-grid" id="atDeskPositions"></div>
+          </section>
+
+          <!-- Signal Grid -->
+          <section class="at-desk-section" aria-labelledby="atDeskSignalsHeading">
+            <div class="at-desk-section-head">
+              <div class="at-desk-title">
+                <i data-lucide="activity"></i>
+                <h3 id="atDeskSignalsHeading">Multi-Timeframe Signals</h3>
+              </div>
+              <span class="at-desk-note" id="atDeskScanNote">Parallel scan</span>
+            </div>
+            <div class="at-signal-grid" id="atDeskSignals"></div>
+          </section>
+        </div>
+
         <!-- Tab 1: Risk & Strategy Settings -->
-        <div id="tabContentAtSettings" class="tab-content active" role="tabpanel" aria-labelledby="tabAtSettings">
+        <div id="tabContentAtSettings" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtSettings">
           <form id="atSettingsForm" class="toobit-form">
+            <!-- Universe & Execution Scope -->
+            <fieldset class="at-fieldset">
+              <legend class="at-legend">Universe &amp; Execution Scope</legend>
+
+              <div class="form-group">
+                <label>Active Symbols</label>
+                <div class="at-chip-group" id="atSymbolChips" role="group" aria-label="Active trading symbols"></div>
+                <span class="input-hint">Scanned in parallel. Symbols already holding a position are managed, not re-entered.</span>
+              </div>
+
+              <div class="form-row-dual">
+                <div class="form-group">
+                  <label>Timeframes</label>
+                  <div class="at-chip-group" id="atTimeframeChips" role="group" aria-label="Analysis timeframes"></div>
+                  <span class="input-hint">Faster timeframes drive entries; slower ones act as trend context.</span>
+                </div>
+
+                <div class="form-group">
+                  <label for="atSettingMaxPositions">Max Concurrent Positions</label>
+                  <div class="input-wrap">
+                    <input type="number" id="atSettingMaxPositions" min="1" max="2" step="1" value="2">
+                    <span class="input-suffix-tag">positions</span>
+                  </div>
+                  <span class="input-hint">Hard cap. No new orders are dispatched once reached.</span>
+                </div>
+              </div>
+
+              <div class="form-row-dual">
+                <label class="custom-checkbox-row at-shadow-toggle">
+                  <input type="checkbox" id="atSettingShadowMode" checked>
+                  <div class="cb-text">
+                    <strong>Shadow Mode <span class="at-chip-tag safe">Recommended</span></strong>
+                    <span>Evaluate every signal and log the decision, but never send an order to the exchange.</span>
+                  </div>
+                </label>
+
+                <div class="form-group">
+                  <label for="atSettingPerSymbolCooldown">Per-Symbol Cooldown</label>
+                  <div class="input-wrap">
+                    <input type="number" id="atSettingPerSymbolCooldown" min="0" max="600" step="5" value="60">
+                    <span class="input-suffix-tag">seconds</span>
+                  </div>
+                  <span class="input-hint">Blocks immediate re-entry on the same symbol after a trade.</span>
+                </div>
+              </div>
+            </fieldset>
+
             <div class="form-row-dual">
               <!-- Mode Selection -->
               <div class="form-group">
@@ -1330,9 +1422,9 @@
               <div class="form-group">
                 <label for="atSettingLeverage">Leverage Multiplier</label>
                 <select id="atSettingLeverage" class="styled-select">
-                  <option value="10">10x Leverage (Conservative)</option>
+                  <option value="10" selected>10x Leverage (Conservative)</option>
                   <option value="20">20x Leverage (Balanced)</option>
-                  <option value="50" selected>50x Leverage (Scalp Optimized)</option>
+                  <option value="50">50x Leverage (High Risk)</option>
                 </select>
                 <span class="input-hint">Isolated margin with ATR-clamped Stop Loss.</span>
               </div>
@@ -1401,8 +1493,8 @@
               <label class="custom-checkbox-row">
                 <input type="checkbox" id="atSettingAutoBreakeven" checked>
                 <div class="cb-text">
-                  <strong>Auto Break-Even Profit Lock (+0.45R / +9% ROE)</strong>
-                  <span>Automatically raises Stop-Loss to entry price once trade reaches TP1 to secure a risk-free runner.</span>
+                  <strong>Auto Break-Even Profit Lock (at TP1)</strong>
+                  <span>Once price reaches Take-Profit 1, Stop-Loss is moved to entry to remove downside on the remaining runner.</span>
                 </div>
               </label>
 
@@ -1425,7 +1517,7 @@
         </div>
 
         <!-- Tab 2: Safety Circuit Breakers -->
-        <div id="tabContentAtSafety" class="tab-content" role="tabpanel" aria-labelledby="tabAtSafety">
+        <div id="tabContentAtSafety" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtSafety">
           <div class="at-safety-banner">
             <i data-lucide="shield-alert" class="safety-banner-icon"></i>
             <div>
@@ -1471,10 +1563,10 @@
                 <span class="sm-val pnl-green">ARMED</span>
                 <span class="sm-sub">Max 20% margin per trade</span>
               </div>
-              <div class="safety-metric-card">
+              <div class="safety-metric-card" id="atLiquidationCard">
                 <span class="sm-lbl">Liquidation Distance</span>
-                <span class="sm-val pnl-green">~1.80% Clearance</span>
-                <span class="sm-sub">SL triggers at max 0.80%</span>
+                <span class="sm-val" id="atLiquidationVal">—</span>
+                <span class="sm-sub" id="atLiquidationSub">Based on configured leverage</span>
               </div>
             </div>
 
@@ -1500,7 +1592,7 @@
         </div>
 
         <!-- Tab 3: Live Audit Log -->
-        <div id="tabContentAtLogs" class="tab-content" role="tabpanel" aria-labelledby="tabAtLogs">
+        <div id="tabContentAtLogs" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtLogs">
           <div class="at-logs-header">
             <div class="logs-title">
               <i data-lucide="terminal"></i>
