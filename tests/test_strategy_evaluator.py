@@ -369,3 +369,22 @@ def test_cost_filter_rejects_trades_where_costs_eat_the_risk():
     assert SignalGenerator(max_cost_share=0.20).generate_signal(dict(state), decision)["action"] == "NEUTRAL"
     assert SignalGenerator(max_cost_share=0.30).generate_signal(dict(state), decision)["action"] == "LONG"
     assert SignalGenerator().generate_signal(dict(state), decision)["action"] == "LONG"
+
+
+def test_entry_side_costs_can_differ_from_exit():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 111, 99, 108),
+        candle(3, 108, 121, 107, 120),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=0), {}, {}]
+    maker = CostModel(fee_bps=10, slippage_bps=5, entry_fee_bps=0, entry_slippage_bps=0)
+
+    result = evaluate_signal_sequence(candles, signals, EvaluationConfig(), maker)
+
+    trade = result["trades"][0]
+    assert trade["entry_price"] == 100  # no entry slippage
+    assert trade["initial_risk_pct"] == pytest.approx(0.05)
+    # only the exit pays: fee on the slipped exit fill, no entry fee
+    exit_fill = 110 * (1 - 0.0005)
+    assert trade["cost_r"] == pytest.approx(exit_fill * 0.001 * 2 / 10)

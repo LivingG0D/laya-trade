@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import BINANCE_FUTURES_REST_URL  # noqa: E402
 from src.market_data import _parse_klines, to_binance_symbol  # noqa: E402
 
-INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 KLINES_URL = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/klines"
 
 

@@ -47,3 +47,13 @@ def test_bars_without_a_full_horizon_are_nan():
     long_win, short_win = labels(rows, horizon=3)
     assert not np.isnan(long_win[2])  # needs bars 3..5
     assert np.isnan(long_win[3:]).all() and np.isnan(short_win[3:]).all()
+
+
+def test_per_bar_targets_scale_each_signal():
+    o, h, l = bars([(100, 100, 100), (100, 100.5, 99.8), (100.5, 101.3, 100.2), (101, 101, 101),
+                    (101, 101, 101)])
+    # Bar 0 needs +0.4% (hit), bar 1 needs +5% (never hit).
+    tp = np.array([0.004, 0.05, 0.05, 0.05, 0.05])
+    sl = np.array([0.006, 0.006, 0.006, 0.006, 0.006])
+    long_win, _ = barrier_labels(o, h, l, tp=tp, sl=sl, horizon=3)
+    assert long_win[0] == 1.0 and long_win[1] == 0.0

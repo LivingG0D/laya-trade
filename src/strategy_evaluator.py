@@ -19,12 +19,16 @@ class CostModel:
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     funding_bps_per_bar: float = 0.0
+    # Entry-side overrides, e.g. a maker (limit) entry with a lower fee and no slippage.
+    entry_fee_bps: Optional[float] = None
+    entry_slippage_bps: Optional[float] = None
 
     def __post_init__(self) -> None:
         if not all(isfinite(value) and value >= 0 for value in (
             self.fee_bps,
             self.slippage_bps,
             self.funding_bps_per_bar,
+            *(v for v in (self.entry_fee_bps, self.entry_slippage_bps) if v is not None),
         )):
             raise ValueError("Cost model values must be finite and non-negative")
 
@@ -306,6 +310,7 @@ def _finish_trade(
         "r_multiple": net_pnl / position["risk_budget"] if position["risk_budget"] else 0.0,
         "risk_budget": position["risk_budget"],
         "cost_r": costs / position["risk_budget"] if position["risk_budget"] else 0.0,
+        "initial_risk_pct": position["initial_risk_pct"],
     }
     return equity, trade
 
@@ -340,6 +345,9 @@ def evaluate_signal_sequence(
 
     fee_rate = costs.fee_bps / 10000.0
     slippage_rate = costs.slippage_bps / 10000.0
+    entry_fee_rate = (costs.fee_bps if costs.entry_fee_bps is None else costs.entry_fee_bps) / 10000.0
+    entry_slippage_rate = (costs.slippage_bps if costs.entry_slippage_bps is None
+                           else costs.entry_slippage_bps) / 10000.0
     funding_rate = costs.funding_bps_per_bar / 10000.0
     equity = config.initial_equity
     bar_seconds = float(candles[1]["time"]) - float(candles[0]["time"])
@@ -366,7 +374,7 @@ def evaluate_signal_sequence(
                 skipped_low_confidence += 1
                 continue
 
-            entry = _entry_price(float(candle["open"]), side, slippage_rate)
+            entry = _entry_price(float(candle["open"]), side, entry_slippage_rate)
             stop = _signal_price(signal, "stop_loss", "stopLoss")
             tp1 = _signal_price(signal, "take_profit_1", "takeProfit1")
             tp2 = _signal_price(signal, "take_profit_2", "takeProfit2")
@@ -383,7 +391,7 @@ def evaluate_signal_sequence(
                 skipped_invalid_signals += 1
                 continue
 
-            entry_fee = entry * quantity * fee_rate
+            entry_fee = entry * quantity * entry_fee_rate
             equity -= entry_fee
             position = {
                 "side": side,
@@ -405,6 +413,7 @@ def evaluate_signal_sequence(
                 "exit_fees": 0.0,
                 "funding": 0.0,
                 "risk_budget": risk_budget,
+                "initial_risk_pct": risk_per_unit / entry,
             }
 
         elif _is_opposing(position, signals[index - 1], config):

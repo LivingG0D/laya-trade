@@ -1,11 +1,12 @@
-"""Model features for each closed 5m bar, shared by training and live inference.
+"""Model features for each closed base-timeframe bar, shared by training and live inference.
 
-Every value uses only candles closed at or before the bar's close: 5m features
-use rolling and recursive indicators over past bars, and a 15m/1h/4h candle is
-joined only once its close time is at or before the 5m bar's close.
+Every value uses only candles closed at or before the bar's close: base
+features use rolling and recursive indicators over past bars, and a
+higher-timeframe candle is joined only once its close time is at or before the
+base bar's close.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -20,8 +21,9 @@ from .indicators import (
     calculate_rsi,
 )
 
-STEP_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
-HTF_PREFIX = {"15m": "m15", "1h": "h1", "4h": "h4"}
+STEP_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+HTF_PREFIX = {"15m": "m15", "1h": "h1", "4h": "h4", "1d": "d1"}
+DEFAULT_CONTEXT = ("15m", "1h", "4h")
 
 BASE_COLUMNS = [
     "ret_1", "ret_3", "ret_12", "ret_48", "vol_12", "vol_48", "atr_pct", "rsi", "macd_hist",
@@ -30,9 +32,13 @@ BASE_COLUMNS = [
     "hour_sin", "hour_cos",
 ]
 HTF_COLUMNS = ["rsi", "ret_1", "ret_4", "ema_dist_21", "ema_dist_50", "adx", "atr_pct"]
-FEATURE_COLUMNS: List[str] = BASE_COLUMNS + [
-    f"{HTF_PREFIX[tf]}_{name}" for tf in ("15m", "1h", "4h") for name in HTF_COLUMNS
-]
+
+
+def feature_columns(context: Sequence[str] = DEFAULT_CONTEXT) -> List[str]:
+    return BASE_COLUMNS + [f"{HTF_PREFIX[tf]}_{name}" for tf in context for name in HTF_COLUMNS]
+
+
+FEATURE_COLUMNS: List[str] = feature_columns()
 
 
 def _ema_dist(close: np.ndarray, period: int) -> np.ndarray:
@@ -95,17 +101,19 @@ def _base_features(df: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-def build_features(frames: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """One row per 5m candle in ``frames["5m"]``: ``time`` plus FEATURE_COLUMNS (float32).
+def build_features(frames: Dict[str, pd.DataFrame], base: str = "5m",
+                   context: Sequence[str] = DEFAULT_CONTEXT) -> pd.DataFrame:
+    """One row per ``base`` candle: ``time`` plus ``feature_columns(context)`` (float32).
 
-    ``frames`` maps "5m", "15m", "1h", "4h" to candles with columns time (open,
-    seconds), open, high, low, close, volume and optionally taker_buy_volume,
-    sorted oldest first. Higher-timeframe rows that have not closed are ignored.
+    ``frames`` maps ``base`` and each ``context`` timeframe to candles with
+    columns time (open, seconds), open, high, low, close, volume and optionally
+    taker_buy_volume, sorted oldest first. Context rows not yet closed are ignored.
     """
-    base = frames["5m"].reset_index(drop=True)
-    out = pd.concat([base[["time"]].astype(np.int64), _base_features(base)], axis=1)
-    out["bar_close"] = out["time"] + STEP_SECONDS["5m"]
-    for tf in ("15m", "1h", "4h"):
+    columns = feature_columns(context)
+    base_frame = frames[base].reset_index(drop=True)
+    out = pd.concat([base_frame[["time"]].astype(np.int64), _base_features(base_frame)], axis=1)
+    out["bar_close"] = out["time"] + STEP_SECONDS[base]
+    for tf in context:
         htf = frames[tf].reset_index(drop=True)
         feats = _htf_features(htf).add_prefix(HTF_PREFIX[tf] + "_")
         feats["htf_close"] = htf["time"].astype(np.int64) + STEP_SECONDS[tf]
@@ -114,5 +122,5 @@ def build_features(frames: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                             tolerance=STEP_SECONDS[tf])
         out = out.drop(columns="htf_close")
     out = out.drop(columns="bar_close")
-    out[FEATURE_COLUMNS] = out[FEATURE_COLUMNS].astype(np.float32)
-    return out[["time", *FEATURE_COLUMNS]]
+    out[columns] = out[columns].astype(np.float32)
+    return out[["time", *columns]]
