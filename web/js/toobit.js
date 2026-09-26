@@ -465,6 +465,8 @@ async function simulateDemoTrade(side) {
       showToast(`Simulated ${side.toLowerCase()} opened on ${deps.getSymbol()} at 50x.`, "bull");
       playSignalChime(side === "LONG");
     }
+    // Simulating switches the server to demo; refresh the Live/Demo labels to match
+    await fetchToobitStatus();
     await fetchToobitPositions();
   } catch (e) {
     showToast(`Could not simulate a position: ${e.message}`, "error");
