@@ -35,6 +35,7 @@ import httpx  # noqa: E402
 from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
 from src.auto_trader import merge_timeframes, timeframe_snapshot  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
+from src.edge_gate import EdgeTable, gate_walk_forward, signal_outcomes  # noqa: E402
 from src.signal_generator import SignalGenerator  # noqa: E402
 from src.strategy_evaluator import (  # noqa: E402
     CostModel,
@@ -205,6 +206,9 @@ async def main() -> int:
     parser.add_argument("--breakeven", choices=("legacy", "tp1_fees", "off"), default="legacy",
                         help="legacy: 9%% ROE or TP1 -> entry+0.05%%; tp1_fees: TP1 only -> entry+costs")
     parser.add_argument("--exit-profile", choices=("legacy", "barrier"), default="legacy")
+    parser.add_argument("--gate", action="store_true",
+                        help="add '<engine>+gate' rows: walk-forward outcome gate instead of the confidence threshold")
+    parser.add_argument("--gate-min-samples", type=int, default=30)
     parser.add_argument("--max-cost-share", type=float, default=None,
                         help="reject trades whose round-trip costs exceed this share of the risk")
     args = parser.parse_args()
@@ -221,6 +225,12 @@ async def main() -> int:
                       max_leverage=float(args.leverage), risk_per_trade=0.01)
     strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, **live_exits)
     baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, **live_exits)
+    # Outcome labels: each signal alone, no confidence gate, no opposing exit.
+    outcome_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": None})
+    # Gated signals already passed the outcome gate: any opposite gated signal closes the trade.
+    gated_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": 0.0})
+    horizon_bars = 288  # one day of 5m bars caps an outcome label
+    edge_tables: Dict[str, Dict[str, Any]] = {}
     window_bars = int(args.window_days * 86400 / INTERVAL_SECONDS[ENTRY_TF])
 
     from src.laya_engine import LayaEngine
@@ -271,6 +281,13 @@ async def main() -> int:
                     directional_rate = tradeable_rate(signals, args.min_confidence)
                     target_trades = row["trade_count"]
                 rows.append({"symbol": symbol, "strategy": name, **row})
+                if args.gate:
+                    outcomes = signal_outcomes(candles, signals, outcome_cfg, costs, horizon_bars)
+                    gated = gate_walk_forward(signals, outcomes, window_bars, horizon_bars, args.gate_min_samples)
+                    rows.append({"symbol": symbol, "strategy": f"{name}+gate",
+                                 **evaluate(candles, gated, gated_cfg, costs, window_bars)})
+                    table = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
+                    edge_tables.setdefault(name, {})[symbol] = {"min_samples": table.min_samples, "stats": table.stats}
 
             # Strategy signals cluster on consecutive bars and filters drop some random
             # entries, so matching signal rate does not match trade count. Rescale the
@@ -297,6 +314,13 @@ async def main() -> int:
     out_path = out_dir / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
     out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
                                     "rows": rows}, indent=2, default=str))
+    if edge_tables:
+        table_dir = SCRATCH / "edge_tables"
+        table_dir.mkdir(parents=True, exist_ok=True)
+        for name, per_symbol in edge_tables.items():
+            path = table_dir / f"{name}_{args.exit_profile}_{args.breakeven}.json"
+            path.write_text(json.dumps(per_symbol, indent=2))
+            print(f"Edge table (fit on all {args.days:g} days): {path}")
     print_table(rows)
     print(f"\nrandom = entries matched to the first engine's trade count, same bracket, mean of {args.seeds} seeds")
     print("Known gaps: " + " ".join(KNOWN_GAPS))
