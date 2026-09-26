@@ -49,3 +49,20 @@ def test_random_barrier_signals_are_seeded():
     assert first == random_barrier_signals(closes, rate=0.05, seed=3)
     assert first != random_barrier_signals(closes, rate=0.05, seed=4)
     assert 150 < sum(1 for s in first if s) < 350
+
+
+def test_label_metrics_report_top_bucket_hit_rates_and_direction_skill():
+    import pandas as pd
+
+    from experiments.train_gbm import label_metrics
+
+    n = 1000
+    rng = np.random.default_rng(0)
+    p_long = rng.random(n)
+    y_long = (p_long > 0.99).astype(float)  # only the top 1% win
+    df = pd.DataFrame({"p_long": p_long, "y_long": y_long, "p_short": 1 - p_long,
+                       "y_short": (p_long < 0.01).astype(float)})
+    m = label_metrics(df, threshold=0.45)
+    assert m["long"]["top_1pct_hit_rate"] == pytest.approx(1.0)
+    # Among bars where exactly one side won, p_long - p_short separates them perfectly.
+    assert m["direction_auc"] == pytest.approx(1.0)

@@ -136,6 +136,15 @@ def label_metrics(df: pd.DataFrame, threshold: float) -> Dict[str, Any]:
             "hit_rate_at_threshold": float(y[sel].mean()) if sel.any() else None,
             "mean_p_at_threshold": float(p[sel].mean()) if sel.any() else None,
         }
+        # Diagnostics only (not the decision rule): could any cut-off reach break-even?
+        known = ~np.isnan(y)
+        for name, q in (("top_1pct", 0.99), ("top_01pct", 0.999)):
+            top = known & (p >= np.quantile(p[known], q))
+            out[side][f"{name}_hit_rate"] = float(y[top].mean()) if top.any() else None
+    # Direction skill without volatility: bars where exactly one side won.
+    yl, ys = df["y_long"].to_numpy(float), df["y_short"].to_numpy(float)
+    one = (yl + ys == 1)
+    out["direction_auc"] = _auc(yl[one], (df["p_long"] - df["p_short"]).to_numpy(float)[one]) if one.any() else None
     return out
 
 
@@ -294,6 +303,11 @@ def main() -> int:
         lw, lh = report["labels_walk_forward"][side], report["labels_holdout"][side]
         print(f"{side}: AUC walk-forward {lw['auc']}, holdout {lh['auc']}; hit rate at >= {args.threshold}: "
               f"{lw['hit_rate_at_threshold']} / {lh['hit_rate_at_threshold']} (break-even {BREAK_EVEN:.2f})")
+    for name in ("labels_walk_forward", "labels_holdout"):
+        m = report[name]
+        print(f"{name}: direction AUC {m['direction_auc']}; top 1% hit long {m['long']['top_1pct_hit_rate']} "
+              f"short {m['short']['top_1pct_hit_rate']}; top 0.1% long {m['long']['top_01pct_hit_rate']} "
+              f"short {m['short']['top_01pct_hit_rate']}")
     print(f"windows positive: {positive_windows}/{traded_windows}")
     print(f"checks: {checks} -> {'PASS' if report['passed'] else 'FAIL'}")
     print(f"Saved {out}")
