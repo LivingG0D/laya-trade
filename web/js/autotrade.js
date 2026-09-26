@@ -5,7 +5,7 @@
 // ========================================================
 
 import { showToast, playSignalChime } from "./feedback.js";
-import { formatPrice } from "./format.js";
+import { formatPrice, formatUsd } from "./format.js";
 
 let deps = {
   getSymbol: () => "BTCUSDT.P",
@@ -13,45 +13,33 @@ let deps = {
   fetchToobitPositions: () => {}
 };
 
+// Values shown on several cards at once (simple card, pro card, modal) carry data-at="<key>"
+const atAll = (key) => document.querySelectorAll(`[data-at="${key}"]`);
+
 // DOM Elements — Top Nav
 const btnAutoTradeModal = document.getElementById("btnAutoTradeModal");
 const navAutoTradeDot = document.getElementById("navAutoTradeDot");
 const navAutoTradePill = document.getElementById("navAutoTradePill");
 
 // DOM Elements — Simple Mode Card
-const btnSimpleAutoTradeToggle = document.getElementById("btnSimpleAutoTradeToggle");
-const simpleAutoTradeToggleLabel = document.getElementById("simpleAutoTradeToggleLabel");
 const simpleAtStatusDot = document.getElementById("simpleAtStatusDot");
 const simpleAtStatusText = document.getElementById("simpleAtStatusText");
 const simpleAtRiskVal = document.getElementById("simpleAtRiskVal");
-const simpleAtWinRate = document.getElementById("simpleAtWinRate");
-const btnSimpleAtConfig = document.getElementById("btnSimpleAtConfig");
-const btnSimpleAtKill = document.getElementById("btnSimpleAtKill");
 
 // DOM Elements — Pro Mode Card
-const btnProAutoTradeToggle = document.getElementById("btnProAutoTradeToggle");
-const proAutoTradeToggleLabel = document.getElementById("proAutoTradeToggleLabel");
 const proAtModeBadge = document.getElementById("proAtModeBadge");
 const proAtStatus = document.getElementById("proAtStatus");
 const proAtSizing = document.getElementById("proAtSizing");
-const proAtPnl = document.getElementById("proAtPnl");
 const proAtCircuit = document.getElementById("proAtCircuit");
 const proAtLogSnippet = document.getElementById("proAtLogSnippet");
-const btnProAtConfig = document.getElementById("btnProAtConfig");
-const btnProAtKill = document.getElementById("btnProAtKill");
 
 // DOM Elements — Full Modal
 const autoTradeModal = document.getElementById("autoTradeModal");
 const btnCloseAutoTradeModal = document.getElementById("btnCloseAutoTradeModal");
-const modalAutoTradeToggle = document.getElementById("modalAutoTradeToggle");
-const modalAutoTradeToggleLabel = document.getElementById("modalAutoTradeToggleLabel");
 const modalAtStatusPill = document.getElementById("modalAtStatusPill");
-const modalAtStatusDot = document.getElementById("modalAtStatusDot");
 const modalAtStatusText = document.getElementById("modalAtStatusText");
 const modalAtModeTag = document.getElementById("modalAtModeTag");
 const modalAtPositionsVal = document.getElementById("modalAtPositionsVal");
-const modalAtWinRateVal = document.getElementById("modalAtWinRateVal");
-const modalAtDailyPnlVal = document.getElementById("modalAtDailyPnlVal");
 const atDeskSubtitle = document.getElementById("atDeskSubtitle");
 
 // Execution State Banner
@@ -100,12 +88,10 @@ const atShadowToggleRow = document.querySelector(".at-shadow-toggle");
 const atSafetyForm = document.getElementById("atSafetyForm");
 const atSettingMaxDailyLoss = document.getElementById("atSettingMaxDailyLoss");
 const atSettingMaxConsec = document.getElementById("atSettingMaxConsec");
-const safetyDailyPnl = document.getElementById("safetyDailyPnl");
 const safetyDailyLimitLabel = document.getElementById("safetyDailyLimitLabel");
 const safetyConsecLosses = document.getElementById("safetyConsecLosses");
 const atLiquidationVal = document.getElementById("atLiquidationVal");
 const atLiquidationSub = document.getElementById("atLiquidationSub");
-const btnModalEmergencyStop = document.getElementById("btnModalEmergencyStop");
 
 // Audit Logs
 const atTerminalBox = document.getElementById("atTerminalBox");
@@ -154,13 +140,9 @@ let autoTradeState = {
 
 let pollInterval = null;
 
-export function isAutoTradeModalOpen() {
-  return !!(autoTradeModal && !autoTradeModal.classList.contains("hide"));
-}
-
 function openAutoTradeModal() {
   if (!autoTradeModal) return;
-  autoTradeModal.classList.remove("hide");
+  if (!autoTradeModal.open) autoTradeModal.showModal();
   renderAutoTradeState();
   refreshDeskExchangePositions();
   if (typeof lucide !== "undefined" && lucide.createIcons) {
@@ -169,8 +151,7 @@ function openAutoTradeModal() {
 }
 
 function closeAutoTradeModal() {
-  if (!autoTradeModal) return;
-  autoTradeModal.classList.add("hide");
+  autoTradeModal?.close();
 }
 
 function switchModalTab(tabName) {
@@ -242,7 +223,7 @@ async function toggleAutoTrade(forceState = null) {
     const approved = confirm(
       `LIVE TRADING\n\n` +
       `Shadow mode is OFF, so this will send real orders to ${isLiveMode ? "Toobit Futures" : "the exchange"}.\n\n` +
-      `• ${settings.leverage || "?"}x leverage, ${settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% equity` : `$${(settings.fixed_margin_usd ?? 0).toFixed(2)} margin`} per position\n` +
+      `• ${settings.leverage || "?"}x leverage, ${settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% equity` : `${formatUsd(settings.fixed_margin_usd ?? 0)} margin`} per position\n` +
       `• Up to ${settings.max_positions || 1} concurrent position(s)\n` +
       `• Entries require ${settings.min_confidence || "?"}% confidence or higher\n` +
       `• ${openCount} position(s) currently open\n\n` +
@@ -440,12 +421,6 @@ function shortSymbol(symbol) {
 function finiteOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) && n !== 0 ? n : null;
-}
-
-function formatUsd(value, digits = 2) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(digits)}`;
 }
 
 // Reward/risk in R units for the current mark price.
@@ -787,13 +762,19 @@ export function renderAutoTradeState() {
     navAutoTradePill.className = `autotrade-pill ${isEnabled ? "on" : "off"}`;
   }
 
-  // 2. Simple Mode Card Update
-  if (btnSimpleAutoTradeToggle) {
-    btnSimpleAutoTradeToggle.classList.toggle("active", isEnabled);
-  }
-  if (simpleAutoTradeToggleLabel) {
-    simpleAutoTradeToggleLabel.textContent = isEnabled ? "ON" : "OFF";
-  }
+  // 2. Values repeated across simple card, pro card and modal
+  atAll("toggle").forEach((btn) => {
+    btn.classList.toggle("active", isEnabled);
+    btn.querySelector(".toggle-label").textContent = isEnabled ? "ON" : "OFF";
+  });
+  atAll("daily-pnl").forEach((node) => {
+    node.textContent = formatUsd(dailyPnl, { signed: true });
+    node.classList.toggle("pnl-green", dailyPnl >= 0);
+    node.classList.toggle("pnl-red", dailyPnl < 0);
+  });
+  atAll("winrate").forEach((node) => { node.textContent = winRateLabel; });
+
+  // 3. Simple Mode Card Update
   if (simpleAtStatusDot) {
     simpleAtStatusDot.className = `status-pulse-dot ${isEnabled ? (status === "IN_POSITION" ? "busy" : "active") : ""}`;
   }
@@ -801,20 +782,11 @@ export function renderAutoTradeState() {
     simpleAtStatusText.textContent = autoTradeState.status_message || "Standby";
   }
   if (simpleAtRiskVal) {
-    const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : `$${(settings.fixed_margin_usd ?? 0).toFixed(2)}`;
+    const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : formatUsd(settings.fixed_margin_usd ?? 0);
     simpleAtRiskVal.textContent = `${settings.leverage ?? "?"}x • ${sizingStr} Margin`;
   }
-  if (simpleAtWinRate) {
-    simpleAtWinRate.textContent = winRateLabel;
-  }
 
-  // 3. Pro Mode Card Update
-  if (btnProAutoTradeToggle) {
-    btnProAutoTradeToggle.classList.toggle("active", isEnabled);
-  }
-  if (proAutoTradeToggleLabel) {
-    proAutoTradeToggleLabel.textContent = isEnabled ? "ON" : "OFF";
-  }
+  // 4. Pro Mode Card Update
   if (proAtModeBadge) {
     proAtModeBadge.textContent = mode;
     proAtModeBadge.className = `at-mode-badge ${mode.toLowerCase()}`;
@@ -824,28 +796,17 @@ export function renderAutoTradeState() {
     proAtStatus.className = `val status-${status.toLowerCase()}`;
   }
   if (proAtSizing) {
-    const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : `$${(settings.fixed_margin_usd ?? 0).toFixed(2)}`;
+    const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : formatUsd(settings.fixed_margin_usd ?? 0);
     proAtSizing.textContent = `${settings.leverage ?? "?"}x • ${sizingStr}`;
-  }
-  if (proAtPnl) {
-    const sign = dailyPnl >= 0 ? "+" : "";
-    proAtPnl.textContent = `${sign}$${dailyPnl.toFixed(2)}`;
-    proAtPnl.className = `val ${dailyPnl >= 0 ? "pnl-green" : "pnl-red"}`;
   }
   if (proAtCircuit) {
     const maxLoss = settings.max_daily_loss_usd || 5.0;
     const consec = stats.consecutive_losses || 0;
     const maxConsec = settings.max_consecutive_losses || 3;
-    proAtCircuit.textContent = `${consec}/${maxConsec} loss (${sign(dailyPnl)}$${dailyPnl.toFixed(2)} / -$${maxLoss.toFixed(2)})`;
+    proAtCircuit.textContent = `${consec}/${maxConsec} loss (${formatUsd(dailyPnl, { signed: true })} / ${formatUsd(-maxLoss)})`;
   }
 
-  // 4. Modal Master Switch & Status Bar
-  if (modalAutoTradeToggle) {
-    modalAutoTradeToggle.classList.toggle("active", isEnabled);
-  }
-  if (modalAutoTradeToggleLabel) {
-    modalAutoTradeToggleLabel.textContent = isEnabled ? "ON" : "OFF";
-  }
+  // 5. Modal Status Bar
   if (modalAtStatusPill) {
     modalAtStatusPill.className = `val-pill status-${status.toLowerCase()}`;
   }
@@ -860,16 +821,8 @@ export function renderAutoTradeState() {
     modalAtPositionsVal.textContent = `${openPositionCount} / ${maxPositions}`;
     modalAtPositionsVal.className = `val-bold ${openPositionCount >= maxPositions ? "pnl-green" : ""}`;
   }
-  if (modalAtWinRateVal) {
-    modalAtWinRateVal.textContent = winRateLabel;
-  }
-  if (modalAtDailyPnlVal) {
-    const sign = dailyPnl >= 0 ? "+" : "";
-    modalAtDailyPnlVal.textContent = `${sign}$${dailyPnl.toFixed(2)}`;
-    modalAtDailyPnlVal.className = `val-bold ${dailyPnl >= 0 ? "pnl-green" : "pnl-red"}`;
-  }
 
-  // 5. Update Form Field Values if not focused
+  // 6. Update Form Field Values if not focused
   if (atSettingMode && document.activeElement !== atSettingMode) {
     atSettingMode.value = settings.mode || "demo";
   }
@@ -927,19 +880,14 @@ export function renderAutoTradeState() {
     atSettingMaxConsec.value = String(settings.max_consecutive_losses || 3);
   }
 
-  if (safetyDailyPnl) {
-    const sign = dailyPnl >= 0 ? "+" : "";
-    safetyDailyPnl.textContent = `${sign}$${dailyPnl.toFixed(2)}`;
-    safetyDailyPnl.className = `sm-val ${dailyPnl >= 0 ? "pnl-green" : "pnl-red"}`;
-  }
   if (safetyDailyLimitLabel) {
-    safetyDailyLimitLabel.textContent = `Cap: -$${(settings.max_daily_loss_usd || 5.0).toFixed(2)} USDT`;
+    safetyDailyLimitLabel.textContent = `Cap: ${formatUsd(-(settings.max_daily_loss_usd || 5.0))} USDT`;
   }
   if (safetyConsecLosses) {
     safetyConsecLosses.textContent = `${stats.consecutive_losses || 0} / ${settings.max_consecutive_losses || 3}`;
   }
 
-  // 6. Render Logs & Log Snippet
+  // 7. Render Logs & Log Snippet
   renderLogs();
 }
 
@@ -981,10 +929,6 @@ function renderLogs() {
   atTerminalBox.replaceChildren(frag);
 }
 
-function sign(val) {
-  return val >= 0 ? "+" : "";
-}
-
 // ========================================================
 // WebSocket Message Hook
 // ========================================================
@@ -1024,28 +968,20 @@ export function initAutoTradeManager(injectedDeps = {}) {
   // Modal Open / Close
   btnAutoTradeModal?.addEventListener("click", openAutoTradeModal);
   btnCloseAutoTradeModal?.addEventListener("click", closeAutoTradeModal);
-  btnSimpleAtConfig?.addEventListener("click", () => {
+  atAll("config").forEach((btn) => btn.addEventListener("click", () => {
     openAutoTradeModal();
     switchModalTab("settings");
-  });
-  btnProAtConfig?.addEventListener("click", () => {
-    openAutoTradeModal();
-    switchModalTab("settings");
-  });
+  }));
 
   autoTradeModal?.addEventListener("click", (e) => {
     if (e.target === autoTradeModal) closeAutoTradeModal();
   });
 
   // Master Switch Toggles
-  btnSimpleAutoTradeToggle?.addEventListener("click", () => toggleAutoTrade());
-  btnProAutoTradeToggle?.addEventListener("click", () => toggleAutoTrade());
-  modalAutoTradeToggle?.addEventListener("click", () => toggleAutoTrade());
+  atAll("toggle").forEach((btn) => btn.addEventListener("click", () => toggleAutoTrade()));
 
   // Emergency Stops
-  btnSimpleAtKill?.addEventListener("click", executeEmergencyStop);
-  btnProAtKill?.addEventListener("click", executeEmergencyStop);
-  btnModalEmergencyStop?.addEventListener("click", executeEmergencyStop);
+  atAll("kill").forEach((btn) => btn.addEventListener("click", executeEmergencyStop));
 
   // Tabs
   tabAtDesk?.addEventListener("click", () => switchModalTab("desk"));
@@ -1110,7 +1046,7 @@ export function initAutoTradeManager(injectedDeps = {}) {
   pollInterval = setInterval(() => {
     if (document.hidden) return;
     fetchAutoTradeStatus();
-    if (autoTradeModal && !autoTradeModal.classList.contains("hide")) {
+    if (autoTradeModal?.open) {
       refreshDeskExchangePositions();
     }
   }, 6000);

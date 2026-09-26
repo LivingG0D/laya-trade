@@ -125,27 +125,14 @@ def calculate_macd(prices: np.ndarray, fast: int = 12, slow: int = 26, signal: i
 def calculate_bollinger_bands(prices: np.ndarray, period: int = 20, num_std: float = 2.0) -> Dict[str, np.ndarray]:
     """Calculate Bollinger Bands (middle, upper, lower, bandwidth, %b)."""
     middle = calculate_sma(prices, period)
-    upper = np.zeros_like(prices, dtype=float)
-    lower = np.zeros_like(prices, dtype=float)
-    bandwidth = np.zeros_like(prices, dtype=float)
-    pct_b = np.zeros_like(prices, dtype=float)
-
-    upper[:] = np.nan
-    lower[:] = np.nan
-    bandwidth[:] = np.nan
-    pct_b[:] = np.nan
-
-    for i in range(period - 1, len(prices)):
-        window = prices[i - period + 1 : i + 1]
-        std = np.std(window)
-        upper[i] = middle[i] + num_std * std
-        lower[i] = middle[i] - num_std * std
-        
-        bw_denom = middle[i] if middle[i] != 0 else 1e-8
-        bandwidth[i] = ((upper[i] - lower[i]) / bw_denom) * 100.0
-        
-        diff = upper[i] - lower[i]
-        pct_b[i] = (prices[i] - lower[i]) / (diff if diff != 0 else 1e-8)
+    std = np.full(len(prices), np.nan)
+    if len(prices) >= period:
+        std[period - 1:] = np.lib.stride_tricks.sliding_window_view(prices, period).std(axis=1)
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    bandwidth = ((upper - lower) / np.where(middle != 0, middle, 1e-8)) * 100.0
+    diff = upper - lower
+    pct_b = (prices - lower) / np.where(diff != 0, diff, 1e-8)
 
     return {
         "middle": middle,
@@ -155,6 +142,14 @@ def calculate_bollinger_bands(prices: np.ndarray, period: int = 20, num_std: flo
         "pct_b": pct_b
     }
 
+def _true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """max(high-low, |high-prev close|, |low-prev close|); first bar is just high-low."""
+    prev_close = close[:-1]
+    tr = high - low
+    tr[1:] = np.maximum.reduce([tr[1:], np.abs(high[1:] - prev_close), np.abs(low[1:] - prev_close)])
+    return tr
+
+
 def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
     """Calculate Average True Range (Wilder's ATR)."""
     n = len(close)
@@ -162,13 +157,7 @@ def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: 
     if n <= 1:
         return atr
 
-    tr = np.zeros(n, dtype=float)
-    tr[0] = high[0] - low[0]
-    for i in range(1, n):
-        hl = high[i] - low[i]
-        hc = abs(high[i] - close[i - 1])
-        lc = abs(low[i] - close[i - 1])
-        tr[i] = max(hl, hc, lc)
+    tr = _true_range(high, low, close)
 
     if n <= period:
         atr[:] = np.mean(tr)
@@ -183,16 +172,7 @@ def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: 
 
 def find_support_resistance(highs: np.ndarray, lows: np.ndarray, window: int = 10) -> Dict[str, float]:
     """Find key recent swing highs (resistance) and swing lows (support)."""
-    n = len(highs)
-    if n < window * 2:
-        return {"support": float(np.min(lows)), "resistance": float(np.max(highs))}
-
-    recent_lows = lows[-window * 2:]
-    recent_highs = highs[-window * 2:]
-
-    support = float(np.min(recent_lows))
-    resistance = float(np.max(recent_highs))
-    return {"support": support, "resistance": resistance}
+    return {"support": float(np.min(lows[-window * 2:])), "resistance": float(np.max(highs[-window * 2:]))}
 
 
 def calculate_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> Dict[str, np.ndarray]:
@@ -207,17 +187,11 @@ def calculate_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: 
     if n <= period:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
-    tr = np.zeros(n, dtype=float)
+    tr = _true_range(high, low, close)
     plus_dm = np.zeros(n, dtype=float)
     minus_dm = np.zeros(n, dtype=float)
 
-    tr[0] = high[0] - low[0]
     for i in range(1, n):
-        hl = high[i] - low[i]
-        hc = abs(high[i] - close[i - 1])
-        lc = abs(low[i] - close[i - 1])
-        tr[i] = max(hl, hc, lc)
-
         up_move = high[i] - high[i - 1]
         down_move = low[i - 1] - low[i]
 
@@ -304,6 +278,11 @@ def calculate_ttm_squeeze(
     return {"is_squeeze": is_squeeze, "status": status}
 
 
+def _r(value: float, digits: int, default: Any = None) -> Any:
+    """Round a numpy scalar for JSON, or return `default` when it is NaN (warm-up bars)."""
+    return default if np.isnan(value) else round(float(value), digits)
+
+
 def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = True) -> Dict[str, Any]:
     """
     Compute full technical indicator suite on klines.
@@ -350,18 +329,18 @@ def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = 
                 "low": float(lows[i]),
                 "close": float(closes[i]),
                 "volume": float(volumes[i]),
-                "ema9": None if np.isnan(ema9[i]) else round(float(ema9[i]), 8),
-                "ema21": None if np.isnan(ema21[i]) else round(float(ema21[i]), 8),
-                "ema50": None if np.isnan(ema50[i]) else round(float(ema50[i]), 8),
-                "ema200": None if np.isnan(ema200[i]) else round(float(ema200[i]), 8),
-                "rsi": None if np.isnan(rsi[i]) else round(float(rsi[i]), 2),
-                "macd": None if np.isnan(macd_res["macd"][i]) else round(float(macd_res["macd"][i]), 8),
-                "macd_signal": None if np.isnan(macd_res["signal"][i]) else round(float(macd_res["signal"][i]), 8),
-                "macd_hist": None if np.isnan(macd_res["histogram"][i]) else round(float(macd_res["histogram"][i]), 8),
-                "bb_upper": None if np.isnan(bb_res["upper"][i]) else round(float(bb_res["upper"][i]), 8),
-                "bb_middle": None if np.isnan(bb_res["middle"][i]) else round(float(bb_res["middle"][i]), 8),
-                "bb_lower": None if np.isnan(bb_res["lower"][i]) else round(float(bb_res["lower"][i]), 8),
-                "atr": None if np.isnan(atr[i]) else round(float(atr[i]), 8),
+                "ema9": _r(ema9[i], 8),
+                "ema21": _r(ema21[i], 8),
+                "ema50": _r(ema50[i], 8),
+                "ema200": _r(ema200[i], 8),
+                "rsi": _r(rsi[i], 2),
+                "macd": _r(macd_res["macd"][i], 8),
+                "macd_signal": _r(macd_res["signal"][i], 8),
+                "macd_hist": _r(macd_res["histogram"][i], 8),
+                "bb_upper": _r(bb_res["upper"][i], 8),
+                "bb_middle": _r(bb_res["middle"][i], 8),
+                "bb_lower": _r(bb_res["lower"][i], 8),
+                "atr": _r(atr[i], 8),
                 "adx": round(float(adx_res["adx"][i]), 1),
             }
             decorated_series.append(item)
@@ -394,23 +373,22 @@ def compute_all_indicators(klines: List[Dict[str, Any]], include_series: bool = 
         "is_closed": bool(klines[-1].get("is_closed", True)),
         "price": float(cur_price),
         "change_pct": round(float(price_change_pct), 3),
-        "rsi": round(float(rsi[last_idx]), 2) if not np.isnan(rsi[last_idx]) else 50.0,
-        "macd": round(float(macd_res["macd"][last_idx]), 8) if not np.isnan(macd_res["macd"][last_idx]) else 0.0,
-        "macd_signal": round(float(macd_res["signal"][last_idx]), 8) if not np.isnan(macd_res["signal"][last_idx]) else 0.0,
-        "macd_hist": round(float(macd_res["histogram"][last_idx]), 8) if not np.isnan(macd_res["histogram"][last_idx]) else 0.0,
-        "bb_upper": round(float(bb_res["upper"][last_idx]), 8) if not np.isnan(bb_res["upper"][last_idx]) else float(cur_price),
-        "bb_middle": round(float(bb_res["middle"][last_idx]), 8) if not np.isnan(bb_res["middle"][last_idx]) else float(cur_price),
-        "bb_lower": round(float(bb_res["lower"][last_idx]), 8) if not np.isnan(bb_res["lower"][last_idx]) else float(cur_price),
-        "bb_pct_b": round(float(bb_res["pct_b"][last_idx]), 3) if not np.isnan(bb_res["pct_b"][last_idx]) else 0.5,
+        "rsi": _r(rsi[last_idx], 2, 50.0),
+        "macd": _r(macd_res["macd"][last_idx], 8, 0.0),
+        "macd_signal": _r(macd_res["signal"][last_idx], 8, 0.0),
+        "macd_hist": _r(macd_res["histogram"][last_idx], 8, 0.0),
+        "bb_upper": _r(bb_res["upper"][last_idx], 8, float(cur_price)),
+        "bb_middle": _r(bb_res["middle"][last_idx], 8, float(cur_price)),
+        "bb_lower": _r(bb_res["lower"][last_idx], 8, float(cur_price)),
+        "bb_pct_b": _r(bb_res["pct_b"][last_idx], 3, 0.5),
         "atr": round(float(cur_atr), 8),
         "atr_pct": round((float(cur_atr) / float(cur_price)) * 100, 2) if cur_price else 1.0,
-        "ema9": round(float(ema9[last_idx]), 8) if not np.isnan(ema9[last_idx]) else None,
-        "ema21": round(float(ema21[last_idx]), 8) if not np.isnan(ema21[last_idx]) else None,
-        "ema50": round(float(ema50[last_idx]), 8) if not np.isnan(ema50[last_idx]) else None,
-        "ema200": round(float(ema200[last_idx]), 8) if not np.isnan(ema200[last_idx]) else None,
+        "ema9": _r(ema9[last_idx], 8),
+        "ema21": _r(ema21[last_idx], 8),
+        "ema50": _r(ema50[last_idx], 8),
+        "ema200": _r(ema200[last_idx], 8),
         "volume": float(cur_vol),
         "vol_spike": round(float(vol_spike), 2),
-        "rvol": round(float(vol_spike), 2),
         "adx": round(latest_adx, 1),
         "plus_di": round(float(adx_res["plus_di"][last_idx]), 1),
         "minus_di": round(float(adx_res["minus_di"][last_idx]), 1),

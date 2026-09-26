@@ -4,10 +4,6 @@
 
 let audioEnabled = true;
 
-export function isAudioEnabled() {
-  return audioEnabled;
-}
-
 export function toggleAudioEnabled() {
   audioEnabled = !audioEnabled;
   return audioEnabled;
@@ -31,9 +27,7 @@ export function showToast(message, type = "info", duration = null) {
   toastContainer.appendChild(toast);
 
   setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(-10px)";
-    toast.style.transition = "all 0.3s ease";
+    toast.classList.add("toast-out");
     setTimeout(() => toast.remove(), 300);
   }, timeoutMs);
 }

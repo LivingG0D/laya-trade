@@ -2,7 +2,7 @@
 // Searchable Coin Selector Component for Laya Trade
 // ========================================================
 
-export const COIN_LIST = [
+const COIN_LIST = [
   // Major Mega Caps (Top Default)
   { symbol: "BTCUSDT.P", name: "Bitcoin", icon: "₿", category: "major", catName: "Major", badge: "Core" },
   { symbol: "ETHUSDT.P", name: "Ethereum", icon: "Ξ", category: "major", catName: "Major", badge: "Core" },
@@ -88,7 +88,7 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
   function openModal() {
     if (isOpen) return;
     isOpen = true;
-    if (modal) modal.classList.remove("hide");
+    if (modal) modal.showModal();
     if (triggerBtn) {
       triggerBtn.setAttribute("aria-expanded", "true");
       triggerBtn.classList.add("active");
@@ -108,9 +108,12 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
   }
 
   function closeModal() {
-    if (!isOpen) return;
+    if (modal?.open) modal.close(); // the "close" listener below resets state
+  }
+
+  // Runs for every close path, including the dialog's native Esc handling.
+  function onDialogClose() {
     isOpen = false;
-    if (modal) modal.classList.add("hide");
     if (triggerBtn) {
       triggerBtn.setAttribute("aria-expanded", "false");
       triggerBtn.classList.remove("active");
@@ -328,9 +331,6 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
             handleCoinSelect(sym);
           }
         }
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        closeModal();
       }
     });
   }
@@ -367,15 +367,11 @@ export function initCoinSearch({ onSelect, getActiveSymbol }) {
         closeModal();
       }
     });
+    modal.addEventListener("close", onDialogClose);
   }
 
   // Global hotkeys
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen) {
-      e.preventDefault();
-      closeModal();
-      return;
-    }
     if (e.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) {
       e.preventDefault();
       openModal();

@@ -5,7 +5,7 @@
 // so this module never imports from the app entry point.
 // ========================================================
 
-import { formatPrice } from "./format.js";
+import { formatPrice, formatUsd } from "./format.js";
 import { showToast, playSignalChime } from "./feedback.js";
 
 let deps = {
@@ -74,11 +74,6 @@ let toobitAccountStatus = {
 let activeToobitPositions = [];
 let currentPositionSuggestion = null;
 let toobitPollInterval = null;
-let lastFocusedBeforeModal = null;
-
-export function isToobitModalOpen() {
-  return !!(toobitModal && !toobitModal.classList.contains("hide"));
-}
 
 function showToobitConnectError(message) {
   if (!toobitConnectError || !toobitConnectErrorText) return;
@@ -95,45 +90,19 @@ function hideToobitConnectError() {
   if (toobitConnectErrorText) toobitConnectErrorText.textContent = "";
 }
 
+// <dialog>.showModal() supplies Esc-to-close, the focus trap and focus restore on close.
 function openToobitModal() {
-  if (!toobitModal) return;
+  if (!toobitModal || toobitModal.open) return;
   hideToobitConnectError();
-  lastFocusedBeforeModal = document.activeElement;
-  toobitModal.classList.remove("hide");
-  toobitModal.style.display = "flex";
+  toobitModal.showModal();
   fetchToobitStatus();
-  setTimeout(() => btnCloseToobitModal?.focus(), 50);
 }
 
-export function closeToobitModal() {
-  if (!toobitModal || toobitModal.classList.contains("hide")) return;
-  hideToobitConnectError();
-  toobitModal.classList.add("hide");
-  toobitModal.style.display = "none";
-  if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function") {
-    lastFocusedBeforeModal.focus();
-  }
-  lastFocusedBeforeModal = null;
+function closeToobitModal() {
+  toobitModal?.close();
 }
 
-// Keep keyboard focus inside the open modal
-toobitModal?.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab") return;
-  const focusables = Array.from(
-    toobitModal.querySelectorAll("button, input, select, textarea, a[href]")
-  ).filter((el) => !el.disabled && el.offsetParent !== null);
-  if (focusables.length === 0) return;
-
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault();
-    first.focus();
-  }
-});
+toobitModal?.addEventListener("close", hideToobitConnectError);
 
 // Modal Tab Switcher
 tabModeLive?.addEventListener("click", () => {
@@ -196,11 +165,11 @@ async function fetchToobitStatus() {
       if (data.mode === "live") {
         modalStatusText.textContent = "Live Toobit API Connected";
         if (modalStatusSub) modalStatusSub.textContent = "Real futures funds active";
-        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
+        modalAvailableBal.textContent = `${formatUsd(data.balance?.availableBalance || 0)} USDT`;
       } else if (data.mode === "demo") {
         modalStatusText.textContent = "Simulated Demo Mode Active";
         if (modalStatusSub) modalStatusSub.textContent = "Trading with virtual $5,000 USDT";
-        modalAvailableBal.textContent = `$${Number(data.balance?.availableBalance || 5000).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} USDT`;
+        modalAvailableBal.textContent = `${formatUsd(data.balance?.availableBalance || 5000)} USDT`;
       } else {
         modalStatusText.textContent = "Not Connected";
         if (modalStatusSub) modalStatusSub.textContent = "Enter API keys or use Demo Mode";
@@ -218,7 +187,7 @@ async function fetchToobitStatus() {
 }
 
 // Helper: Check if an active position matches a chart symbol
-export function posMatchesChart(pos, chartSym) {
+function posMatchesChart(pos, chartSym) {
   if (!pos || !chartSym) return false;
   const normPos = (pos.rawSymbol || pos.symbol || pos.displaySymbol || "")
     .toUpperCase()
@@ -311,7 +280,6 @@ function fillPositionCard(card, pos) {
   const pnl = Number(pos.unrealizedPnl) || 0;
   const pnlPct = Number(pos.pnlPercentage) || 0;
   const profitable = pnl >= 0;
-  const money = (v) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const set = (name, text) => {
     const el = field(name);
@@ -362,15 +330,14 @@ function fillPositionCard(card, pos) {
   }
 
   // PnL hero
-  const pnlAbs = Math.abs(pnl).toFixed(2);
   const pctAbs = Math.abs(pnlPct).toFixed(1);
-  setPnl("pnl", "pos-hero-pnl", pnlAbs === "0.00" ? "$0.00" : `${pnl < 0 ? "-" : "+"}$${pnlAbs}`);
+  setPnl("pnl", "pos-hero-pnl", formatUsd(pnl, { signed: true }));
   setPnl("pnlPct", "pos-hero-pct", pctAbs === "0.0" ? "0.0%" : `${pnlPct < 0 ? "-" : "+"}${pctAbs}%`);
 
   // Stats
   set("qty", qty.toLocaleString());
-  set("notional", money(qty * mark));
-  set("margin", money(margin));
+  set("notional", formatUsd(qty * mark));
+  set("margin", formatUsd(margin));
   set("lev", leverage > 0 ? `${leverage}x` : "--");
   set("entryStat", entry > 0 ? `$${formatPrice(entry)}` : "--");
   set("mark", mark > 0 ? `$${formatPrice(mark)}` : "--");
@@ -525,6 +492,16 @@ async function simulateDemoTrade(side) {
   }
 }
 
+// POST /api/toobit/connect and return the parsed JSON reply.
+async function postToobitConnect(body) {
+  const res = await fetch("/api/toobit/connect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
 // Connect Live API
 async function saveToobitCredentials(e) {
   e.preventDefault();
@@ -545,16 +522,7 @@ async function saveToobitCredentials(e) {
   }
 
   try {
-    const res = await fetch("/api/toobit/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        apiKey: apiKey,
-        apiSecret: apiSecret,
-        isDemo: false
-      })
-    });
-    const data = await res.json();
+    const data = await postToobitConnect({ apiKey, apiSecret, isDemo: false });
 
     if (data.success) {
       localStorage.setItem("toobit_api_key", apiKey);
@@ -603,12 +571,7 @@ async function disconnectToobit() {
 // Activate Demo Mode
 async function activateDemoMode() {
   try {
-    const res = await fetch("/api/toobit/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isDemo: true })
-    });
-    const data = await res.json();
+    await postToobitConnect({ isDemo: true });
     hideToobitConnectError();
     showToast("Demo Simulation Mode Activated ($5,000 USDT)!", "bull");
     closeToobitModal();
@@ -658,26 +621,16 @@ export function initToobitManager(injectedDeps = {}) {
   if (savedKey && savedSecret) {
     if (toobitApiKey) toobitApiKey.value = savedKey;
     if (toobitApiSecret) toobitApiSecret.value = savedSecret;
-    fetch("/api/toobit/status")
-      .then((r) => r.json())
-      .then((status) => {
-        if (!status.connected || status.mode !== "live") {
-          fetch("/api/toobit/connect", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ apiKey: savedKey, apiSecret: savedSecret, isDemo: false })
-          })
-            .then((r) => r.json())
-            .then((data) => {
-              if (data.success) {
-                fetchToobitStatus();
-                fetchToobitPositions();
-              }
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+    // Re-login quietly (no toasts) if the server lost the live session, e.g. after a restart
+    (async () => {
+      const status = await (await fetch("/api/toobit/status")).json();
+      if (status.connected && status.mode === "live") return;
+      const data = await postToobitConnect({ apiKey: savedKey, apiSecret: savedSecret, isDemo: false });
+      if (data.success) {
+        fetchToobitStatus();
+        fetchToobitPositions();
+      }
+    })().catch(() => {});
   }
 
   // Start periodic polling for positions (every 8 seconds to prevent API flooding)

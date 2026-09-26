@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import hmac
 import math
-from decimal import Decimal
 import logging
 import time
 from typing import Dict, Any, List, Optional
@@ -14,7 +13,7 @@ from .config import (
     DEFAULT_POSITION_MARGIN_USD,
     DEFAULT_KELLY_FRACTION_PCT
 )
-from .market_data import to_toobit_symbol
+from .market_data import symbol_key, to_toobit_symbol
 
 logger = logging.getLogger("toobit_client")
 
@@ -187,6 +186,17 @@ def _price_to_exchange_precision(price: float, tick_size: float) -> tuple[str, f
     return formatted, float(formatted)
 
 
+# Actionable text for known Toobit auth errors; first match wins, in this order.
+_CONNECT_ERROR_HINTS = {
+    "[-1022]": "Signature Error (-1022): The Secret Key is incorrect. Please verify your Toobit Secret Key.",
+    "[-1107]": "API Key Error (-1107): The API Key is missing or invalid format. Please check your API Key.",
+    "[-1021]": "Timestamp Error (-1021): Request outside recvWindow. Clock was resynced, please retry.",
+    "[-1023]": "IP Restriction (-1023): Your IP address is not whitelisted in Toobit API Management.",
+    "[-2015]": "Permission Error (-2015): Invalid API-key, IP, or permissions for futures action.",
+    "[-2017]": "API Key Expired (-2017): Your API key has expired. Please generate a new key on Toobit.",
+}
+
+
 class ToobitClient:
     """
     Client for interacting with Toobit's Perpetual Futures API.
@@ -219,27 +229,9 @@ class ToobitClient:
 
     def _init_default_demo_position(self):
         """Seed an initial demo position for 1000PEPE so users can test immediately."""
-        toobit_sym = to_toobit_symbol(DEFAULT_SYMBOL)
-        default_sl, default_tp1, default_tp2 = _default_demo_targets(0.004180, "LONG", 50)
-        self._demo_positions[toobit_sym] = {
-            "symbol": toobit_sym,
-            "displaySymbol": DEFAULT_SYMBOL,
-            "side": "LONG",
-            "positionSide": "LONG",
-            "quantity": 100000.0,
-            "entryPrice": 0.004180,
-            "markPrice": 0.004245,
-            "leverage": 50,
-            "margin": 8.36,
-            "unrealizedPnl": 6.50,
-            "pnlPercentage": 77.75,
-            "liquidationPrice": 0.004105,
-            "stopLoss": default_sl,
-            "takeProfit1": default_tp1,
-            "takeProfit2": default_tp2,
-            "isolated": True,
-            "createdAt": int(time.time() * 1000)
-        }
+        pos = self.simulate_position(DEFAULT_SYMBOL, "LONG", 100000.0, 0.004180, leverage=50)
+        # show it already in profit rather than flat at entry
+        pos.update(markPrice=0.004245, unrealizedPnl=6.50, pnlPercentage=77.75, liquidationPrice=0.004105)
 
     @property
     def is_connected(self) -> bool:
@@ -321,14 +313,7 @@ class ToobitClient:
         if "recvWindow" not in req_params:
             req_params["recvWindow"] = 60000
 
-        # Sign the query string in exact insertion order
-        query_string = self._build_query_string(req_params)
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        req_params["signature"] = signature
+        req_params["signature"] = self._generate_signature(req_params)
         full_query_string = self._build_query_string(req_params)
 
         headers = {
@@ -337,16 +322,11 @@ class ToobitClient:
         }
 
         m = method.upper()
-        if m == "GET":
-            url = f"{self.base_url}{endpoint}?{full_query_string}"
-            resp = await self._http_client.get(url, headers=headers)
-        elif m == "POST":
+        if m == "POST":
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-            url = f"{self.base_url}{endpoint}"
-            resp = await self._http_client.post(url, headers=headers, content=full_query_string)
-        elif m == "DELETE":
-            url = f"{self.base_url}{endpoint}?{full_query_string}"
-            resp = await self._http_client.delete(url, headers=headers)
+            resp = await self._http_client.post(f"{self.base_url}{endpoint}", headers=headers, content=full_query_string)
+        elif m in ("GET", "DELETE"):
+            resp = await self._http_client.request(m, f"{self.base_url}{endpoint}?{full_query_string}", headers=headers)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -446,48 +426,8 @@ class ToobitClient:
                         "• Make sure Futures trading has been activated on your Toobit account."
                     )
                 }
-            elif "[-1022]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "Signature Error (-1022): The Secret Key is incorrect. Please verify your Toobit Secret Key."
-                }
-            elif "[-1107]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "API Key Error (-1107): The API Key is missing or invalid format. Please check your API Key."
-                }
-            elif "[-1021]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "Timestamp Error (-1021): Request outside recvWindow. Clock was resynced, please retry."
-                }
-            elif "[-1023]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "IP Restriction (-1023): Your IP address is not whitelisted in Toobit API Management."
-                }
-            elif "[-2015]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "Permission Error (-2015): Invalid API-key, IP, or permissions for futures action."
-                }
-            elif "[-2017]" in err_str:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "message": "API Key Expired (-2017): Your API key has expired. Please generate a new key on Toobit."
-                }
-
-            return {
-                "success": False,
-                "mode": "error",
-                "message": err_str
-            }
+            hint = next((msg for code, msg in _CONNECT_ERROR_HINTS.items() if code in err_str), err_str)
+            return {"success": False, "mode": "error", "message": hint}
 
     async def get_balance(self) -> Dict[str, Any]:
         """Fetch account balance details."""
@@ -587,8 +527,8 @@ class ToobitClient:
                 for p in raw_positions:
                     p_sym = p.get("symbol", "")
                     if symbol:
-                        norm_target = symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
-                        norm_pos = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                        norm_target = symbol_key(symbol)
+                        norm_pos = symbol_key(p_sym)
                         if norm_target != norm_pos and p_sym != target_toobit_sym:
                             continue
 
@@ -609,7 +549,7 @@ class ToobitClient:
                         if margin > 0:
                             pnl_pct = (unrealized_pnl / margin) * 100
 
-                        clean_sym = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                        clean_sym = symbol_key(p_sym)
                         canonical_disp = f"{clean_sym}.P" if clean_sym.endswith("USDT") else f"{clean_sym}USDT.P"
 
                         tpsl_info = self._position_tpsl_cache.get(p_sym, {})
@@ -810,35 +750,31 @@ class ToobitClient:
                         sym = c.get("symbol")
                         if not sym:
                             continue
-                        step_size = Decimal("0.001")
-                        tick_size = Decimal("0.01")
-                        min_qty = Decimal("0.001")
-                        max_qty = Decimal("1000000")
-                        min_notional = Decimal("5.0")
+                        step_size, tick_size, min_qty, max_qty, min_notional = 0.001, 0.01, 0.001, 1000000.0, 5.0
 
                         for f in c.get("filters", []):
                             ft = f.get("filterType")
                             if ft == "LOT_SIZE":
-                                min_qty = Decimal(str(f.get("minQty", min_qty)))
-                                max_qty = Decimal(str(f.get("maxQty", max_qty)))
-                                step_size = Decimal(str(f.get("stepSize", step_size)))
+                                min_qty = float(f.get("minQty", min_qty))
+                                max_qty = float(f.get("maxQty", max_qty))
+                                step_size = float(f.get("stepSize", step_size))
                             elif ft == "PRICE_FILTER":
-                                tick_size = Decimal(str(f.get("tickSize", tick_size)))
+                                tick_size = float(f.get("tickSize", tick_size))
                             elif ft in ("MIN_NOTIONAL", "NOTIONAL"):
-                                min_notional = Decimal(str(f.get("minNotional", min_notional)))
+                                min_notional = float(f.get("minNotional", min_notional))
 
-                        min_trade_prec = Decimal(str(c.get("minTradePrecision", "0") or "0"))
+                        min_trade_prec = float(c.get("minTradePrecision") or 0)
                         if min_trade_prec > 0:
                             min_qty = max(min_qty, min_trade_prec)
                             step_size = max(step_size, min_trade_prec)
 
                         rules_map[sym] = {
                             "symbol": sym,
-                            "step_size": float(step_size),
-                            "tick_size": float(tick_size),
-                            "min_qty": float(min_qty),
-                            "max_qty": float(max_qty),
-                            "min_notional": float(min_notional),
+                            "step_size": step_size,
+                            "tick_size": tick_size,
+                            "min_qty": min_qty,
+                            "max_qty": max_qty,
+                            "min_notional": min_notional,
                             "multiplier": float(c.get("contractMultiplier", 1.0))
                         }
                     self._contract_rules_cache = rules_map
@@ -1031,7 +967,6 @@ class ToobitClient:
                 order_type="TAKE_PROFIT_MARKET",
                 quantity=tp2_quantity,
                 trigger_price=take_profit_2,
-                reduce_only=True,
                 position_side=normalized_side,
                 take_profit_slot="takeProfit2",
             )
@@ -1258,7 +1193,7 @@ class ToobitClient:
                 "verified": True,
             }
 
-        rules = await self.get_symbol_rules(toobit_sym)
+        await self.get_symbol_rules(toobit_sym)  # refresh cache; a miss keeps tick 0 (no rounding)
         tick_size = float(self._contract_rules_cache.get(toobit_sym, {}).get("tick_size", 0.0))
 
         sl_str, effective_sl = _price_to_exchange_precision(stop_loss, tick_size)
@@ -1341,7 +1276,6 @@ class ToobitClient:
         order_type: str = "STOP_MARKET",
         quantity: float = 0.0,
         trigger_price: float = 0.0,
-        reduce_only: bool = True,
         position_side: Optional[str] = None,
         take_profit_slot: str = "takeProfit1",
     ) -> Dict[str, Any]:
@@ -1383,7 +1317,7 @@ class ToobitClient:
                 "positionSide": normalized_side,
             }
 
-        rules = await self.get_symbol_rules(toobit_sym)
+        await self.get_symbol_rules(toobit_sym)  # refresh cache; a miss keeps tick 0 (no rounding)
         tick_size = float(self._contract_rules_cache.get(toobit_sym, {}).get("tick_size", 0.0))
         trigger_text, effective_trigger = _price_to_exchange_precision(trigger_price, tick_size)
         if not trigger_text:
@@ -1470,21 +1404,6 @@ class ToobitClient:
             "message": "Cancel orders could not be confirmed",
         }
 
-    async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
-        """Cancel a specific open order by ID."""
-        toobit_sym = to_toobit_symbol(symbol)
-        if self.is_demo:
-            return {"success": True, "mode": "demo", "orderId": order_id}
-
-        params = {"symbol": toobit_sym, "orderId": order_id}
-        try:
-            res = await self._send_signed_request("DELETE", "/api/v1/futures/order", params)
-            return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
-        except Exception as e:
-            logger.warning(f"Failed to cancel order {order_id}: {e}")
-
-        return {"success": False, "mode": "live", "symbol": toobit_sym, "error": f"Failed to cancel order {order_id}"}
-
     async def close(self):
         await self._http_client.aclose()
 
@@ -1535,276 +1454,122 @@ def generate_position_suggestion(
     if base_price <= 0:
         base_price = sig.get("entry_price") or 0.0
 
-    # If user has no active position
+    def card(has_position, alignment, action_code, badge, badge_class, headline, text, steps, sl, tp):
+        return {
+            "hasPosition": has_position, "alignment": alignment, "action": action_code,
+            "badgeText": badge, "badgeClass": badge_class, "headline": headline,
+            "suggestion": text, "steps": steps, "canFlashClose": has_position,
+            "recommendedSl": sl, "recommendedTp": tp,
+        }
+
+    # No active position: suggest an entry setup (LONG checked first, as before)
     if not position:
+        if "LONG" not in action and "SHORT" not in action:
+            return card(
+                False, "NONE", "WAIT", "WAIT FOR SETUP ⚪", "badge-neutral",
+                "Market Consolidating: Stand By",
+                "No active position. Market is currently consolidating without high directional conviction. Wait for Laya to identify a high-probability breakout.",
+                ["Keep powder dry and avoid over-trading",
+                 "Wait for next candle close to confirm direction",
+                 "Watch key support and resistance boundaries"],
+                0.0, 0.0,
+            )
+        long = "LONG" in action
         entry = sig.get("entry_price") or targets.get("entry", base_price)
         if entry <= 0:
             entry = base_price
+        tp_mult, sl_mult = (1.015, 0.985) if long else (0.985, 1.015)
+        tp1 = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * tp_mult if entry > 0 else 0.0))
+        sl = sig.get("stop_loss") or targets.get("stop_loss", (entry * sl_mult if entry > 0 else 0.0))
+        side = "LONG" if long else "SHORT"
+        margin = f"${DEFAULT_POSITION_MARGIN_USD:.2f}"
+        return card(
+            False, "NONE", "ENTER_SETUP",
+            "BULLISH SETUP 🟢" if long else "BEARISH SETUP 🔴",
+            "badge-profit" if long else "badge-danger",
+            f"Ready for Entry: Laya suggests {action}",
+            f"No active position. Laya System-1 detects {'bullish confluence' if long else 'downward momentum'} ({confidence}% confidence). "
+            f"Recommended setup: {'Buy' if long else 'Short'} near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}. "
+            f"Use fixed {margin} margin to prevent compounding volatility drag.",
+            [f"Consider opening {side} near {fmt_p(entry)}",
+             f"Position Sizing: Use Fixed {margin} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
+             f"Set Target Take Profit 1 at {fmt_p(tp1)}",
+             f"Set Stop Loss at {fmt_p(sl)}"],
+            sl, tp1,
+        )
 
-        tp1 = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * 1.015 if entry > 0 else 0.0))
-        sl = sig.get("stop_loss") or targets.get("stop_loss", (entry * 0.985 if entry > 0 else 0.0))
-
-        if "LONG" in action:
-            return {
-                "hasPosition": False,
-                "alignment": "NONE",
-                "action": "ENTER_SETUP",
-                "badgeText": "BULLISH SETUP 🟢",
-                "badgeClass": "badge-profit",
-                "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects bullish confluence ({confidence}% confidence). Recommended setup: Buy near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}. Use fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin to prevent compounding volatility drag.",
-                "steps": [
-                    f"Consider opening LONG near {fmt_p(entry)}",
-                    f"Position Sizing: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
-                    f"Set Target Take Profit 1 at {fmt_p(tp1)}",
-                    f"Set Stop Loss at {fmt_p(sl)}"
-                ],
-                "canFlashClose": False,
-                "recommendedMarginUsd": DEFAULT_POSITION_MARGIN_USD,
-                "sizingRule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
-                "recommendedSl": sl,
-                "recommendedTp": tp1
-            }
-        elif "SHORT" in action:
-            tp1_s = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * 0.985 if entry > 0 else 0.0))
-            sl_s = sig.get("stop_loss") or targets.get("stop_loss", (entry * 1.015 if entry > 0 else 0.0))
-            return {
-                "hasPosition": False,
-                "alignment": "NONE",
-                "action": "ENTER_SETUP",
-                "badgeText": "BEARISH SETUP 🔴",
-                "badgeClass": "badge-danger",
-                "headline": f"Ready for Entry: Laya suggests {action}",
-                "suggestion": f"No active position. Laya System-1 detects downward momentum ({confidence}% confidence). Recommended setup: Short near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1_s)}, Protective SL at {fmt_p(sl_s)}. Use fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin to prevent compounding volatility drag.",
-                "steps": [
-                    f"Consider opening SHORT near {fmt_p(entry)}",
-                    f"Position Sizing: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
-                    f"Set Target Take Profit 1 at {fmt_p(tp1_s)}",
-                    f"Set Stop Loss at {fmt_p(sl_s)}"
-                ],
-                "canFlashClose": False,
-                "recommendedMarginUsd": DEFAULT_POSITION_MARGIN_USD,
-                "sizingRule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
-                "recommendedSl": sl_s,
-                "recommendedTp": tp1_s
-            }
-        else:
-            return {
-                "hasPosition": False,
-                "alignment": "NONE",
-                "action": "WAIT",
-                "badgeText": "WAIT FOR SETUP ⚪",
-                "badgeClass": "badge-neutral",
-                "headline": "Market Consolidating: Stand By",
-                "suggestion": "No active position. Market is currently consolidating without high directional conviction. Wait for Laya to identify a high-probability breakout.",
-                "steps": [
-                    "Keep powder dry and avoid over-trading",
-                    "Wait for next candle close to confirm direction",
-                    "Watch key support and resistance boundaries"
-                ],
-                "canFlashClose": False,
-                "recommendedSl": 0.0,
-                "recommendedTp": 0.0
-            }
-
-    # Position is active
-    pos_side = position.get("side", "LONG").upper()
+    # Position is active: judge it against the side the model now favours
+    long = position.get("side", "LONG").upper() == "LONG"
+    side, against = ("LONG", "SHORT") if long else ("SHORT", "LONG")
     entry = position.get("entryPrice", current_price)
     pnl = position.get("unrealizedPnl", 0.0)
     pnl_pct = position.get("pnlPercentage", 0.0)
-    qty = position.get("quantity", 0.0)
     symbol = position.get("displaySymbol", position.get("symbol", "contract"))
+    p_with, p_against = (p_bull, p_bear) if long else (p_bear, p_bull)
+    tp_mult, sl_mult, tp_far = (1.015, 0.985, 1.02) if long else (0.985, 1.015, 0.98)
+    sl_target = targets.get("stop_loss", entry * sl_mult)
+    liquidation = f"Liquidation threshold is at ${position.get('liquidationPrice', 0.0):.6f}"
 
-    # Case 1: Holding LONG
-    if pos_side == "LONG":
-        # Target TP1 or bullish continuation
-        if p_bull >= 0.50 or "LONG" in action:
-            if pnl_pct >= 8.0:
-                rec_sl = max(entry, current_price * 0.992)
-                return {
-                    "hasPosition": True,
-                    "alignment": "ALIGNED",
-                    "action": "HOLD_TRAIL_SL",
-                    "badgeText": "PROTECT PROFIT 🛡️",
-                    "badgeClass": "badge-profit",
-                    "headline": f"Great Trade (+{pnl_pct:.1f}%): Trail Stop Loss",
-                    "suggestion": f"Your {symbol} LONG is up +{pnl_pct:.1f}% (${pnl:+.2f}). Laya AI confirms ongoing bullish pressure ({int(p_bull*100)}%). Recommend moving your Stop Loss to break-even or above entry (${rec_sl:.6f}) to lock in guaranteed profit while riding the trend.",
-                    "steps": [
-                        f"Move Stop Loss to ${rec_sl:.6f} (Risk-Free Mode)",
-                        f"Next Take Profit target: ${targets.get('take_profit_1', current_price * 1.015):.6f}",
-                        "Let winners run while protecting capital"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": rec_sl,
-                    "recommendedTp": targets.get("take_profit_1", current_price * 1.02)
-                }
-            else:
-                return {
-                    "hasPosition": True,
-                    "alignment": "ALIGNED",
-                    "action": "HOLD_TRAIL_SL",
-                    "badgeText": "KEEP HOLDING 🟢",
-                    "badgeClass": "badge-profit",
-                    "headline": "Bullish Trend Aligned: Hold Position",
-                    "suggestion": f"Laya AI probabilities favor continued upward move ({int(p_bull*100)}% bullish). Keep holding your LONG position towards target ${targets.get('take_profit_1', entry * 1.015):.6f}.",
-                    "steps": [
-                        "Keep position open",
-                        f"Ensure Stop Loss is active at ${targets.get('stop_loss', entry * 0.985):.6f}",
-                        f"Watch for TP1 target near ${targets.get('take_profit_1', entry * 1.02):.6f}"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": targets.get("stop_loss", entry * 0.985),
-                    "recommendedTp": targets.get("take_profit_1", entry * 1.02)
-                }
-        elif p_bear >= 0.50 or "SHORT" in action:
-            # Bearish reversal threat
-            if pnl > 0:
-                return {
-                    "hasPosition": True,
-                    "alignment": "OPPOSED",
-                    "action": "TAKE_PROFIT",
-                    "badgeText": "TAKE PROFIT 🎯",
-                    "badgeClass": "badge-warning",
-                    "headline": "⚠️ Momentum Turning Bearish: Cash Out Now",
-                    "suggestion": f"Warning: Laya AI detects strong downward shift ({int(p_bear*100)}% short pressure). Your LONG is currently profitable (+{pnl_pct:.1f}%). Strongly consider taking profit or clicking Flash Close before momentum reverses your gains.",
-                    "steps": [
-                        "Click 'Flash Close' to capture profits immediately",
-                        "Or close 50% size and tighten SL to current price",
-                        "Prepare for potential short entry if breakdown confirms"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": current_price * 0.998,
-                    "recommendedTp": current_price
-                }
-            else:
-                return {
-                    "hasPosition": True,
-                    "alignment": "OPPOSED",
-                    "action": "CUT_LOSS",
-                    "badgeText": "EXIT / REDUCE RISK 🚨",
-                    "badgeClass": "badge-danger",
-                    "headline": "🚨 Bearish Breakdown: Reduce Exposure",
-                    "suggestion": f"Risk Alert: Price is declining ({pnl_pct:.1f}%) and Laya AI indicates sellers are in control ({int(p_bear*100)}% bearish). Exit position via Flash Close to avoid deeper drawdown or liquidation.",
-                    "steps": [
-                        "Click 'Flash Close' to limit loss",
-                        f"Liquidation threshold is at ${position.get('liquidationPrice', 0.0):.6f}",
-                        "Preserve margin for higher-conviction setup"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": current_price,
-                    "recommendedTp": entry
-                }
-        else:
-            return {
-                "hasPosition": True,
-                "alignment": "NEUTRAL",
-                "action": "HOLD_TRAIL_SL",
-                "badgeText": "MONITOR ⏳",
-                "badgeClass": "badge-neutral",
-                "headline": "Market Pausing: Maintain Guard",
-                "suggestion": f"Price is in a consolidation range. Your LONG is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${targets.get('stop_loss', entry * 0.985):.6f} and wait for volume to pick up.",
-                "steps": [
-                    "Hold position while price remains above support",
-                    f"Stop loss safety boundary: ${targets.get('stop_loss', entry * 0.985):.6f}",
-                    "Monitor for next trend impulse"
-                ],
-                "canFlashClose": True,
-                "recommendedSl": targets.get("stop_loss", entry * 0.985),
-                "recommendedTp": targets.get("take_profit_1", entry * 1.015)
-            }
+    if p_with >= 0.50 or side in action:
+        if pnl_pct >= 8.0:
+            rec_sl = max(entry, current_price * 0.992) if long else min(entry, current_price * 1.008)
+            return card(
+                True, "ALIGNED", "HOLD_TRAIL_SL", "PROTECT PROFIT 🛡️", "badge-profit",
+                f"Great Trade (+{pnl_pct:.1f}%): Trail Stop Loss" if long
+                else f"Short Working Well (+{pnl_pct:.1f}%): Trail Stop Loss",
+                f"Your {symbol} LONG is up +{pnl_pct:.1f}% (${pnl:+.2f}). Laya AI confirms ongoing bullish pressure ({int(p_bull*100)}%). Recommend moving your Stop Loss to break-even or above entry (${rec_sl:.6f}) to lock in guaranteed profit while riding the trend." if long
+                else f"Your {symbol} SHORT is profitable (+{pnl_pct:.1f}% / ${pnl:+.2f}). Laya AI shows continued bearish follow-through ({int(p_bear*100)}%). Lower your Stop Loss to ${rec_sl:.6f} to lock in profit.",
+                [f"Move Stop Loss to ${rec_sl:.6f} (Risk-Free Mode)" if long else f"Lower Stop Loss to ${rec_sl:.6f} (Risk-Free)",
+                 f"Next Take Profit target: ${targets.get('take_profit_1', current_price * tp_mult):.6f}",
+                 "Let winners run while protecting capital" if long else "Let downward trend continue"],
+                rec_sl, targets.get("take_profit_1", current_price * tp_far),
+            )
+        return card(
+            True, "ALIGNED", "HOLD_TRAIL_SL",
+            "KEEP HOLDING 🟢" if long else "KEEP HOLDING 🔴", "badge-profit",
+            "Bullish Trend Aligned: Hold Position" if long else "Bearish Trend Aligned: Hold Short",
+            (f"Laya AI probabilities favor continued upward move ({int(p_bull*100)}% bullish). Keep holding your LONG position" if long
+             else f"Laya AI indicates strong seller dominance ({int(p_bear*100)}% bearish). Keep holding your SHORT position")
+            + f" towards target ${targets.get('take_profit_1', entry * tp_mult):.6f}.",
+            ["Keep position open" if long else "Keep SHORT position open",
+             f"Ensure Stop Loss is active at ${sl_target:.6f}",
+             f"Watch for TP1 target near ${targets.get('take_profit_1', entry * tp_far):.6f}"],
+            sl_target, targets.get("take_profit_1", entry * tp_far),
+        )
 
-    # Case 2: Holding SHORT
-    else:
-        if p_bear >= 0.50 or "SHORT" in action:
-            if pnl_pct >= 8.0:
-                rec_sl = min(entry, current_price * 1.008)
-                return {
-                    "hasPosition": True,
-                    "alignment": "ALIGNED",
-                    "action": "HOLD_TRAIL_SL",
-                    "badgeText": "PROTECT PROFIT 🛡️",
-                    "badgeClass": "badge-profit",
-                    "headline": f"Short Working Well (+{pnl_pct:.1f}%): Trail Stop Loss",
-                    "suggestion": f"Your {symbol} SHORT is profitable (+{pnl_pct:.1f}% / ${pnl:+.2f}). Laya AI shows continued bearish follow-through ({int(p_bear*100)}%). Lower your Stop Loss to ${rec_sl:.6f} to lock in profit.",
-                    "steps": [
-                        f"Lower Stop Loss to ${rec_sl:.6f} (Risk-Free)",
-                        f"Next Take Profit target: ${targets.get('take_profit_1', current_price * 0.985):.6f}",
-                        "Let downward trend continue"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": rec_sl,
-                    "recommendedTp": targets.get("take_profit_1", current_price * 0.98)
-                }
-            else:
-                return {
-                    "hasPosition": True,
-                    "alignment": "ALIGNED",
-                    "action": "HOLD_TRAIL_SL",
-                    "badgeText": "KEEP HOLDING 🔴",
-                    "badgeClass": "badge-profit",
-                    "headline": "Bearish Trend Aligned: Hold Short",
-                    "suggestion": f"Laya AI indicates strong seller dominance ({int(p_bear*100)}% bearish). Keep holding your SHORT position towards target ${targets.get('take_profit_1', entry * 0.985):.6f}.",
-                    "steps": [
-                        "Keep SHORT position open",
-                        f"Ensure Stop Loss is active at ${targets.get('stop_loss', entry * 1.015):.6f}",
-                        f"Watch for TP1 target near ${targets.get('take_profit_1', entry * 0.98):.6f}"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": targets.get("stop_loss", entry * 1.015),
-                    "recommendedTp": targets.get("take_profit_1", entry * 0.98)
-                }
-        elif p_bull >= 0.50 or "LONG" in action:
-            if pnl > 0:
-                return {
-                    "hasPosition": True,
-                    "alignment": "OPPOSED",
-                    "action": "TAKE_PROFIT",
-                    "badgeText": "TAKE PROFIT 🎯",
-                    "badgeClass": "badge-warning",
-                    "headline": "⚠️ Bullish Bounce Detected: Close Short",
-                    "suggestion": f"Warning: Buyers are stepping in ({int(p_bull*100)}% bull probability). Your SHORT is in profit (+{pnl_pct:.1f}%). Cash out now using Flash Close to secure your gains.",
-                    "steps": [
-                        "Click 'Flash Close' to capture profits",
-                        "Avoid holding short into strong bounce",
-                        "Look for clean re-entry or wait"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": current_price * 1.002,
-                    "recommendedTp": current_price
-                }
-            else:
-                return {
-                    "hasPosition": True,
-                    "alignment": "OPPOSED",
-                    "action": "CUT_LOSS",
-                    "badgeText": "EXIT / CUT LOSS 🚨",
-                    "badgeClass": "badge-danger",
-                    "headline": "🚨 Bullish Squeeze Risk: Exit Short",
-                    "suggestion": f"Risk Alert: Price is moving up against your SHORT ({pnl_pct:.1f}%). Laya AI signals bullish momentum ({int(p_bull*100)}%). Flash close now to prevent short-squeeze liquidation.",
-                    "steps": [
-                        "Click 'Flash Close' immediately",
-                        f"Liquidation threshold is at ${position.get('liquidationPrice', 0.0):.6f}",
-                        "Protect account equity"
-                    ],
-                    "canFlashClose": True,
-                    "recommendedSl": current_price,
-                    "recommendedTp": entry
-                }
-        else:
-            return {
-                "hasPosition": True,
-                "alignment": "NEUTRAL",
-                "action": "HOLD_TRAIL_SL",
-                "badgeText": "MONITOR ⏳",
-                "badgeClass": "badge-neutral",
-                "headline": "Market Sideways: Keep Alert",
-                "suggestion": f"Price is stalling. Your SHORT is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${targets.get('stop_loss', entry * 1.015):.6f}.",
-                "steps": [
-                    "Hold position while price stays below resistance",
-                    f"Stop loss safety boundary: ${targets.get('stop_loss', entry * 1.015):.6f}",
-                    "Wait for seller volume"
-                ],
-                "canFlashClose": True,
-                "recommendedSl": targets.get("stop_loss", entry * 1.015),
-                "recommendedTp": targets.get("take_profit_1", entry * 0.985)
-            }
+    if p_against >= 0.50 or against in action:
+        if pnl > 0:
+            return card(
+                True, "OPPOSED", "TAKE_PROFIT", "TAKE PROFIT 🎯", "badge-warning",
+                "⚠️ Momentum Turning Bearish: Cash Out Now" if long else "⚠️ Bullish Bounce Detected: Close Short",
+                f"Warning: Laya AI detects strong downward shift ({int(p_bear*100)}% short pressure). Your LONG is currently profitable (+{pnl_pct:.1f}%). Strongly consider taking profit or clicking Flash Close before momentum reverses your gains." if long
+                else f"Warning: Buyers are stepping in ({int(p_bull*100)}% bull probability). Your SHORT is in profit (+{pnl_pct:.1f}%). Cash out now using Flash Close to secure your gains.",
+                ["Click 'Flash Close' to capture profits immediately",
+                 "Or close 50% size and tighten SL to current price",
+                 "Prepare for potential short entry if breakdown confirms"] if long else
+                ["Click 'Flash Close' to capture profits",
+                 "Avoid holding short into strong bounce",
+                 "Look for clean re-entry or wait"],
+                current_price * (0.998 if long else 1.002), current_price,
+            )
+        return card(
+            True, "OPPOSED", "CUT_LOSS",
+            "EXIT / REDUCE RISK 🚨" if long else "EXIT / CUT LOSS 🚨", "badge-danger",
+            "🚨 Bearish Breakdown: Reduce Exposure" if long else "🚨 Bullish Squeeze Risk: Exit Short",
+            f"Risk Alert: Price is declining ({pnl_pct:.1f}%) and Laya AI indicates sellers are in control ({int(p_bear*100)}% bearish). Exit position via Flash Close to avoid deeper drawdown or liquidation." if long
+            else f"Risk Alert: Price is moving up against your SHORT ({pnl_pct:.1f}%). Laya AI signals bullish momentum ({int(p_bull*100)}%). Flash close now to prevent short-squeeze liquidation.",
+            ["Click 'Flash Close' to limit loss", liquidation, "Preserve margin for higher-conviction setup"] if long
+            else ["Click 'Flash Close' immediately", liquidation, "Protect account equity"],
+            current_price, entry,
+        )
+
+    return card(
+        True, "NEUTRAL", "HOLD_TRAIL_SL", "MONITOR ⏳", "badge-neutral",
+        "Market Pausing: Maintain Guard" if long else "Market Sideways: Keep Alert",
+        f"Price is in a consolidation range. Your LONG is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${sl_target:.6f} and wait for volume to pick up." if long
+        else f"Price is stalling. Your SHORT is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${sl_target:.6f}.",
+        ["Hold position while price remains above support" if long else "Hold position while price stays below resistance",
+         f"Stop loss safety boundary: ${sl_target:.6f}",
+         "Monitor for next trend impulse" if long else "Wait for seller volume"],
+        sl_target, targets.get("take_profit_1", entry * tp_mult),
+    )

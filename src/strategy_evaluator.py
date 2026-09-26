@@ -306,69 +306,54 @@ def evaluate_signal_sequence(
         candle = candles[index]
         close = float(candle["close"])
 
-        if position is not None:
-            equity, position, trade = _process_position(
-                position,
-                candle,
-                index,
-                equity,
-                slippage_rate,
-                fee_rate,
-                funding_rate,
-            )
-            if trade is not None:
-                trades.append(trade)
-            marked_equity = _mark_equity(equity, position, close)
-            peak_equity = max(peak_equity, marked_equity)
-            max_drawdown = max(max_drawdown, (peak_equity - marked_equity) / max(peak_equity, 1e-12) * 100.0)
-            continue
+        if position is None:
+            # Flat: try to open on the previous bar's signal, then manage it on this bar like any open position
+            signal = signals[index - 1]
+            if not signal:
+                continue
+            side = _signal_side(signal)
+            if side is None or (side == -1 and not config.allow_short):
+                continue
+            if _signal_confidence(signal) < config.min_confidence_pct:
+                skipped_low_confidence += 1
+                continue
 
-        signal = signals[index - 1]
-        if not signal:
-            continue
-        side = _signal_side(signal)
-        if side is None or (side == -1 and not config.allow_short):
-            continue
-        if _signal_confidence(signal) < config.min_confidence_pct:
-            skipped_low_confidence += 1
-            continue
+            entry = _entry_price(float(candle["open"]), side, slippage_rate)
+            stop = _signal_price(signal, "stop_loss", "stopLoss")
+            tp1 = _signal_price(signal, "take_profit_1", "takeProfit1")
+            tp2 = _signal_price(signal, "take_profit_2", "takeProfit2")
+            if not _targets_are_valid(side, entry, stop, tp1, tp2):
+                skipped_invalid_signals += 1
+                continue
 
-        entry = _entry_price(float(candle["open"]), side, slippage_rate)
-        stop = _signal_price(signal, "stop_loss", "stopLoss")
-        tp1 = _signal_price(signal, "take_profit_1", "takeProfit1")
-        tp2 = _signal_price(signal, "take_profit_2", "takeProfit2")
-        if not _targets_are_valid(side, entry, stop, tp1, tp2):
-            skipped_invalid_signals += 1
-            continue
+            risk_per_unit = abs(entry - stop)
+            risk_budget = equity * config.risk_per_trade
+            quantity = risk_budget / risk_per_unit if risk_per_unit > 0 else 0.0
+            max_notional = equity * config.max_leverage
+            quantity = min(quantity, max_notional / entry if entry > 0 else 0.0)
+            if quantity <= 0 or equity <= 0:
+                skipped_invalid_signals += 1
+                continue
 
-        risk_per_unit = abs(entry - stop)
-        risk_budget = equity * config.risk_per_trade
-        quantity = risk_budget / risk_per_unit if risk_per_unit > 0 else 0.0
-        max_notional = equity * config.max_leverage
-        quantity = min(quantity, max_notional / entry if entry > 0 else 0.0)
-        if quantity <= 0 or equity <= 0:
-            skipped_invalid_signals += 1
-            continue
-
-        entry_fee = entry * quantity * fee_rate
-        equity -= entry_fee
-        position = {
-            "side": side,
-            "entry": entry,
-            "entry_time": candles[index - 1].get("time"),
-            "exit_time": candle.get("time"),
-            "entry_index": index,
-            "stop": stop,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp1_hit": False,
-            "remaining_qty": quantity,
-            "realized_gross": 0.0,
-            "entry_fee": entry_fee,
-            "exit_fees": 0.0,
-            "funding": 0.0,
-            "risk_budget": risk_budget,
-        }
+            entry_fee = entry * quantity * fee_rate
+            equity -= entry_fee
+            position = {
+                "side": side,
+                "entry": entry,
+                "entry_time": candles[index - 1].get("time"),
+                "exit_time": candle.get("time"),
+                "entry_index": index,
+                "stop": stop,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp1_hit": False,
+                "remaining_qty": quantity,
+                "realized_gross": 0.0,
+                "entry_fee": entry_fee,
+                "exit_fees": 0.0,
+                "funding": 0.0,
+                "risk_budget": risk_budget,
+            }
 
         equity, position, trade = _process_position(
             position,
@@ -384,7 +369,6 @@ def evaluate_signal_sequence(
         marked_equity = _mark_equity(equity, position, close)
         peak_equity = max(peak_equity, marked_equity)
         max_drawdown = max(max_drawdown, (peak_equity - marked_equity) / max(peak_equity, 1e-12) * 100.0)
-        continue
 
     if position is not None:
         final_candle = candles[-1]

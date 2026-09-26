@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Set, Optional
+from typing import Dict, Any, Set, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,19 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
 from .config import (
-    DEFAULT_EXCHANGE,
     DEFAULT_SYMBOL,
     SUPPORTED_SYMBOLS,
     DEFAULT_TIMEFRAME,
     SUPPORTED_TIMEFRAMES,
     WEB_DIR,
     BASE_DIR,
-    APP_HOST,
-    APP_PORT,
     TOOBIT_API_KEY,
     TOOBIT_API_SECRET
 )
-from .market_data import MarketDataService
+from .market_data import MarketDataService, symbol_key
 from .indicators import compute_all_indicators
 from .laya_engine import LayaEngine
 from .signal_generator import SignalGenerator
@@ -47,6 +44,42 @@ toobit_client = ToobitClient(
 # Cache latest market analysis for instant position suggestion evaluation
 latest_analysis_cache: Dict[str, Any] = {}
 
+
+def _attach_context(latest: Dict[str, Any], htf: Any, depth: Any, funding: Any) -> None:
+    """Attach HTF / order-book / funding context; failed fetches arrive as exceptions and are skipped."""
+    for key, ctx in (("htf", htf), ("depth", depth), ("funding", funding)):
+        if isinstance(ctx, dict):
+            latest[key] = ctx
+
+
+async def _run_analysis(raw_klines, symbol: str, interval: str, context=()) -> tuple:
+    """Indicators -> Laya decision -> signal, cached for the position-suggestion endpoint."""
+    calc = compute_all_indicators(raw_klines)
+    latest = calc["latest"]
+    latest["symbol"] = symbol.upper()
+    latest["interval"] = interval
+    latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
+    if context:
+        _attach_context(latest, *context)
+    laya_decision = await laya_engine.decide(latest)
+    signal = signal_generator.generate_signal(latest, laya_decision)
+    latest_analysis_cache.update(latest=latest, signal=signal, laya=laya_decision, symbol=symbol.upper())
+    return latest, laya_decision, signal
+
+
+def _write_toobit_keys(api_key: str = "", api_secret: str = "") -> None:
+    """Drop TOOBIT_API_KEY/SECRET from .env, then append the new pair if given (creates .env only then)."""
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists() and not api_key:
+        return
+    lines = [
+        line for line in (env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else [])
+        if not line.startswith(("TOOBIT_API_KEY=", "TOOBIT_API_SECRET="))
+    ]
+    if api_key:
+        lines += [f"TOOBIT_API_KEY={api_key}", f"TOOBIT_API_SECRET={api_secret}"]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 class ToobitConnectRequest(BaseModel):
     apiKey: str = ""
     apiSecret: str = ""
@@ -64,12 +97,6 @@ class ToobitSimulateRequest(BaseModel):
     stopLoss: Optional[float] = None
     takeProfit1: Optional[float] = None
     takeProfit2: Optional[float] = None
-
-class ToobitTPSLRequest(BaseModel):
-    symbol: str
-    side: Optional[str] = "LONG"
-    stopLoss: float = 0.0
-    takeProfit: float = 0.0
 
 class AutoTradeToggleRequest(BaseModel):
     enabled: bool
@@ -151,6 +178,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Web UI files must be revalidated on every load: a cached style.css/app.js next to a
+# fresh index.html breaks the page. Unchanged files still answer 304 via their ETag.
+@app.middleware("http")
+async def revalidate_ui_files(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 # Static files & Web UI
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
@@ -175,14 +211,6 @@ async def get_status():
         "device": laya_engine.device,
         "supported_symbols": SUPPORTED_SYMBOLS,
         "supported_timeframes": SUPPORTED_TIMEFRAMES,
-    }
-
-@app.get("/api/symbols")
-async def get_symbols():
-    return {
-        "symbols": SUPPORTED_SYMBOLS,
-        "default": DEFAULT_SYMBOL,
-        "exchange": market_service.exchange
     }
 
 @app.get("/api/ticker")
@@ -220,12 +248,7 @@ async def get_klines(
                 market_service.fetch_funding_rate(symbol),
                 return_exceptions=True
             )
-            if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
-                calculated["latest"]["htf"] = htf_ctx
-            if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
-                calculated["latest"]["depth"] = depth_ctx
-            if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
-                calculated["latest"]["funding"] = funding_ctx
+            _attach_context(calculated["latest"], htf_ctx, depth_ctx, funding_ctx)
         except Exception as e:
             logger.debug(f"Non-critical institutional enrichment in klines: {e}")
 
@@ -261,30 +284,9 @@ async def trigger_analysis(
             logger.error(f"Failed to fetch market klines: {raw_klines}")
             raise HTTPException(status_code=500, detail="Failed to fetch market klines from exchange")
 
-        calc = compute_all_indicators(raw_klines)
-        latest = calc["latest"]
-        latest["symbol"] = symbol.upper()
-        latest["interval"] = interval
-        latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
-
-        if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
-            latest["htf"] = htf_ctx
-        if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
-            latest["depth"] = depth_ctx
-        if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
-            latest["funding"] = funding_ctx
-
-        # Laya inference with enriched multi-factor context
-        laya_decision = await laya_engine.decide(latest)
-
-        # Generate institutional grade trade setup with strict confluence gating
-        signal = signal_generator.generate_signal(latest, laya_decision)
-
-        # Cache for fast AI position suggestion evaluation
-        latest_analysis_cache["latest"] = latest
-        latest_analysis_cache["signal"] = signal
-        latest_analysis_cache["laya"] = laya_decision
-        latest_analysis_cache["symbol"] = symbol.upper()
+        latest, laya_decision, signal = await _run_analysis(
+            raw_klines, symbol, interval, context=(htf_ctx, depth_ctx, funding_ctx)
+        )
 
         # Broadcast signal to WebSocket clients
         await ws_manager.broadcast({
@@ -336,16 +338,7 @@ async def connect_toobit(req: ToobitConnectRequest):
 
     # Persist validated keys to .env
     try:
-        env_path = BASE_DIR / ".env"
-        existing_lines = []
-        if env_path.exists():
-            existing_lines = [
-                line for line in env_path.read_text(encoding="utf-8").splitlines()
-                if not line.startswith("TOOBIT_API_KEY=") and not line.startswith("TOOBIT_API_SECRET=")
-            ]
-        existing_lines.append(f"TOOBIT_API_KEY={req.apiKey.strip()}")
-        existing_lines.append(f"TOOBIT_API_SECRET={req.apiSecret.strip()}")
-        env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+        _write_toobit_keys(req.apiKey.strip(), req.apiSecret.strip())
     except Exception as e:
         logger.warning(f"Could not persist keys to .env: {e}")
 
@@ -360,13 +353,7 @@ async def disconnect_toobit():
     """Disconnect and clear credentials."""
     toobit_client.disconnect()
     try:
-        env_path = BASE_DIR / ".env"
-        if env_path.exists():
-            existing_lines = [
-                line for line in env_path.read_text(encoding="utf-8").splitlines()
-                if not line.startswith("TOOBIT_API_KEY=") and not line.startswith("TOOBIT_API_SECRET=")
-            ]
-            env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+        _write_toobit_keys()
     except Exception as e:
         logger.warning(f"Could not clear keys from .env: {e}")
     return {"success": True, "message": "Disconnected from Toobit."}
@@ -392,20 +379,20 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
         # If symbol specified, filter/prioritize matching position
         matching_positions = []
         if symbol and all_positions:
-            norm_target = symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            norm_target = symbol_key(symbol)
             for p in all_positions:
                 p_sym = p.get("symbol", "")
-                norm_pos = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                norm_pos = symbol_key(p_sym)
                 if norm_target == norm_pos or p_sym == symbol:
                     matching_positions.append(p)
 
         # If AutoTrader has active trade metadata, enrich each matching position.
         for act in auto_trader.get_active_trades():
             act_sym = act.get("symbol", "")
-            norm_act = act_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            norm_act = symbol_key(act_sym)
             for p in all_positions:
                 p_sym = p.get("symbol", "")
-                norm_p = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+                norm_p = symbol_key(p_sym)
                 if norm_p == norm_act:
                     if (not p.get("stopLoss") or p.get("stopLoss") == 0) and act.get("stop_loss"):
                         p["stopLoss"] = float(act["stop_loss"])
@@ -428,31 +415,6 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
     except Exception as e:
         logger.error(f"Error fetching Toobit positions: {e}")
         return {"connected": toobit_client.is_connected, "positions": [], "all_positions": [], "error": str(e)}
-
-@app.post("/api/toobit/tpsl")
-async def set_toobit_tpsl(req: ToobitTPSLRequest):
-    """Directly configure or adjust exchange-level TP/SL on Toobit."""
-    try:
-        side = req.side
-        if not side:
-            side = await toobit_client._resolve_position_side(req.symbol) or "LONG"
-        res = await toobit_client.set_position_tpsl(
-            symbol=req.symbol,
-            side=side,
-            stop_loss=req.stopLoss,
-            take_profit=req.takeProfit
-        )
-        # Update the matching managed trade, not only the primary position.
-        active_trade = auto_trader.get_active_trade(req.symbol)
-        if active_trade:
-            if req.stopLoss > 0:
-                active_trade["stop_loss"] = req.stopLoss
-            if req.takeProfit > 0:
-                active_trade["take_profit_1"] = req.takeProfit
-        return res
-    except Exception as e:
-        logger.error(f"Error setting Toobit TP/SL: {e}")
-        return {"success": False, "error": str(e)}
 
 @app.post("/api/toobit/close")
 async def close_toobit_position(req: ToobitCloseRequest):
@@ -516,10 +478,10 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
     # 2. Check for matching position or fallback to open account position
     active_pos = None
     if all_positions:
-        norm_target = target_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+        norm_target = symbol_key(target_sym)
         for p in all_positions:
             p_sym = p.get("symbol", "")
-            norm_pos = p_sym.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+            norm_pos = symbol_key(p_sym)
             if norm_target == norm_pos or p_sym == target_sym:
                 active_pos = p
                 break
@@ -542,19 +504,9 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
 
     if not analysis or latest_analysis_cache.get("symbol") != target_sym.upper():
         try:
-            raw_klines = await market_service.fetch_klines(symbol=target_sym, interval=market_service.current_interval, limit=100)
-            calc = compute_all_indicators(raw_klines)
-            latest = calc["latest"]
-            latest["symbol"] = target_sym.upper()
-            latest["interval"] = market_service.current_interval
-            latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
-            laya_dec = await laya_engine.decide(latest)
-            analysis = signal_generator.generate_signal(latest, laya_dec)
-            
-            latest_analysis_cache["latest"] = latest
-            latest_analysis_cache["signal"] = analysis
-            latest_analysis_cache["laya"] = laya_dec
-            latest_analysis_cache["symbol"] = target_sym.upper()
+            interval = market_service.current_interval
+            raw_klines = await market_service.fetch_klines(symbol=target_sym, interval=interval, limit=100)
+            _, laya_dec, analysis = await _run_analysis(raw_klines, target_sym, interval)
         except Exception as e:
             logger.warning(f"Could not compute fresh analysis for suggestion: {e}")
 
@@ -618,31 +570,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
-            data_text = await websocket.receive_text()
-            try:
-                data = json.loads(data_text)
-                action = data.get("action")
-                if action == "ping":
-                    await websocket.send_text(json.dumps({"type": "pong"}))
-                elif action == "analyze":
-                    sym = data.get("symbol", market_service.current_symbol)
-                    intv = data.get("interval", market_service.current_interval)
-                    raw_klines = await market_service.fetch_klines(symbol=sym, interval=intv, limit=200)
-                    calc = compute_all_indicators(raw_klines)
-                    latest = calc["latest"]
-                    latest["symbol"] = sym
-                    latest["interval"] = intv
-                    latest["time"] = calc["series"][-1]["time"]
-                    decision = await laya_engine.decide(latest)
-                    sig = signal_generator.generate_signal(latest, decision)
-                    await websocket.send_text(json.dumps({
-                        "type": "new_signal",
-                        "signal": sig,
-                        "latest": latest,
-                        "laya": decision
-                    }))
-            except json.JSONDecodeError:
-                pass
+            await websocket.receive_text()  # push-only feed: web clients never send
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception as e:

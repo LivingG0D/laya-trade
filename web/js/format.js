@@ -12,6 +12,16 @@ export function formatPrice(val) {
   return Number(val).toFixed(2);
 }
 
+const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const USD_SIGNED = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", signDisplay: "exceptZero" });
+
+// "$1,234.50" / "-$3.00"; signed adds "+" to gains and shows amounts that round to zero as "$0.00".
+export function formatUsd(value, { signed = false } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return (signed ? USD_SIGNED : USD).format(n);
+}
+
 export function formatCompact(val) {
   if (!val) return "0";
   if (val >= 1e9) return (val / 1e9).toFixed(2) + "B";

@@ -10,10 +10,8 @@ from .config import (
     TOOBIT_REST_URL,
     TOOBIT_WS_URL,
     BINANCE_FUTURES_REST_URL,
-    BINANCE_FUTURES_WS_URL,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEFRAME,
-    DEFAULT_EXCHANGE
 )
 
 logger = logging.getLogger("market_data")
@@ -36,6 +34,11 @@ def to_toobit_symbol(symbol: str) -> str:
     return s
 
 
+def symbol_key(symbol: str) -> str:
+    """Spelling-independent key for comparing symbols: 'BTC-SWAP-USDT', 'btcusdt.p' -> 'BTCUSDT'."""
+    return symbol.upper().replace("-SWAP-", "").replace(".P", "").replace("-", "").replace("_", "")
+
+
 def to_binance_symbol(symbol: str) -> str:
     """
     Convert symbol to Binance futures format.
@@ -48,16 +51,35 @@ def to_binance_symbol(symbol: str) -> str:
     return s
 
 
+def _parse_klines(raw_klines: List[list]) -> List[Dict[str, Any]]:
+    """Exchange kline rows -> dicts keyed by open time (seconds), deduplicated and sorted."""
+    by_time = {}
+    for item in raw_klines:
+        open_time_sec = int(item[0] // 1000)
+        by_time[open_time_sec] = {
+            "time": open_time_sec,
+            "open": float(item[1]),
+            "high": float(item[2]),
+            "low": float(item[3]),
+            "close": float(item[4]),
+            "volume": float(item[5]),
+            "taker_buy_volume": float(item[9]) if len(item) > 9 else 0.0,
+            "trades": int(item[8]) if len(item) > 8 else 0,
+            "is_closed": True
+        }
+    return [by_time[t] for t in sorted(by_time)]
+
+
+def _fresh(cache: Dict[str, tuple], key: str, ttl: float, now: float) -> Any:
+    """Cached value for `key` if younger than `ttl` seconds, else None."""
+    hit = cache.get(key)
+    return hit[1] if hit and now - hit[0] < ttl else None
+
+
 class MarketDataService:
-    def __init__(
-        self,
-        exchange: str = DEFAULT_EXCHANGE,
-        rest_url: Optional[str] = None,
-        ws_url: Optional[str] = None
-    ):
-        self.exchange = exchange
-        self.rest_url = rest_url or (TOOBIT_REST_URL if exchange == "Toobit" else BINANCE_FUTURES_REST_URL)
-        self.ws_url = ws_url or (TOOBIT_WS_URL if exchange == "Toobit" else BINANCE_FUTURES_WS_URL)
+    def __init__(self):
+        # Toobit is the live source; Binance REST is only a fallback when Toobit fails
+        self.exchange = "Toobit"
         # 10s timeout and connection pool to prevent connect timeouts on fluctuating latency
         self._http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=6.0),
@@ -105,24 +127,14 @@ class MarketDataService:
                 return cached_klines[-limit:]
 
         klines = None
-        if self.exchange == "Toobit":
-            try:
-                klines = await self._fetch_toobit_klines(symbol, interval, limit)
-            except Exception as e:
-                logger.warning(f"Toobit kline fetch failed ({e}), falling back to Binance Futures...")
-                try:
-                    klines = await self._fetch_binance_klines(symbol, interval, limit)
-                except Exception as e2:
-                    logger.error(f"Binance fallback also failed ({e2})")
-        else:
+        try:
+            klines = await self._fetch_toobit_klines(symbol, interval, limit)
+        except Exception as e:
+            logger.warning(f"Toobit kline fetch failed ({e}), falling back to Binance Futures...")
             try:
                 klines = await self._fetch_binance_klines(symbol, interval, limit)
-            except Exception as e:
-                logger.warning(f"Binance kline fetch failed ({e}), trying Toobit...")
-                try:
-                    klines = await self._fetch_toobit_klines(symbol, interval, limit)
-                except Exception as e2:
-                    logger.error(f"Toobit fallback also failed ({e2})")
+            except Exception as e2:
+                logger.error(f"Binance fallback also failed ({e2})")
 
         if klines and len(klines) > 0:
             self._klines_cache[sym_key] = (now, klines)
@@ -145,24 +157,7 @@ class MarketDataService:
         }
         resp = await self._http_client.get(url, params=params)
         resp.raise_for_status()
-        raw_klines = resp.json()
-
-        klines_dict = {}
-        for item in raw_klines:
-            open_time_sec = int(item[0] // 1000)
-            klines_dict[open_time_sec] = {
-                "time": open_time_sec,
-                "open": float(item[1]),
-                "high": float(item[2]),
-                "low": float(item[3]),
-                "close": float(item[4]),
-                "volume": float(item[5]),
-                "taker_buy_volume": float(item[9]) if len(item) > 9 else 0.0,
-                "trades": int(item[8]) if len(item) > 8 else 0,
-                "is_closed": True
-            }
-        klines = [klines_dict[t] for t in sorted(klines_dict.keys())]
-        return klines
+        return _parse_klines(resp.json())
 
     async def _fetch_binance_klines(self, symbol: str, interval: str, limit: int) -> List[Dict[str, Any]]:
         binance_sym = to_binance_symbol(symbol)
@@ -174,58 +169,38 @@ class MarketDataService:
         }
         resp = await self._http_client.get(url, params=params)
         resp.raise_for_status()
-        raw_klines = resp.json()
-
-        klines_dict = {}
-        for item in raw_klines:
-            open_time_sec = int(item[0] // 1000)
-            klines_dict[open_time_sec] = {
-                "time": open_time_sec,
-                "open": float(item[1]),
-                "high": float(item[2]),
-                "low": float(item[3]),
-                "close": float(item[4]),
-                "volume": float(item[5]),
-                "taker_buy_volume": float(item[9]),
-                "trades": int(item[8]),
-                "is_closed": True
-            }
-        klines = [klines_dict[t] for t in sorted(klines_dict.keys())]
-        return klines
+        return _parse_klines(resp.json())
 
     async def fetch_ticker_24h(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
         """Fetch 24h price stats from Toobit with Binance fallback (2s cache)."""
         sym_key = symbol.upper()
         now = time.time()
 
-        if sym_key in self._ticker_cache:
-            ts, cached_ticker = self._ticker_cache[sym_key]
-            if now - ts < 2.0:
-                return cached_ticker
+        if (cached := _fresh(self._ticker_cache, sym_key, 2.0, now)) is not None:
+            return cached
 
         ticker_res = None
-        if self.exchange == "Toobit":
-            try:
-                toobit_sym = to_toobit_symbol(symbol)
-                url = f"{TOOBIT_REST_URL}/quote/v1/ticker/24hr"
-                params = {"symbol": toobit_sym}
-                resp = await self._http_client.get(url, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-                d = data[0] if isinstance(data, list) and len(data) > 0 else data
-                ticker_res = {
-                    "symbol": symbol,
-                    "exchange": "Toobit",
-                    "last_price": float(d.get("c", 0)),
-                    "price_change": float(d.get("pc", 0)),
-                    "price_change_percent": float(d.get("pcp", 0)) * 100.0,
-                    "high_price": float(d.get("h", 0)),
-                    "low_price": float(d.get("l", 0)),
-                    "volume": float(d.get("v", 0)),
-                    "quote_volume": float(d.get("qv", 0)),
-                }
-            except Exception as e:
-                logger.warning(f"Toobit 24h ticker failed ({e}), falling back to Binance...")
+        try:
+            toobit_sym = to_toobit_symbol(symbol)
+            url = f"{TOOBIT_REST_URL}/quote/v1/ticker/24hr"
+            params = {"symbol": toobit_sym}
+            resp = await self._http_client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            d = data[0] if isinstance(data, list) and len(data) > 0 else data
+            ticker_res = {
+                "symbol": symbol,
+                "exchange": "Toobit",
+                "last_price": float(d.get("c", 0)),
+                "price_change": float(d.get("pc", 0)),
+                "price_change_percent": float(d.get("pcp", 0)) * 100.0,
+                "high_price": float(d.get("h", 0)),
+                "low_price": float(d.get("l", 0)),
+                "volume": float(d.get("v", 0)),
+                "quote_volume": float(d.get("qv", 0)),
+            }
+        except Exception as e:
+            logger.warning(f"Toobit 24h ticker failed ({e}), falling back to Binance...")
 
         # Binance fallback
         if not ticker_res:
@@ -268,10 +243,8 @@ class MarketDataService:
         """
         now = time.time()
         sym_key = symbol.upper()
-        if sym_key in self._depth_cache:
-            ts, cached = self._depth_cache[sym_key]
-            if now - ts < 4.0:
-                return cached
+        if (cached := _fresh(self._depth_cache, sym_key, 4.0, now)) is not None:
+            return cached
 
         toobit_sym = to_toobit_symbol(symbol)
         url = f"{TOOBIT_REST_URL}/quote/v1/depth"
@@ -315,10 +288,8 @@ class MarketDataService:
         """
         now = time.time()
         sym_key = symbol.upper()
-        if sym_key in self._funding_cache:
-            ts, cached = self._funding_cache[sym_key]
-            if now - ts < 120.0:
-                return cached
+        if (cached := _fresh(self._funding_cache, sym_key, 120.0, now)) is not None:
+            return cached
 
         binance_sym = to_binance_symbol(symbol)
         url = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/premiumIndex"
@@ -348,10 +319,8 @@ class MarketDataService:
         """
         now = time.time()
         sym_key = symbol.upper()
-        if sym_key in self._htf_cache:
-            ts, cached = self._htf_cache[sym_key]
-            if now - ts < 60.0:
-                return cached
+        if (cached := _fresh(self._htf_cache, sym_key, 60.0, now)) is not None:
+            return cached
 
         try:
             htf_klines = await self.fetch_klines(symbol=symbol, interval="1h", limit=100)
@@ -390,17 +359,11 @@ class MarketDataService:
 
                 res = {
                     "interval": "1h",
-                    "htf_interval": "1h",
                     "trend": trend,
                     "htf_trend": trend,
                     "rsi": round(float(r14), 1),
-                    "htf_rsi": round(float(r14), 1),
                     "ema50": round(float(e50), 6),
-                    "htf_ema50": round(float(e50), 6),
                     "ema200": round(e200, 6) if e200 is not None else None,
-                    "htf_ema200": round(e200, 6) if e200 is not None else None,
-                    "is_bullish": "BULLISH" in trend,
-                    "is_bearish": "BEARISH" in trend,
                 }
                 self._htf_cache[sym_key] = (now, res)
                 return res
@@ -409,27 +372,17 @@ class MarketDataService:
 
         return {
             "interval": "1h",
-            "htf_interval": "1h",
             "trend": "NEUTRAL",
             "htf_trend": "NEUTRAL",
             "rsi": 50.0,
-            "htf_rsi": 50.0,
             "ema50": 0.0,
-            "htf_ema50": 0.0,
             "ema200": None,
-            "htf_ema200": None,
-            "is_bullish": False,
-            "is_bearish": False,
         }
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], Any]):
         """Subscribe to real-time candle tick updates."""
         if callback not in self._subscribers:
             self._subscribers.append(callback)
-
-    def unsubscribe(self, callback: Callable[[Dict[str, Any]], Any]):
-        if callback in self._subscribers:
-            self._subscribers.remove(callback)
 
     async def _notify_subscribers(self, candle_update: Dict[str, Any]):
         sym = candle_update.get("symbol", self.current_symbol).upper()
@@ -490,10 +443,7 @@ class MarketDataService:
                 except asyncio.CancelledError:
                     pass
 
-            if self.exchange == "Toobit":
-                self._ws_task = asyncio.create_task(self._toobit_stream_loop())
-            else:
-                self._ws_task = asyncio.create_task(self._binance_stream_loop())
+            self._ws_task = asyncio.create_task(self._toobit_stream_loop())
 
     async def _toobit_stream_loop(self):
         toobit_sym = to_toobit_symbol(self.current_symbol)
@@ -544,45 +494,5 @@ class MarketDataService:
                 break
             except Exception as e:
                 logger.warning(f"Toobit WebSocket error ({toobit_sym}): {e}. Reconnecting in {backoff}s...")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30)
-
-    async def _binance_stream_loop(self):
-        binance_sym = to_binance_symbol(self.current_symbol)
-        curr_intv = self.current_interval
-        stream_name = f"{binance_sym.lower()}@kline_{curr_intv}"
-        url = f"{BINANCE_FUTURES_WS_URL}/{stream_name}"
-        logger.info(f"Connecting to Binance stream: {url}")
-
-        backoff = 1
-        while self._running:
-            try:
-                async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-                    logger.info(f"Connected to Binance live market stream: {stream_name}")
-                    backoff = 1
-                    while self._running:
-                        msg = await ws.recv()
-                        data = json.loads(msg)
-                        if "k" in data:
-                            k = data["k"]
-                            candle = {
-                                "type": "candle_tick",
-                                "symbol": self.current_symbol,
-                                "exchange": "Binance",
-                                "time": int(k["t"] // 1000),
-                                "open": float(k["o"]),
-                                "high": float(k["h"]),
-                                "low": float(k["l"]),
-                                "close": float(k["c"]),
-                                "volume": float(k["v"]),
-                                "is_closed": bool(k["x"]),
-                                "interval": k.get("i", curr_intv)
-                            }
-                            await self._notify_subscribers(candle)
-            except asyncio.CancelledError:
-                logger.info("Binance streaming task cancelled.")
-                break
-            except Exception as e:
-                logger.warning(f"Binance WebSocket error ({stream_name}): {e}. Reconnecting in {backoff}s...")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)

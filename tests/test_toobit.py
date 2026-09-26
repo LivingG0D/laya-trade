@@ -370,7 +370,6 @@ def test_live_entry_places_position_bracket_and_separate_tp2(monkeypatch):
         order_type="TAKE_PROFIT_MARKET",
         quantity=0.005,
         trigger_price=104.0,
-        reduce_only=True,
         position_side="LONG",
         take_profit_slot="takeProfit2",
     )

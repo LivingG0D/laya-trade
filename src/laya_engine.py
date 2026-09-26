@@ -1,15 +1,12 @@
 import os
-import sys
 import json
 import time
 import logging
 import asyncio
 import warnings
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-import httpx
 import threading
 import numpy as np
 import onnxruntime as ort
@@ -17,15 +14,7 @@ from transformers import AutoTokenizer
 from laya.common import build_sequence
 from huggingface_hub import hf_hub_download
 
-from .config import (
-    BASE_DIR,
-    MODELS_DIR,
-    BIN_DIR,
-    HF_REPO_ID,
-    DEFAULT_MODEL_FILE,
-    LAYA_SERVER_HOST,
-    LAYA_SERVER_PORT,
-)
+from .config import MODELS_DIR, HF_REPO_ID, DEFAULT_MODEL_FILE
 
 logger = logging.getLogger("laya_engine")
 
@@ -34,19 +23,11 @@ class LayaEngine:
         self,
         repo_id: str = HF_REPO_ID,
         model_filename: str = DEFAULT_MODEL_FILE,
-        host: str = LAYA_SERVER_HOST,
-        port: int = LAYA_SERVER_PORT,
         device: Optional[str] = None,
     ):
         self.repo_id = repo_id
         self.model_filename = model_filename
-        self.host = host
-        self.port = port
         self.model_path = MODELS_DIR / model_filename
-        self.binary_path = BIN_DIR / ("laya.exe" if sys.platform == "win32" else "laya")
-        self.server_url = f"http://{self.host}:{self.port}"
-        self._http_client = httpx.AsyncClient(timeout=10.0)
-        self._server_process: Optional[subprocess.Popen] = None
         if device:
             self.device = device
         else:
@@ -65,7 +46,6 @@ class LayaEngine:
         self._agent: Optional[Any] = None
 
         self._is_ready = False
-        self._is_server_alive = False
         self._load_lock = asyncio.Lock()
         self._infer_lock = threading.Lock()
 
@@ -83,7 +63,7 @@ class LayaEngine:
 
     @property
     def is_ready(self) -> bool:
-        return self._is_ready and (self._ort_session is not None or self._agent is not None or self._is_server_alive)
+        return self._is_ready and (self._ort_session is not None or self._agent is not None)
 
     def is_model_downloaded(self) -> bool:
         """Check whether quantized ONNX model, safetensors checkpoint, or GGUF exists."""
@@ -117,24 +97,6 @@ class LayaEngine:
         except Exception as e:
             logger.error(f"Failed to download model from Hugging Face: {e}")
             raise
-
-    def _get_cuda_env(self) -> Dict[str, str]:
-        """Construct environment containing CUDA runtime DLL paths if present in site-packages."""
-        env = os.environ.copy()
-        site_packages = [
-            Path(sys.prefix) / "Lib" / "site-packages",
-            Path(sys.base_prefix) / "Lib" / "site-packages",
-        ]
-        extra_paths = [str(BIN_DIR)]
-        for sp in site_packages:
-            if sp.exists():
-                for sub in ["nvidia/cuda_runtime/bin", "nvidia/cublas/bin", "nvidia/cublas/lib", "torch/lib"]:
-                    candidate = sp / sub
-                    if candidate.exists():
-                        extra_paths.append(str(candidate))
-        current_path = env.get("PATH", "")
-        env["PATH"] = ";".join(extra_paths) + ";" + current_path
-        return env
 
     async def start_server(self) -> bool:
         """Load static INT8 quantized Laya crypto model or fallback runtime engines."""
@@ -193,7 +155,6 @@ class LayaEngine:
                             providers=providers
                         )
                         self._is_ready = True
-                        self._is_server_alive = True
                         logger.info(
                             f"Laya Crypto INT8 ONNX model loaded successfully! "
                             f"(threads={opts.intra_op_num_threads}, temp={self._temp:.4f})"
@@ -209,57 +170,23 @@ class LayaEngine:
                     import laya
                     logger.info(f"Loading fine-tuned Laya crypto model from {self.model_path} on {self.device}...")
                     warnings.filterwarnings("ignore", category=RuntimeWarning, module="laya.*")
+                    loader = laya.load
+                    if (self.model_path / "quant_config.json").exists():
+                        from .laya_fp8 import load_fp8  # FP8 + CUDA graphs, sm_89+ only
+                        loader = load_fp8
                     self._agent = await asyncio.to_thread(
-                        laya.load,
+                        loader,
                         str(self.model_path),
                         device=self.device
                     )
                     self._is_ready = True
-                    self._is_server_alive = True
                     logger.info(f"Fine-tuned Laya crypto model loaded successfully on {self.device}!")
                     asyncio.create_task(self._warmup())
                     return True
                 except Exception as e:
                     logger.error(f"Failed to load fine-tuned model with laya.load: {e}", exc_info=True)
 
-            # 3. Check if external Laya server is already responding
-            if await self.check_health():
-                logger.info(f"Laya server already active at {self.server_url}")
-                self._is_server_alive = True
-                self._is_ready = True
-                return True
-
-            # 4. GGUF binary serve fallback if model is a .gguf file
-            if self.binary_path.exists() and self.model_path.is_file() and self.model_path.suffix == ".gguf":
-                cmd = [
-                    str(self.binary_path),
-                    "serve",
-                    str(self.model_path),
-                    "--port", str(self.port),
-                    "--device", "auto",
-                    "--cuda-graph"
-                ]
-                logger.info(f"Launching Laya GGUF server: {' '.join(cmd)}")
-                try:
-                    env = self._get_cuda_env()
-                    self._server_process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        env=env,
-                        cwd=str(BASE_DIR)
-                    )
-                    for _ in range(10):
-                        await asyncio.sleep(0.5)
-                        if await self.check_health():
-                            logger.info("Laya GGUF server started and healthy!")
-                            self._is_server_alive = True
-                            self._is_ready = True
-                            return True
-                except Exception as e:
-                    logger.error(f"Failed to start Laya GGUF server process: {e}")
-
-            logger.warning("Could not initialize INT8 ONNX or native server. Internal calibrated engine will be used.")
+            logger.warning("Could not initialize INT8 ONNX or native model. Internal calibrated engine will be used.")
             return False
 
     async def _warmup(self):
@@ -291,20 +218,6 @@ class LayaEngine:
         except Exception as e:
             logger.debug(f"Warmup error: {e}")
 
-    async def check_health(self) -> bool:
-        """Check if Laya engine is active and ready."""
-        if self._ort_session is not None or self._agent is not None:
-            return True
-        try:
-            resp = await self._http_client.get(f"{self.server_url}/health", timeout=1.5)
-            if resp.status_code == 200:
-                self._is_server_alive = True
-                return True
-        except Exception:
-            pass
-        self._is_server_alive = False
-        return False
-
     def _run_ort_inference(self, market_state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute ONNX Runtime inference using static INT8 quantized weights.
@@ -323,8 +236,6 @@ class LayaEngine:
         trend_state = str(market_state.get("trend_state", "NEUTRAL")).upper()
         htf = market_state.get("htf") or {}
         htf_trend = htf.get("trend", "NEUTRAL")
-        depth = market_state.get("depth") or {}
-        funding = market_state.get("funding") or {}
 
         supertrend_dir = "BULLISH" if "BULL" in trend_state else ("BEARISH" if "BEAR" in trend_state else "NEUTRAL")
         confluence_count = 3 if "BULL" in trend_state else (2 if "BEAR" in trend_state else 1)
@@ -523,7 +434,7 @@ class LayaEngine:
                 }
                 res = await asyncio.to_thread(self._agent.predict, summary_text, questions)
                 latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
-                agent_res = self._format_laya_response(res, latency_ms, engine_type=f"fine_tuned_laya_crypto_{self.device}")
+                agent_res = self._format_laya_response(res, latency_ms, engine_type=f"{self.model_filename}_{self.device}")
 
                 # Blend Neural GPU predictions with Multi-Timeframe mathematical confluence
                 mtf_res = self._fallback_decision(market_state, latency_ms)
@@ -541,9 +452,7 @@ class LayaEngine:
                 else:
                     pos_choice = "NEUTRAL_HOLD"
 
-                is_l = "LONG" in pos_choice
-                is_s = "SHORT" in pos_choice
-                conviction = dir_ratio if is_l else ((1.0 - dir_ratio) if is_s else max(dir_ratio, 1.0 - dir_ratio))
+                conviction = dir_ratio if "LONG" in pos_choice else ((1.0 - dir_ratio) if "SHORT" in pos_choice else max(dir_ratio, 1.0 - dir_ratio))
 
                 agent_res["position"] = pos_choice
                 agent_res["long_prob"] = round(p_long, 3)
@@ -555,26 +464,7 @@ class LayaEngine:
             except Exception as e:
                 logger.warning(f"Native fine-tuned model inference failed: {e}. Trying fallback.")
 
-        # 3. Remote / local GGUF server
-        if self._is_server_alive or await self.check_health():
-            try:
-                payload = {
-                    "state": f"Asset: {market_state.get('symbol', 'BTCUSDT.P')}",
-                    "questions": {}
-                }
-                resp = await self._http_client.post(
-                    f"{self.server_url}/v1/decide",
-                    json=payload,
-                    timeout=5.0
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    latency_ms = data.get("usage", {}).get("latency_ms") or round((time.perf_counter() - start_time) * 1000, 1)
-                    return self._format_laya_response(data, latency_ms, engine_type="cuda_laya_server")
-            except Exception as e:
-                logger.warning(f"Laya server request failed: {e}. Falling back to internal decision engine.")
-
-        # 4. Fallback calibrated System 1 decision engine
+        # 3. Fallback calibrated System 1 decision engine
         latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
         return self._fallback_decision(market_state, latency_ms)
 
@@ -630,11 +520,9 @@ class LayaEngine:
             hold_agg = 0.8 if "HOLD" in pos_choice else 0.1
 
         # Calculate relative directional conviction between bulls and bears
-        is_long = "LONG" in pos_choice
-        is_short = "SHORT" in pos_choice
         dir_sum = max(1e-5, long_agg + short_agg)
         dir_ratio = long_agg / dir_sum
-        directional_conviction = dir_ratio if is_long else ((1.0 - dir_ratio) if is_short else max(dir_ratio, 1.0 - dir_ratio))
+        directional_conviction = dir_ratio if "LONG" in pos_choice else ((1.0 - dir_ratio) if "SHORT" in pos_choice else max(dir_ratio, 1.0 - dir_ratio))
 
         return {
             "position": pos_choice,
@@ -661,15 +549,25 @@ class LayaEngine:
         4. Order Book Imbalance (OBI) & Bid/Ask Ratio
         5. Micro Momentum (RSI, MACD, EMAs, Bollinger %B)
         """
-        rsi = market_state.get("rsi", 50.0)
-        macd_hist = market_state.get("macd_hist", 0.0)
+        # Guard every indicator read: `dict.get(k, default)` yields None when the
+        # key exists with a null value, and the regime comparisons below are
+        # numeric, so a None would raise instead of falling back.
+        rsi = market_state.get("rsi")
+        rsi = 50.0 if rsi is None else float(rsi)
+        macd_hist = market_state.get("macd_hist")
+        macd_hist = 0.0 if macd_hist is None else float(macd_hist)
         trend = market_state.get("trend_state", "NEUTRAL")
-        bb_pct_b = market_state.get("bb_pct_b", 0.5)
-        vol_spike = market_state.get("vol_spike", 1.0)
-        adx = market_state.get("adx", 20.0)
-        plus_di = market_state.get("plus_di", 20.0)
-        minus_di = market_state.get("minus_di", 20.0)
-        is_squeeze = market_state.get("is_squeeze", False)
+        bb_pct_b = market_state.get("bb_pct_b")
+        bb_pct_b = 0.5 if bb_pct_b is None else float(bb_pct_b)
+        vol_spike = market_state.get("vol_spike")
+        vol_spike = 1.0 if vol_spike is None else float(vol_spike)
+        adx = market_state.get("adx")
+        adx = 20.0 if adx is None else float(adx)
+        plus_di = market_state.get("plus_di")
+        plus_di = 20.0 if plus_di is None else float(plus_di)
+        minus_di = market_state.get("minus_di")
+        minus_di = 20.0 if minus_di is None else float(minus_di)
+        is_squeeze = bool(market_state.get("is_squeeze") or False)
 
         # HTF Macro Context
         htf = market_state.get("htf") or {}
@@ -816,9 +714,4 @@ class LayaEngine:
     async def close(self):
         self._ort_session = None
         self._tokenizer = None
-        if self._agent is not None:
-            self._agent = None
-        if self._server_process:
-            self._server_process.terminate()
-            self._server_process = None
-        await self._http_client.aclose()
+        self._agent = None

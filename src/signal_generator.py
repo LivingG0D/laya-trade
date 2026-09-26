@@ -48,12 +48,17 @@ class SignalGenerator:
             effective_leverage = float(self.leverage)
         effective_leverage = min(125.0, max(1.0, effective_leverage))
 
-        atr = market_state.get("atr", cur_price * 0.01)
-        atr_pct = market_state.get("atr_pct", 1.0)
-        support = market_state.get("support", cur_price - atr)
-        resistance = market_state.get("resistance", cur_price + atr)
-        rsi = market_state.get("rsi", 50.0)
-        adx = market_state.get("adx", 20.0)
+        # `dict.get(key, default)` still returns None when the key exists with a
+        # null value, which the indicator pipeline can emit for short/flat
+        # series. Fall back with `or` so a null indicator can never raise.
+        atr = market_state.get("atr") or cur_price * 0.01
+        atr_pct = market_state.get("atr_pct") or 1.0
+        support = market_state.get("support") or (cur_price - atr)
+        resistance = market_state.get("resistance") or (cur_price + atr)
+        rsi = market_state.get("rsi")
+        rsi = 50.0 if rsi is None else float(rsi)
+        adx = market_state.get("adx")
+        adx = 20.0 if adx is None else float(adx)
         trend_state = str(market_state.get("trend_state", "NEUTRAL")).upper()
 
         # High beta / meme coin volatility adjustment (prevent stop-hunts on PEPE, DOGE, SHIB, WIF, BONK, etc.)
@@ -62,7 +67,6 @@ class SignalGenerator:
         effective_atr_mult = self.atr_multiplier * 1.35 if is_meme_or_high_vol else self.atr_multiplier
 
         pos = laya_decision.get("position", "NEUTRAL_HOLD")
-        probs = laya_decision.get("probabilities", {})
 
         is_long = "LONG" in pos
         is_short = "SHORT" in pos
@@ -72,11 +76,9 @@ class SignalGenerator:
         htf_trend = htf.get("trend", "NEUTRAL")
         depth = market_state.get("depth") or {}
         obi = depth.get("imbalance_pct", 0.0)
-        funding = market_state.get("funding") or {}
         market_regime = market_state.get("market_regime", "CHOP_RANGE")
         is_squeeze = market_state.get("is_squeeze", False)
 
-        dir_prob = laya_decision.get("long_prob" if is_long else "short_prob")
         dir_conviction = laya_decision.get("directional_conviction")
         if dir_conviction is None:
             p_l = float(laya_decision.get("long_prob", 0.33))
@@ -87,8 +89,6 @@ class SignalGenerator:
                 dir_conviction = p_s / max(1e-5, p_l + p_s)
             else:
                 dir_conviction = float(laya_decision.get("hold_prob", 0.5))
-
-        raw_prob = dir_conviction
 
         # ========================================================
         # STRICT CONFLUENCE GATEKEEPER (WIN RATE OPTIMIZED)
@@ -138,91 +138,46 @@ class SignalGenerator:
 
         reasons = []
 
-        if is_long:
-            action = "LONG"
-            direction = "BUY"
-            color = "#0ecb81"
-            shape = "arrowUp"
-            marker_pos = "belowBar"
-            dir_prob = raw_prob
+        if is_long or is_short:
+            # s = +1 for LONG, -1 for SHORT: every price offset below flips with it
+            s = 1 if is_long else -1
+            action, direction, color, shape, marker_pos = (
+                ("LONG", "BUY", "#0ecb81", "arrowUp", "belowBar") if is_long
+                else ("SHORT", "SELL", "#f6465d", "arrowDown", "aboveBar")
+            )
 
             # Calculate estimated liquidation price for the configured leverage
             liq_dist_pct = 0.90 / effective_leverage
-            liq_price = cur_price * (1.0 - liq_dist_pct)
-            
+            liq_price = cur_price * (1.0 - s * liq_dist_pct)
+
             # SL strictly bounded within the configured leverage envelope
             max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
             min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
             raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
             sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
 
-            if 0 < (cur_price - support) <= max_sl_dist:
-                cand_sl = support - (atr * 0.15)
-                stop_loss = min(cur_price - min_sl_dist, max(cur_price - max_sl_dist, cand_sl))
+            # Anchor the stop just beyond nearby structure (support for longs, resistance for shorts)
+            level = support if is_long else resistance
+            if 0 < s * (cur_price - level) <= max_sl_dist:
+                cand_sl = level - s * (atr * 0.15)
+                bounds = (cur_price - s * min_sl_dist, cur_price - s * max_sl_dist)
+                stop_loss = min(bounds[0], max(bounds[1], cand_sl)) if is_long else max(bounds[0], min(bounds[1], cand_sl))
             else:
-                stop_loss = cur_price - sl_dist
+                stop_loss = cur_price - s * sl_dist
 
-            risk = cur_price - stop_loss
-            be_price = cur_price + (risk * self.be_rr) # +0.75R Break-Even
-            tp1 = cur_price + (risk * self.tp1_rr) # +1.2R (Take 50% profit)
-            tp2 = cur_price + (risk * self.tp2_rr) # +2.2R (Runner target)
+            risk = s * (cur_price - stop_loss)
+            be_price = cur_price + s * (risk * self.be_rr) # +0.75R Break-Even
+            tp1 = cur_price + s * (risk * self.tp1_rr) # +1.2R (Take 50% profit)
+            tp2 = cur_price + s * (risk * self.tp2_rr) # +2.2R (Runner target)
 
             # Return on Equity (ROE) under the configured leverage
             sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
             be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
-            tp1_roe = round(+((tp1 - cur_price) / cur_price) * effective_leverage * 100, 1)
-            tp2_roe = round(+((tp2 - cur_price) / cur_price) * effective_leverage * 100, 1)
+            tp1_roe = round(+(s * (tp1 - cur_price) / cur_price) * effective_leverage * 100, 1)
+            tp2_roe = round(+(s * (tp2 - cur_price) / cur_price) * effective_leverage * 100, 1)
 
-            reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} (-{round(liq_dist_pct*100, 2)}%).")
-            reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe above liquidation.")
-            reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
-            reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
-            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry to reduce risk; fees and slippage still apply.")
-            reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {effective_leverage}x.")
-            if is_squeeze:
-                reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
-            if htf_trend != "NEUTRAL":
-                reasons.append(f"1H Macro Alignment: {htf_trend} (Trend Confluence Verified)")
-            if obi != 0:
-                reasons.append(f"Order Flow Depth: OBI {obi:+.1f}% ({'Bids' if obi > 0 else 'Asks'} dominate Toobit book)")
-
-        elif is_short:
-            action = "SHORT"
-            direction = "SELL"
-            color = "#f6465d"
-            shape = "arrowDown"
-            marker_pos = "aboveBar"
-            dir_prob = raw_prob
-
-            # Calculate estimated liquidation price for the configured leverage
-            liq_dist_pct = 0.90 / effective_leverage
-            liq_price = cur_price * (1.0 + liq_dist_pct)
-            
-            # SL strictly bounded within the configured leverage envelope
-            max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
-            min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
-            raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
-            sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
-
-            if 0 < (resistance - cur_price) <= max_sl_dist:
-                cand_sl = resistance + (atr * 0.15)
-                stop_loss = max(cur_price + min_sl_dist, min(cur_price + max_sl_dist, cand_sl))
-            else:
-                stop_loss = cur_price + sl_dist
-
-            risk = stop_loss - cur_price
-            be_price = cur_price - (risk * self.be_rr) # +0.75R Break-Even
-            tp1 = cur_price - (risk * self.tp1_rr) # +1.2R (Take 50% profit)
-            tp2 = cur_price - (risk * self.tp2_rr) # +2.2R (Runner target)
-
-            # Return on Equity (ROE) under the configured leverage
-            sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
-            be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
-            tp1_roe = round(+((cur_price - tp1) / cur_price) * effective_leverage * 100, 1)
-            tp2_roe = round(+((cur_price - tp2) / cur_price) * effective_leverage * 100, 1)
-
-            reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} (+{round(liq_dist_pct*100, 2)}%).")
-            reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe below liquidation.")
+            reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} ({'-' if is_long else '+'}{round(liq_dist_pct*100, 2)}%).")
+            reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe {'above' if is_long else 'below'} liquidation.")
             reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
             reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
             reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry to reduce risk; fees and slippage still apply.")
@@ -240,7 +195,6 @@ class SignalGenerator:
             color = "#848e9c"
             shape = "circle"
             marker_pos = "aboveBar"
-            dir_prob = probs.get("NEUTRAL_HOLD", laya_decision.get("hold_prob", 0.5))
             stop_loss = cur_price
             be_price = cur_price
             tp1 = cur_price

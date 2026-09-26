@@ -2,20 +2,17 @@
 // LAYA CRYPTO TRADINGVIEW CHART ANALYZER — APP.JS (CLEAN & DEDUPLICATED)
 // ========================================================
 
-import { formatPrice, formatCompact, formatTimestamp } from "./js/format.js";
+import { formatPrice, formatCompact, formatTimestamp, formatUsd } from "./js/format.js";
 import { showToast, playSignalChime, toggleAudioEnabled } from "./js/feedback.js";
 import {
   initToobitManager,
-  closeToobitModal,
-  isToobitModalOpen,
   fetchToobitPositions,
   handlePositionTick,
 } from "./js/toobit.js";
-import { initCoinSearch, getCoinMetadata } from "./js/coin_search.js";
+import { initCoinSearch } from "./js/coin_search.js";
 import {
   initAutoTradeManager,
-  handleAutoTradeWsMessage,
-  fetchAutoTradeStatus
+  handleAutoTradeWsMessage
 } from "./js/autotrade.js";
 
 let chart = null;
@@ -38,7 +35,6 @@ let chartMarkers = [];
 let lastAnalyzedCandleTime = 0;
 let lastKnownPrice = null;
 let currentSignal = null;
-let currentLatestTelemetry = null;
 let currentCalcAmount = 500;
 let rawSignalHistory = [];
 let activeHistoryFilter = "all";
@@ -198,8 +194,6 @@ const pivotGaugePin = document.getElementById("pivotGaugePin");
 // History Drawer Elements
 const historyDrawer = document.getElementById("historyDrawer");
 const historyDrawerHeader = document.getElementById("historyDrawerHeader");
-const drawerToggleBtn = document.getElementById("drawerToggleBtn");
-const drawerChevron = document.getElementById("drawerChevron");
 const historyTableBody = document.getElementById("historyTableBody");
 const historyCount = document.getElementById("historyCount");
 const btnExportHistory = document.getElementById("btnExportHistory");
@@ -208,7 +202,6 @@ const histFilterButtons = document.querySelectorAll(".hist-filter-btn");
 
 // Mobile Elements
 const mainContent = document.getElementById("mainContent");
-const mobileViewTabs = document.getElementById("mobileViewTabs");
 const mobileTabButtons = document.querySelectorAll(".mobile-tab-btn");
 const mobileTabSignalPill = document.getElementById("mobileTabSignalPill");
 const mobileTabHistoryCount = document.getElementById("mobileTabHistoryCount");
@@ -512,7 +505,6 @@ async function loadKlines(symbol, interval) {
 
     // Update Telemetry & HUD
     if (data.latest) {
-      currentLatestTelemetry = data.latest;
       updateTelemetry(data.latest);
       updateLivePriceDisplay(data.latest.price, data.latest.change_pct);
     }
@@ -716,7 +708,6 @@ function updateLivePriceDisplay(price, changePct) {
 function applySignal(signal, latest, laya) {
   if (!signal) return;
   currentSignal = signal;
-  if (latest) currentLatestTelemetry = latest;
 
   const isLong = signal.action === "LONG";
   const isShort = signal.action === "SHORT";
@@ -794,7 +785,7 @@ function applySignal(signal, latest, laya) {
   const targetSizingRuleEl = document.getElementById("targetSizingRule");
   if (targetRecMarginEl) {
     const recM = signal.recommended_margin_usd || 10.0;
-    targetRecMarginEl.textContent = `$${recM.toFixed(2)} Fixed`;
+    targetRecMarginEl.textContent = `${formatUsd(recM)} Fixed`;
   }
   if (targetSizingRuleEl && signal.sizing_rule) {
     targetSizingRuleEl.textContent = signal.sizing_rule;
@@ -960,13 +951,12 @@ function updateChartPositionLines(positions, suggestion) {
   }
   const pnlPct = margin > 0 ? (pnl / margin) * 100 : 0;
   const pnlSign = pnl >= 0 ? "+" : "-";
-  const pnlAbs = Math.abs(pnl).toFixed(2);
   const pctAbs = Math.abs(pnlPct).toFixed(1);
   const distPct = mark > 0 && liq > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
 
   // 1. Position Entry Price Line (Solid, prominent)
   const posColor = isLong ? "#10b981" : "#ef4444";
-  const entryTitle = `POS ${isLong ? "LONG" : "SHORT"} ${leverage ? leverage + "x" : ""} (${pnlSign}$${pnlAbs} / ${pnlSign}${pctAbs}%)`;
+  const entryTitle = `POS ${isLong ? "LONG" : "SHORT"} ${leverage ? leverage + "x" : ""} (${formatUsd(pnl, { signed: true })} / ${pnlSign}${pctAbs}%)`;
 
   try {
     const entryLine = candleSeries.createPriceLine({
@@ -1045,7 +1035,7 @@ function updateChartPositionLines(positions, suggestion) {
       posHudEntry.textContent = `Entry: $${formatPrice(entry)}`;
     }
     if (posHudPnl) {
-      posHudPnl.textContent = `${pnlSign}$${pnlAbs} (${pnlSign}${pctAbs}%)`;
+      posHudPnl.textContent = `${formatUsd(pnl, { signed: true })} (${pnlSign}${pctAbs}%)`;
       posHudPnl.className = `pos-hud-pnl ${pnl >= 0 ? "pnl-green" : "pnl-red"}`;
     }
     if (posHudLiq) {
@@ -1238,7 +1228,7 @@ Take Profit 2: $${formatPrice(sig.take_profit_2)} (${roe.take_profit_2_roe || "+
 Break-Even Trigger: $${formatPrice(sig.break_even || sig.entry_price)} (${roe.break_even_roe || "+32.0% ROE"})
 Stop Loss: $${formatPrice(sig.stop_loss)} (${roe.stop_loss_roe || "-32.0% ROE"})
 Est. Liquidation: $${formatPrice(sig.liquidation_price || "0")} (Safe beyond SL)
-Position Sizing: Fixed $${Number(sig.recommended_margin_usd || 10).toFixed(2)} Margin (Max 20% Kelly Anti-Drag Shield)
+Position Sizing: Fixed ${formatUsd(sig.recommended_margin_usd || 10)} Margin (Max 20% Kelly Anti-Drag Shield)
 Risk/Reward: 1 : ${sig.risk_reward_ratio}
 Win Confidence: ${sig.confidence_pct}%
 AI Engine: Laya System-1 GPU (fine_tuned_laya_crypto)`;
@@ -1329,6 +1319,27 @@ mobileTabButtons.forEach((btn) => {
 // --------------------------------------------------------
 // Real-Time WebSocket Connection
 // --------------------------------------------------------
+
+// The server runs ONE shared upstream stream and fans it out to every client,
+// so a stream left on another symbol/interval (another tab, a previous session)
+// silently starves this page's chart. Clients claim the stream on load and
+// re-claim it if matching ticks stop arriving.
+const STREAM_REASSERT_COOLDOWN_MS = 20000;
+let lastStreamReassertAt = 0;
+
+async function claimStream(reason = "manual") {
+  const url = `/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${encodeURIComponent(currentInterval)}`;
+  try {
+    await fetch(url, { method: "POST" });
+    lastStreamReassertAt = Date.now();
+    if (reason !== "silent") {
+      console.info(`[stream] claimed ${currentSymbol} @ ${currentInterval} (${reason})`);
+    }
+  } catch (err) {
+    console.warn("/api/switch failed:", err);
+  }
+}
+
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${window.location.host}/ws/live`;
@@ -1338,6 +1349,8 @@ function connectWebSocket() {
   ws.onopen = () => {
     wsStatusText.textContent = "Live Feed Active";
     statusDot.className = "status-dot online pulsing";
+    // Claim the shared stream for this page's symbol/timeframe on every connect.
+    claimStream("connect");
   };
 
   ws.onmessage = (event) => {
@@ -1346,6 +1359,11 @@ function connectWebSocket() {
       if (msg.type === "candle_tick") {
         const c = msg.data;
         if (c.symbol === currentSymbol) {
+          // Record that this page's symbol is being fed, so the watchdog below
+          // can distinguish "quiet market" from "someone took the stream".
+          window.__lastMatchingTickAt = Date.now();
+          window.__lastTickInterval = c.interval;
+
           // Real-time price display & active position tracking updates regardless of timeframe
           updateLivePriceDisplay(c.close);
           handlePositionTick(c.close);
@@ -1616,8 +1634,7 @@ symbolSelect.addEventListener("change", async (e) => {
   chartMarkers = [];
   candleSeries?.setMarkers([]);
 
-  fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" })
-    .catch((err) => console.warn("/api/switch failed:", err));
+  claimStream("symbol-change");
 
   await loadKlines(currentSymbol, currentInterval);
   fetchToobitPositions();
@@ -1645,8 +1662,7 @@ tfButtons.forEach((btn) => {
     candleSeries?.setMarkers([]);
 
     // Fire stream resubscribe in background without blocking chart rendering
-    fetch(`/api/switch?symbol=${encodeURIComponent(currentSymbol)}&interval=${currentInterval}`, { method: "POST" })
-      .catch((err) => console.warn("/api/switch failed:", err));
+    claimStream("timeframe-change");
 
     await loadKlines(currentSymbol, currentInterval);
     triggerAnalyze();
@@ -1716,10 +1732,8 @@ document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-  const modalOpen = isToobitModalOpen() || coinSearchManager?.isOpen?.();
-
-  // While any modal is open only Escape is handled (below)
-  if (modalOpen && e.key !== "Escape") return;
+  // Open <dialog>s handle their own Escape; shortcuts stay off until they close
+  if (document.querySelector("dialog[open]")) return;
 
   if (e.code === "Space") {
     e.preventDefault();
@@ -1732,9 +1746,6 @@ document.addEventListener("keydown", (e) => {
   } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
     const idx = parseInt(e.key) - 1;
     if (tfButtons[idx]) tfButtons[idx].click();
-  } else if (e.key === "Escape") {
-    closeToobitModal();
-    coinSearchManager?.close();
   }
 });
 
@@ -1794,5 +1805,23 @@ window.addEventListener("DOMContentLoaded", async () => {
   setMode(currentMode);
   lucide.createIcons();
   setTimeout(triggerAnalyze, 800);
+
+  // Watchdog: the upstream stream is shared across all clients, so if another
+  // tab/window takes it this page's candles quietly stop moving even though the
+  // page still looks healthy. Re-claim the stream when matching ticks dry up.
+  window.__lastMatchingTickAt = Date.now();
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const since = Date.now() - (window.__lastMatchingTickAt || Date.now());
+    const wrongInterval = window.__lastTickInterval && window.__lastTickInterval !== currentInterval;
+    const stale = since > 20000;
+    if (!stale && !wrongInterval) return;
+    if (Date.now() - lastStreamReassertAt < STREAM_REASSERT_COOLDOWN_MS) return;
+    console.warn(
+      `[stream] no matching ticks for ${Math.round(since / 1000)}s ` +
+      `(feed=${window.__lastTickInterval || "none"}, want=${currentInterval}) — re-claiming`
+    );
+    claimStream("watchdog");
+  }, 8000);
 });
 

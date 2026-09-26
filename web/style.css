@@ -33,8 +33,6 @@
   --blue-subtle: rgba(45, 121, 246, 0.12);
 
   --cyan-accent: #00d8f6;
-  --cyan-glow: rgba(0, 216, 246, 0.25);
-  --purple-accent: #a855f7;
   --yellow-accent: #f59e0b;
 
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -328,7 +326,8 @@ html, body {
   scrollbar-width: none;
 }
 
-.coin-modal-tabs::-webkit-scrollbar {
+.coin-modal-tabs::-webkit-scrollbar,
+.chart-header-hud::-webkit-scrollbar {
   display: none;
 }
 
@@ -554,7 +553,9 @@ html, body {
   gap: 12px;
 }
 
-.coin-modal-hints span {
+.coin-modal-hints span,
+.price-val-wrap,
+.chart-action-buttons {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -572,7 +573,8 @@ html, body {
 
 
 /* Timeframe Group */
-.timeframe-group {
+.timeframe-group,
+.mode-switch-wrap {
   display: flex;
   background-color: #0b0f17;
   border: 1px solid var(--border-color);
@@ -650,11 +652,6 @@ html, body {
   white-space: nowrap;
 }
 
-.price-val-wrap {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
 
 .main-price-box .metric-value {
   font-size: 13.5px;
@@ -700,15 +697,6 @@ html, body {
 }
 
 /* Mode Switcher (Simple vs Pro) */
-.mode-switch-wrap {
-  display: flex;
-  background-color: #0b0f17;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 2px;
-  gap: 2px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
-}
 
 .mode-btn {
   background: transparent;
@@ -946,9 +934,6 @@ html, body {
   scrollbar-width: none;
 }
 
-.chart-header-hud::-webkit-scrollbar {
-  display: none;
-}
 
 .legend-hud {
   display: flex;
@@ -1081,11 +1066,6 @@ html, body {
   cursor: pointer;
 }
 
-.chart-action-buttons {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
 
 .chart-tool-btn {
   background: var(--bg-card-alt);
@@ -1654,8 +1634,9 @@ html, body {
   color: var(--text-main);
 }
 
-.profit-step .step-value { color: var(--green-up); }
-.safety-step .step-value { color: var(--red-down); }
+.profit-step .step-value,
+.rr-gain-label,
+.win-res .calc-res-val { color: var(--green-up); }
 
 .step-desc {
   font-size: 10.5px;
@@ -1679,8 +1660,7 @@ html, body {
   font-family: var(--font-mono);
 }
 
-.rr-gain-label { color: var(--green-up); }
-.rr-risk-label { color: var(--red-down); }
+
 
 .rr-visual-track {
   height: 6px;
@@ -1763,8 +1743,10 @@ html, body {
   font-family: var(--font-mono);
 }
 
-.win-res .calc-res-val { color: var(--green-up); }
-.loss-res .calc-res-val { color: var(--red-down); }
+
+.loss-res .calc-res-val,
+.safety-step .step-value,
+.rr-risk-label { color: var(--red-down); }
 
 /* Plain reasons */
 .simple-reasons-list {
@@ -1959,7 +1941,8 @@ html, body {
   color: var(--red-down);
 }
 
-.be-val {
+.be-val,
+.simple-step-item.be-step .step-value {
   color: #38bdf8; /* Sky blue for Break-Even target */
 }
 
@@ -1972,9 +1955,6 @@ html, body {
   background: rgba(56, 189, 248, 0.05);
 }
 
-.simple-step-item.be-step .step-value {
-  color: #38bdf8;
-}
 
 .risk-reward-banner {
   display: flex;
@@ -2045,7 +2025,8 @@ html, body {
 }
 
 /* Probability Bars */
-.probability-bars {
+.probability-bars,
+.pivot-gauge-wrap {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2113,11 +2094,6 @@ html, body {
 }
 
 /* Pivot Range Gauge */
-.pivot-gauge-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
 
 .pivot-labels {
   display: flex;
@@ -2232,7 +2208,8 @@ html, body {
   user-select: none;
 }
 
-.history-title-wrap {
+.history-title-wrap,
+.history-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2281,11 +2258,6 @@ html, body {
   color: var(--text-muted);
 }
 
-.history-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
 .history-filter-group {
   display: flex;
@@ -2451,6 +2423,12 @@ html, body {
 
 .toast.toast-bull {
   border-left-color: var(--yellow-accent);
+}
+
+.toast.toast-out {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.3s ease;
 }
 
 @keyframes toastSlideIn {
@@ -2776,9 +2754,6 @@ body,
   margin: 10px 0;
 }
 
-.pos-live.hide {
-  display: none !important;
-}
 
 .pos-identity {
   display: flex;
@@ -2817,9 +2792,6 @@ body,
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
 }
 
-.btn-switch-chart-chip.hide {
-  display: none !important;
-}
 
 /* Unrealized PnL hero */
 .pos-hero {
@@ -2833,7 +2805,8 @@ body,
   border: 1px solid var(--border-subtle);
 }
 
-.pos-hero-block {
+.pos-hero-block,
+.pos-stat-item {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -2987,12 +2960,6 @@ body,
   border: 1px solid var(--border-subtle);
 }
 
-.pos-stat-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
 
 .pos-stat-label {
   font-size: 10px;
@@ -3021,9 +2988,6 @@ body,
   text-align: center;
 }
 
-.pos-empty.hide {
-  display: none !important;
-}
 
 .pos-empty svg {
   width: 22px;
@@ -3284,9 +3248,24 @@ body,
   z-index: 9999;
   padding: 16px;
   animation: fadeIn 0.15s ease-out;
+  /* undo UA <dialog> defaults: the dialog itself is the full-screen dim layer */
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  color: inherit;
 }
 
-.modal-overlay.hide {
+.modal-overlay::backdrop {
+  background: transparent;
+}
+
+.modal-overlay:not([open]),
+.pos-live.hide,
+.btn-switch-chart-chip.hide,
+.pos-empty.hide {
   display: none !important;
 }
 
@@ -4015,7 +3994,8 @@ body,
   color: var(--text-main);
 }
 
-.autotrade-card-footer {
+.autotrade-card-footer,
+.pro-at-footer {
   display: flex;
   gap: 8px;
   margin-top: 10px;
@@ -4157,11 +4137,6 @@ body,
 .snippet-cat { color: var(--cyan-accent); font-weight: 700; font-size: 9.5px; flex-shrink: 0; }
 .snippet-msg { color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; }
 
-.pro-at-footer {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
 
 .btn-pro-secondary {
   flex: 1;

@@ -10,14 +10,10 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .config import (
-    DEFAULT_SYMBOL,
     DEFAULT_LEVERAGE,
-    LEVERAGE_MAX_SL_PCT,
-    LEVERAGE_MIN_SL_PCT,
     BASE_DIR,
     SUPPORTED_SYMBOLS,
     SUPPORTED_TIMEFRAMES,
@@ -112,6 +108,10 @@ class AutoTrader:
             "total_trades": 0,
             "winning_trades": 0,
             "losing_trades": 0,
+            # closed_trades = wins + losses (trades whose outcome is known)
+            "closed_trades": 0,
+            # unclassified_trades = closed but the exchange reported no PnL
+            "unclassified_trades": 0,
             "total_realized_pnl": 0.0,
             "daily_realized_pnl": 0.0,
             "consecutive_losses": 0,
@@ -126,8 +126,6 @@ class AutoTrader:
         self._analysis_results: Dict[str, Dict[str, Any]] = {}
         self._symbol_cooldowns: Dict[str, float] = {}
         self._lock = asyncio.Lock()
-        self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
-        self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
         self._is_running: bool = False
         self._loop_task: Optional[asyncio.Task] = None
         self._last_scan_time: float = 0.0
@@ -238,9 +236,13 @@ class AutoTrader:
 
     def get_status(self) -> Dict[str, Any]:
         """Return comprehensive AutoTrader state payload for UI."""
+        # Win rate must be measured over *decided* trades. Dividing wins by the
+        # entry count (total_trades) understates it while trades are still open
+        # and mislabels it once some closes cannot be classified.
+        decided = int(self.stats["winning_trades"]) + int(self.stats["losing_trades"])
         win_rate = 0.0
-        if self.stats["total_trades"] > 0:
-            win_rate = round((self.stats["winning_trades"] / self.stats["total_trades"]) * 100, 1)
+        if decided > 0:
+            win_rate = round((int(self.stats["winning_trades"]) / decided) * 100, 1)
 
         cooldown_remaining = max(0, int(self.stats["cooldown_until"] - time.time()))
 
@@ -306,16 +308,20 @@ class AutoTrader:
         self._save_state()
         return {"success": False, "enabled": False, "message": self.status_message, "status": self.get_status()}
 
+    def _roll_day(self) -> bool:
+        """Reset the daily loss counters on a new UTC day; True when it rolled over."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self.stats["current_day"] == today:
+            return False
+        self.stats.update(current_day=today, daily_realized_pnl=0.0, consecutive_losses=0)
+        return True
+
     async def toggle(self, enable: bool) -> Dict[str, Any]:
         """Enable or disable auto-trading safely."""
         async with self._lock:
             # If turning ON, reset circuit breaker halts if daily limits are safe
             if enable:
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                if self.stats["current_day"] != today:
-                    self.stats["current_day"] = today
-                    self.stats["daily_realized_pnl"] = 0.0
-                    self.stats["consecutive_losses"] = 0
+                self._roll_day()
 
                 # Validate daily loss limit before enabling
                 if self.stats["daily_realized_pnl"] <= -abs(self.settings["max_daily_loss_usd"]):
@@ -754,6 +760,19 @@ class AutoTrader:
         mark_price = float(position.get("markPrice", entry_price))
         pnl_pct = float(position.get("pnlPercentage", 0.0))
 
+        # Persist the latest mark PnL. When a position vanishes from the
+        # exchange (SL/TP bracket fill) there is no open position left to read
+        # PnL from, so this snapshot is the only record of how the trade ended.
+        snapshot = position.get("unrealizedPnl")
+        if snapshot is not None:
+            try:
+                trade["last_unrealized_pnl"] = float(snapshot)
+                trade["last_pnl_pct"] = pnl_pct
+                trade["last_mark"] = mark_price
+                trade["last_seen_at"] = time.time()
+            except (TypeError, ValueError):
+                pass
+
         if self.settings.get("auto_bracket", True):
             stop_loss = float(trade.get("stop_loss", 0.0))
             take_profit = float(trade.get("take_profit_1", 0.0))
@@ -832,12 +851,11 @@ class AutoTrader:
         latest = candidate.get("latest", {})
         action = str(signal.get("action", "")).upper()
         if "LONG" in action:
-            side, position_side, order_side = "LONG", "LONG", "BUY"
+            position_side, order_side = "LONG", "BUY"
         elif "SHORT" in action:
-            side, position_side, order_side = "SHORT", "SHORT", "SELL"
+            position_side, order_side = "SHORT", "SELL"
         else:
             return
-        del side
         entry_price = float(signal.get("entry_price", latest.get("price", latest.get("close", 0.0))))
         if entry_price <= 0:
             return
@@ -920,11 +938,7 @@ class AutoTrader:
     async def tick(self):
         """Periodic evaluation of market conditions, active trades, and circuit breakers."""
         # 1. Date rollover check for daily loss counter
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if self.stats["current_day"] != today:
-            self.stats["current_day"] = today
-            self.stats["daily_realized_pnl"] = 0.0
-            self.stats["consecutive_losses"] = 0
+        if self._roll_day():
             self._save_state()
 
         # 2. Check if AutoTrader is enabled
@@ -969,7 +983,6 @@ class AutoTrader:
             return
 
         # 5. Fetch Open Positions across account
-        target_sym = self.market_service.current_symbol
         open_positions = []
         try:
             open_positions = await self.toobit_client.get_positions(symbol=None)
@@ -993,7 +1006,10 @@ class AutoTrader:
         }
         for key, trade in list(self._active_trades.items()):
             if key not in open_keys:
-                self._remove_active_trade(trade.get("symbol", key))
+                # The exchange no longer reports this position, so it was closed
+                # outside our control (bracket SL/TP fill or manual close).
+                # Book the result instead of silently dropping the record.
+                self._handle_trade_closed(trade, reason="Exchange closed position (bracket fill or manual close)")
 
         if len(open_positions) >= int(self.settings["max_positions"]):
             self.status = "IN_POSITION"
@@ -1027,436 +1043,59 @@ class AutoTrader:
             self.add_log("info", "SCAN", self.status_message)
             return
         await self._execute_candidate(candidate)
-        return
 
-        if open_positions:
-            pos = open_positions[0]
-            pos_sym = pos.get("displaySymbol") or pos.get("symbol")
-            pos_side = pos.get("side", "LONG").upper()
-            pnl = float(pos.get("unrealizedPnl", 0.0))
-            pnl_pct = float(pos.get("pnlPercentage", 0.0))
-            entry_p = float(pos.get("entryPrice", 0.0))
-            mark_p = float(pos.get("markPrice", entry_p))
+    @staticmethod
+    def _resolve_realized_pnl(payload: Dict[str, Any]) -> tuple[Optional[float], str]:
+        """Best-available PnL for a closed trade.
 
-            self.status = "IN_POSITION"
-            self.status_message = f"Managing {pos_side} {pos_sym} ({pnl_pct:+.1f}% ROE, {'+' if pnl >= 0 else ''}${pnl:.2f})"
-
-            # Sync active managed trade metadata
-            if not self._active_trade or self._active_trade.get("symbol") != pos_sym:
-                self._active_trade = {
-                    "symbol": pos_sym,
-                    "side": pos_side,
-                    "entry_price": entry_p,
-                    "quantity": float(pos.get("quantity", 0.0)),
-                    "margin": float(pos.get("margin", 0.0)),
-                    "stop_loss": float(pos.get("stopLoss", 0.0)),
-                    "take_profit_1": float(pos.get("takeProfit1", pos.get("takeProfit", 0.0))),
-                    "be_moved": False,
-                    "open_time": time.time()
-                }
-
-            # Fetch current market intelligence for this coin
-            analysis = None
+        The exchange stops reporting a position's PnL once it is gone, so a
+        closed trade is described by whichever field survives. Returns
+        (value, source); value is None when nothing usable was found, which the
+        caller must treat as UNKNOWN rather than assume zero.
+        """
+        for field in (
+            "realizedPnl", "realized_pnl", "closedPnl", "closed_pnl",
+            "unrealizedPnl", "last_unrealized_pnl",
+        ):
+            if field not in payload:
+                continue
+            value = payload.get(field)
+            if value is None or value == "":
+                continue
             try:
-                raw_klines = await self.market_service.fetch_klines(symbol=pos_sym, interval=self.market_service.current_interval, limit=100)
-                from .indicators import compute_all_indicators
-                calc = compute_all_indicators(raw_klines)
-                latest = calc["latest"]
-                latest["symbol"] = pos_sym
-                latest["interval"] = self.market_service.current_interval
-                latest["leverage"] = int(self.settings["leverage"])
-                if not latest.get("is_closed", True):
-                    return
-                dec = await self.laya_engine.decide(latest)
-                analysis = self.signal_generator.generate_signal(latest, dec)
-            except Exception:
-                pass
-
-            sig_action = analysis.get("action", "") if analysis else ""
-            sig_conf = float(analysis.get("confidence_pct", 0.0)) if analysis else 0.0
-
-            # Rule 0: Guarantee Active Position TP & SL on Exchange
-            if self.settings.get("auto_bracket", True):
-                curr_sl = float(self._active_trade.get("stop_loss", 0.0))
-                curr_tp = float(self._active_trade.get("take_profit_1", 0.0))
-                if curr_sl <= 0 or curr_tp <= 0:
-                    calc_sl = curr_sl
-                    calc_tp = curr_tp
-                    if analysis and analysis.get("targets"):
-                        t = analysis["targets"]
-                        if calc_sl <= 0:
-                            calc_sl = float(analysis.get("stop_loss") or t.get("stop_loss", 0.0))
-                        if calc_tp <= 0:
-                            calc_tp = float(analysis.get("take_profit_1") or t.get("take_profit_1", 0.0))
-
-                    if calc_sl <= 0 or calc_tp <= 0:
-                        lev = int(self.settings.get("leverage", 50))
-                        # 0.5% stop distance (~25% ROE risk at 50x)
-                        stop_dist_pct = 0.25 / lev
-                        tp_dist_pct = 0.40 / lev
-                        if pos_side == "LONG":
-                            if calc_sl <= 0:
-                                calc_sl = entry_p * (1.0 - stop_dist_pct)
-                            if calc_tp <= 0:
-                                calc_tp = entry_p * (1.0 + tp_dist_pct)
-                        else:
-                            if calc_sl <= 0:
-                                calc_sl = entry_p * (1.0 + stop_dist_pct)
-                            if calc_tp <= 0:
-                                calc_tp = entry_p * (1.0 - tp_dist_pct)
-
-                    raw_sym = pos.get("rawSymbol") or pos.get("symbol")
-                    try:
-                        tpsl_res = await self.toobit_client.set_position_tpsl(
-                            symbol=raw_sym,
-                            side=pos_side,
-                            stop_loss=calc_sl,
-                            take_profit=calc_tp
-                        )
-                        if tpsl_res.get("success"):
-                            self._active_trade["stop_loss"] = calc_sl
-                            self._active_trade["take_profit_1"] = calc_tp
-                            self.add_log(
-                                "success",
-                                "BRACKET",
-                                f"🎯 Exchange TP/SL Active: SL ${calc_sl:.2f} | TP ${calc_tp:.2f} armed directly on Toobit for {pos_side} {pos_sym}!"
-                            )
-                        else:
-                            self.add_log(
-                                "danger",
-                                "BRACKET",
-                                f"Exchange TP/SL was not confirmed for {pos_sym}: {tpsl_res.get('message', 'unknown error')}",
-                            )
-                    except Exception as e:
-                        self.add_log(
-                            "danger",
-                            "BRACKET",
-                            f"Could not auto-arm position TP/SL for {pos_sym}: {e}",
-                        )
-
-            # Rule 1: Break-Even Profit Lock at TP1 or +9% ROE (+0.45R)
-            if self.settings["auto_breakeven"] and not self._active_trade.get("be_moved"):
-                tp1 = self._active_trade.get("take_profit_1", 0.0)
-                be_condition = False
-                be_sl_price = entry_p
-
-                if pos_side == "LONG":
-                    if pnl_pct >= 9.0 or (tp1 > 0 and mark_p >= tp1):
-                        be_condition = True
-                        be_sl_price = entry_p * 1.0005  # entry + 0.05% buffer for round-trip fees
-                else:  # SHORT
-                    if pnl_pct >= 9.0 or (tp1 > 0 and mark_p <= tp1):
-                        be_condition = True
-                        be_sl_price = entry_p * 0.9995
-
-                if be_condition:
-                    self._active_trade["be_moved"] = True
-                    self.add_log(
-                        "success",
-                        "PROFIT_LOCK",
-                        f"🛡️ Break-Even Profit Lock Triggered! {pos_side} {pos_sym} is up +{pnl_pct:.1f}% ROE. Moving Stop-Loss to Entry (${be_sl_price:.4f}) on Toobit to guarantee risk-free runner."
-                    )
-                    # Update exchange stop directly
-                    raw_sym = pos.get("rawSymbol") or pos.get("symbol")
-                    tp_val = self._active_trade.get("take_profit_1", 0.0)
-                    try:
-                        await self.toobit_client.set_position_tpsl(
-                            symbol=raw_sym,
-                            side=pos_side,
-                            stop_loss=be_sl_price,
-                            take_profit=tp_val
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not update BE stop on exchange: {e}")
-
-            # Rule 2: Opposing Signal Reversal Protection
-            if self.settings["opposing_reversal_exit"] and sig_conf >= 70.0:
-                opposed = False
-                if pos_side == "LONG" and ("SHORT" in sig_action):
-                    opposed = True
-                elif pos_side == "SHORT" and ("LONG" in sig_action):
-                    opposed = True
-
-                if opposed:
-                    self.add_log(
-                        "warning",
-                        "PROTECTION",
-                        f"⚠️ Reversal Warning: Laya detected strong opposing momentum ({sig_action}, {sig_conf:.0f}% confidence). Executing Flash Close on {pos_side} {pos_sym} to protect capital!"
-                    )
-                    await self.toobit_client.flash_close(pos.get("rawSymbol") or pos.get("symbol"))
-                    self._handle_trade_closed(pos, reason=f"Opposing {sig_action} ({sig_conf:.0f}% Conf)")
-                    return
-
-            # Rule 3: Simulated Demo SL/TP trigger check
-            if self.settings["mode"] == "demo":
-                sl = float(pos.get("stopLoss", 0.0))
-                tp2 = float(pos.get("takeProfit2", 0.0))
-                closed_reason = None
-
-                if pos_side == "LONG":
-                    if sl > 0 and mark_p <= sl:
-                        closed_reason = f"Stop-Loss hit @ ${mark_p:.4f}"
-                    elif tp2 > 0 and mark_p >= tp2:
-                        closed_reason = f"Take-Profit 2 hit @ ${mark_p:.4f}"
-                else:  # SHORT
-                    if sl > 0 and mark_p >= sl:
-                        closed_reason = f"Stop-Loss hit @ ${mark_p:.4f}"
-                    elif tp2 > 0 and mark_p <= tp2:
-                        closed_reason = f"Take-Profit 2 hit @ ${mark_p:.4f}"
-
-                if closed_reason:
-                    await self.toobit_client.flash_close(pos.get("rawSymbol") or pos.get("symbol"))
-                    self._handle_trade_closed(pos, reason=closed_reason)
-                    return
-
-            return
-
-        # ---------------------------------------------------------------------
-        # STAGE B: No Position Active — Check Reconciliation & Cooldown
-        # ---------------------------------------------------------------------
-        if self._active_trade and not open_positions:
-            self._handle_trade_closed(self._active_trade, reason="Exchange order filled / target reached")
-
-        now = time.time()
-        if now < self.stats["cooldown_until"]:
-            remaining = int(self.stats["cooldown_until"] - now)
-            self.status = "COOLDOWN"
-            self.status_message = f"Cooldown active ({remaining}s remaining). Guarding against volatility whipsaws."
-            return
-
-        # ---------------------------------------------------------------------
-        # STAGE C: Market Scan & Setup Evaluation
-        # ---------------------------------------------------------------------
-        self.status = "SCANNING"
-        self.status_message = f"Scanning {target_sym} for high-conviction entries (min {self.settings['min_confidence']:.0f}% conf)..."
-
-        # Throttle heavy inference checks to every 10 seconds
-        if now - self._last_scan_time < 10.0:
-            return
-        self._last_scan_time = now
-
-        # Fetch latest market data & generate signal
-        try:
-            tasks = [
-                self.market_service.fetch_klines(
-                    symbol=target_sym,
-                    interval=self.market_service.current_interval,
-                    limit=150
-                )
-            ]
-            has_htf = hasattr(self.market_service, "fetch_htf_context")
-            has_depth = hasattr(self.market_service, "fetch_order_book_depth")
-            has_funding = hasattr(self.market_service, "fetch_funding_rate")
-
-            if has_htf:
-                tasks.append(self.market_service.fetch_htf_context(target_sym))
-            if has_depth:
-                tasks.append(self.market_service.fetch_order_book_depth(target_sym))
-            if has_funding:
-                tasks.append(self.market_service.fetch_funding_rate(target_sym))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            raw_klines = results[0]
-
-            if isinstance(raw_klines, Exception) or not raw_klines:
-                return
-
-            from .indicators import compute_all_indicators
-            calc = compute_all_indicators(raw_klines)
-            latest = calc["latest"]
-            latest["symbol"] = target_sym
-            latest["interval"] = self.market_service.current_interval
-            latest["leverage"] = int(self.settings["leverage"])
-            if not latest.get("is_closed", True):
-                return
-
-            idx = 1
-            if has_htf:
-                htf_ctx = results[idx]
-                if isinstance(htf_ctx, dict) and not isinstance(htf_ctx, Exception):
-                    latest["htf"] = htf_ctx
-                idx += 1
-            if has_depth:
-                depth_ctx = results[idx]
-                if isinstance(depth_ctx, dict) and not isinstance(depth_ctx, Exception):
-                    latest["depth"] = depth_ctx
-                idx += 1
-            if has_funding:
-                funding_ctx = results[idx]
-                if isinstance(funding_ctx, dict) and not isinstance(funding_ctx, Exception):
-                    latest["funding"] = funding_ctx
-
-            dec = await self.laya_engine.decide(latest)
-            signal = self.signal_generator.generate_signal(latest, dec)
-        except Exception as e:
-            logger.warning(f"Error during AutoTrader scan on {target_sym}: {e}")
-            return
-
-        action = signal.get("action", "")
-        confidence = float(signal.get("confidence_pct", 0.0))
-
-        # Filter out neutral or low-confidence setups
-        if action in ("NEUTRAL", "WAIT") or not action:
-            return
-
-        if confidence < float(self.settings["min_confidence"]):
-            return
-
-        if "LONG" not in action and "SHORT" not in action:
-            return
-
-        # ---------------------------------------------------------------------
-        # STAGE D: Zero-Rejection Pre-Flight & Order Execution
-        # ---------------------------------------------------------------------
-        order_side = "BUY" if "LONG" in action else "SELL"
-        pos_side = "LONG" if "LONG" in action else "SHORT"
-        entry_price = float(signal.get("entry_price", latest.get("close", 0.0)))
-        if entry_price <= 0:
-            return
-
-        # 1. Check account balance and available margin
-        bal = await self.toobit_client.get_balance()
-        avail_margin = float(bal.get("availableBalance", 0.0))
-        total_equity = float(bal.get("totalEquity", bal.get("totalBalance", 0.0)))
-
-        if avail_margin < 0.50:
-            self.add_log(
-                "warning",
-                "ORDER",
-                f"Pre-flight skipped for {target_sym}: Available margin (${avail_margin:.2f} USDT) is below minimum $0.50 required."
-            )
-            return
-
-        # 2. Compute Target Margin Sizing
-        if self.settings["sizing_mode"] == "pct_equity":
-            target_margin = max(0.50, total_equity * (float(self.settings["equity_risk_pct"]) / 100.0))
-        else:
-            target_margin = max(0.50, float(self.settings["fixed_margin_usd"]))
-
-        # 80% Free Margin Shield: Max 20% of available margin per trade
-        max_safe_margin = avail_margin * 0.20
-        if target_margin > max_safe_margin:
-            target_margin = max_safe_margin
-
-        lev = int(self.settings["leverage"])
-        notional_value = target_margin * lev
-
-        # 3. Quantize using symbol trading rules and contract multiplier
-        rules = await self.toobit_client.get_symbol_rules(target_sym)
-        multiplier = float(rules.get("multiplier", 1.0))
-        step_size = float(rules.get("step_size", 0.001))
-        min_qty = float(rules.get("min_qty", 0.001))
-        min_notional = float(rules.get("min_notional", 5.0))
-
-        # In Toobit Futures, order quantity is denominated in contracts
-        # 1 contract value = entry_price * multiplier
-        contract_unit_val = entry_price * multiplier
-        if contract_unit_val <= 0:
-            return
-
-        raw_contract_qty = notional_value / contract_unit_val
-
-        # Precision step quantization
-        step_str = f"{step_size:.8f}".rstrip('0')
-        decimals = len(step_str.split('.')[1]) if '.' in step_str else 0
-        quantized_qty = round((raw_contract_qty // step_size) * step_size, decimals)
-
-        if quantized_qty < min_qty:
-            # Check if bumping to min_qty stays within safety buffer
-            bump_margin = (min_qty * contract_unit_val) / lev
-            if bump_margin <= (avail_margin * 0.40):
-                quantized_qty = min_qty
-            else:
-                self.add_log(
-                    "warning",
-                    "ORDER",
-                    f"Skipping {target_sym}: Exchange minQty ({min_qty} contracts) requires ${bump_margin:.2f} margin, exceeding safety cap."
-                )
-                return
-
-        final_margin = (quantized_qty * contract_unit_val) / lev
-        targets = signal.get("targets", {})
-        sl_price = float(signal.get("stop_loss", targets.get("stop_loss", 0.0)))
-        tp1_price = float(signal.get("take_profit_1", targets.get("take_profit_1", 0.0)))
-        tp2_price = float(signal.get("take_profit_2", targets.get("take_profit_2", 0.0)))
-
-        # 4. Dispatch Order
-        async with self._lock:
-            self.add_log(
-                "info",
-                "ORDER",
-                f"🚀 Auto-Executing {lev}x {pos_side} on {target_sym}: Qty {quantized_qty} (~${final_margin:.2f} margin, {confidence:.0f}% confidence)..."
-            )
-
-            res = await self.toobit_client.create_order(
-                symbol=target_sym,
-                side=order_side,
-                order_type="MARKET",
-                quantity=quantized_qty,
-                leverage=lev,
-                entry_price=entry_price,
-                stop_loss=sl_price,
-                take_profit_1=tp1_price,
-                take_profit_2=tp2_price
-            )
-
-            if not res.get("success"):
-                err_msg = res.get("error") or res.get("message") or "Order placement rejected"
-                self.add_log("danger", "ORDER", f"Order execution failed: {err_msg}")
-                return
-
-            self.stats["total_trades"] += 1
-            self.stats["last_trade_time"] = time.time()
-
-            self._active_trade = {
-                "symbol": target_sym,
-                "side": pos_side,
-                "quantity": quantized_qty,
-                "entry_price": entry_price,
-                "margin": final_margin,
-                "stop_loss": sl_price,
-                "take_profit_1": tp1_price,
-                "take_profit_2": tp2_price,
-                "be_moved": False,
-                "open_time": time.time()
-            }
-
-            self.status = "IN_POSITION"
-            self.status_message = f"Opened {lev}x {pos_side} on {target_sym} @ ${entry_price:.4f}"
-            self._save_state()
-
-            self.add_log(
-                "success",
-                "ORDER",
-                f"✅ Position Filled: {lev}x {pos_side} {quantized_qty} {target_sym} @ ${entry_price:.4f} (Margin: ${final_margin:.2f})!"
-            )
-            if self.settings["auto_bracket"]:
-                self.add_log(
-                    "info",
-                    "BRACKET",
-                    f"🎯 Protective Bracket Armed: SL ${sl_price:.4f} (-{abs(entry_price-sl_price)/entry_price*100:.2f}%) | TP1 ${tp1_price:.4f} | TP2 ${tp2_price:.4f}"
-                )
+                return float(value), field
+            except (TypeError, ValueError):
+                continue
+        return None, "unavailable"
 
     def _handle_trade_closed(self, trade_or_pos: Dict[str, Any], reason: str = ""):
         """Record trade completion statistics, realized PnL, and initiate cooldown."""
-        pnl = float(trade_or_pos.get("unrealizedPnl", trade_or_pos.get("realizedPnl", 0.0)))
-        pnl_pct = float(trade_or_pos.get("pnlPercentage", 0.0))
         sym = trade_or_pos.get("symbol", "")
-        side = trade_or_pos.get("side", "")
 
-        self.stats["total_realized_pnl"] += pnl
-        self.stats["daily_realized_pnl"] += pnl
+        pnl, _ = self._resolve_realized_pnl(trade_or_pos)
+        pnl_pct = float(trade_or_pos.get("pnlPercentage", trade_or_pos.get("last_pnl_pct", 0.0)) or 0.0)
+        side = str(trade_or_pos.get("side", "") or "").upper()
 
-        if pnl >= 0:
-            self.stats["winning_trades"] += 1
-            self.stats["consecutive_losses"] = 0
-            lvl = "success"
-            outcome = f"WIN (+${pnl:.2f}, +{pnl_pct:.1f}% ROE)"
-        else:
-            self.stats["losing_trades"] += 1
-            self.stats["consecutive_losses"] += 1
+        if pnl is None:
+            # Never book an unknown result as a win: that silently disarms both
+            # the loss counter and the daily-loss circuit breaker.
+            self.stats["unclassified_trades"] = int(self.stats.get("unclassified_trades", 0)) + 1
             lvl = "warning"
-            outcome = f"LOSS (-${abs(pnl):.2f}, {pnl_pct:.1f}% ROE)"
+            outcome = "UNKNOWN (no PnL reported by exchange)"
+        else:
+            self.stats["total_realized_pnl"] += pnl
+            self.stats["daily_realized_pnl"] += pnl
+            self.stats["closed_trades"] = int(self.stats.get("closed_trades", 0)) + 1
+            if pnl > 0:
+                self.stats["winning_trades"] += 1
+                self.stats["consecutive_losses"] = 0
+                lvl = "success"
+                outcome = f"WIN (+${pnl:.2f}, {pnl_pct:.1f}% ROE)"
+            else:
+                self.stats["losing_trades"] += 1
+                self.stats["consecutive_losses"] += 1
+                lvl = "warning"
+                outcome = f"LOSS (-${abs(pnl):.2f}, {pnl_pct:.1f}% ROE)"
 
         cooldown = int(self.settings["cooldown_seconds"])
         self.stats["cooldown_until"] = time.time() + cooldown

@@ -17,20 +17,10 @@
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
   
-  <!-- TradingView Lightweight Charts (v4.1.3) Local with CDN Fallback -->
+  <!-- TradingView Lightweight Charts (v4.1.3), vendored -->
   <script src="/static/lib/lightweight-charts.standalone.production.js"></script>
-  <script>
-    if (typeof LightweightCharts === 'undefined') {
-      document.write('<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"><\/script>');
-    }
-  </script>
-  <!-- Lucide Icons Local with CDN Fallback -->
-  <script src="/static/lib/lucide.min.js"></script>
-  <script>
-    if (typeof lucide === 'undefined') {
-      document.write('<script src="https://unpkg.com/lucide@latest"><\/script>');
-    }
-  </script>
+  <!-- Lucide icons: only the 48 we use -->
+  <script src="/static/lib/icons.js"></script>
 </head>
 <body class="dark-theme">
   <!-- Toast Feedback Notification Container -->
@@ -350,9 +340,9 @@
                 <span>AI Auto-Trader</span>
               </div>
               <div class="autotrade-card-actions">
-                <button type="button" class="btn-autotrade-switch" id="btnSimpleAutoTradeToggle" aria-label="Toggle Auto-Trading">
+                <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading">
                   <span class="toggle-knob"></span>
-                  <span class="toggle-label" id="simpleAutoTradeToggleLabel">OFF</span>
+                  <span class="toggle-label">OFF</span>
                 </button>
               </div>
             </div>
@@ -368,15 +358,15 @@
                 </div>
                 <div class="at-stat-box">
                   <span class="at-stat-label">Win Rate</span>
-                  <strong class="at-stat-val pnl-green" id="simpleAtWinRate">--% (0 trades)</strong>
+                  <strong class="at-stat-val pnl-green" data-at="winrate">--% (0 trades)</strong>
                 </div>
               </div>
             </div>
             <div class="autotrade-card-footer">
-              <button type="button" class="btn-at-config" id="btnSimpleAtConfig">
+              <button type="button" class="btn-at-config" data-at="config">
                 <i data-lucide="sliders"></i> Configure Sizing & Limits
               </button>
-              <button type="button" class="btn-at-kill-chip" id="btnSimpleAtKill">
+              <button type="button" class="btn-at-kill-chip" data-at="kill">
                 <i data-lucide="alert-octagon"></i> Kill Switch
               </button>
             </div>
@@ -706,9 +696,9 @@
               </div>
               <div class="pro-at-header-controls">
                 <span class="at-mode-badge demo" id="proAtModeBadge">Demo</span>
-                <button type="button" class="btn-autotrade-switch" id="btnProAutoTradeToggle" aria-label="Toggle Auto-Trading">
+                <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading">
                   <span class="toggle-knob"></span>
-                  <span class="toggle-label" id="proAutoTradeToggleLabel">OFF</span>
+                  <span class="toggle-label">OFF</span>
                 </button>
               </div>
             </div>
@@ -725,7 +715,7 @@
                 </div>
                 <div class="pro-at-metric">
                   <span class="lbl">Realized PnL</span>
-                  <span class="val pnl-green" id="proAtPnl">+$0.00</span>
+                  <span class="val pnl-green" data-at="daily-pnl">+$0.00</span>
                 </div>
                 <div class="pro-at-metric">
                   <span class="lbl">Circuit Breaker</span>
@@ -744,11 +734,11 @@
             </div>
 
             <div class="pro-at-footer">
-              <button type="button" class="btn-pro-secondary" id="btnProAtConfig">
+              <button type="button" class="btn-pro-secondary" data-at="config">
                 <i data-lucide="sliders"></i>
                 <span>Settings & Audit Log</span>
               </button>
-              <button type="button" class="btn-pro-kill" id="btnProAtKill">
+              <button type="button" class="btn-pro-kill" data-at="kill">
                 <i data-lucide="alert-octagon"></i>
                 <span>Emergency Stop</span>
               </button>
@@ -1080,7 +1070,7 @@
   <!-- ============================================== -->
   <!-- COIN / SYMBOL SEARCH MODAL (TRADINGVIEW STYLE) -->
   <!-- ============================================== -->
-  <div id="coinSearchModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="coinSearchTitle">
+  <dialog id="coinSearchModal" class="modal-overlay" aria-labelledby="coinSearchTitle">
     <div class="modal-card coin-search-modal-card">
       <div class="coin-modal-search-bar">
         <i data-lucide="search" class="coin-modal-search-icon"></i>
@@ -1125,12 +1115,12 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- ============================================== -->
   <!-- TOOBIT API CONNECTION MODAL -->
   <!-- ============================================== -->
-  <div id="toobitModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="toobitModalTitle">
+  <dialog id="toobitModal" class="modal-overlay" aria-labelledby="toobitModalTitle">
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-wrap">
@@ -1140,7 +1130,7 @@
             <span class="modal-subtitle">Perpetual Futures Position Management & Live AI Advisory</span>
           </div>
         </div>
-        <button id="btnCloseToobitModal" class="modal-close-btn" aria-label="Close Modal">
+        <button id="btnCloseToobitModal" class="modal-close-btn" autofocus aria-label="Close Modal">
           <i data-lucide="x"></i>
         </button>
       </div>
@@ -1244,12 +1234,12 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- ============================================== -->
   <!-- AUTONOMOUS TRADING CONTROLLER & AUDIT MODAL    -->
   <!-- ============================================== -->
-  <div id="autoTradeModal" class="modal-overlay hide" role="dialog" aria-modal="true" aria-labelledby="autoTradeModalTitle">
+  <dialog id="autoTradeModal" class="modal-overlay" aria-labelledby="autoTradeModalTitle">
     <div class="modal-card autotrade-modal-card">
       <div class="modal-header">
         <div class="modal-title-wrap">
@@ -1264,12 +1254,12 @@
         <div class="modal-header-actions">
           <div class="at-master-switch-wrap">
             <span class="at-switch-label">MASTER:</span>
-            <button type="button" class="btn-autotrade-switch" id="modalAutoTradeToggle" aria-label="Toggle Auto-Trading Master Switch">
+            <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading Master Switch">
               <span class="toggle-knob"></span>
-              <span class="toggle-label" id="modalAutoTradeToggleLabel">OFF</span>
+              <span class="toggle-label">OFF</span>
             </button>
           </div>
-          <button id="btnCloseAutoTradeModal" class="modal-close-btn" aria-label="Close Modal">
+          <button id="btnCloseAutoTradeModal" class="modal-close-btn" autofocus aria-label="Close Modal">
             <i data-lucide="x"></i>
           </button>
         </div>
@@ -1305,11 +1295,11 @@
           </div>
           <div class="status-bar-item">
             <span class="lbl">WIN RATE</span>
-            <span class="val-bold pnl-green" id="modalAtWinRateVal">--% (0 trades)</span>
+            <span class="val-bold pnl-green" data-at="winrate">--% (0 trades)</span>
           </div>
           <div class="status-bar-item">
             <span class="lbl">DAILY REALIZED PNL</span>
-            <span class="val-bold" id="modalAtDailyPnlVal">+$0.00</span>
+            <span class="val-bold" data-at="daily-pnl">+$0.00</span>
           </div>
         </div>
 
@@ -1550,7 +1540,7 @@
             <div class="safety-metrics-grid">
               <div class="safety-metric-card">
                 <span class="sm-lbl">Today's Realized PnL</span>
-                <span class="sm-val" id="safetyDailyPnl">+$0.00</span>
+                <span class="sm-val" data-at="daily-pnl">+$0.00</span>
                 <span class="sm-sub" id="safetyDailyLimitLabel">Cap: -$5.00 USDT</span>
               </div>
               <div class="safety-metric-card">
@@ -1584,7 +1574,7 @@
               <strong>Emergency Kill Switch</strong>
               <p>Immediately disconnects auto-trading, cancels all resting exchange orders, and flash-closes all open positions at market price.</p>
             </div>
-            <button type="button" id="btnModalEmergencyStop" class="btn-emergency-kill">
+            <button type="button" data-at="kill" class="btn-emergency-kill">
               <i data-lucide="alert-octagon"></i>
               <span>🚨 ACTIVATE EMERGENCY KILL SWITCH</span>
             </button>
@@ -1613,7 +1603,7 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <script type="module" src="/static/app.js"></script>
   <script>

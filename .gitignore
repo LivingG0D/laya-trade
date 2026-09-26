@@ -49,4 +49,4 @@ secrets/
 logs/
 .cache/
 .pytest_cache/
-scratch/*_state.json
+scratch/

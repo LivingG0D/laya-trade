@@ -54,7 +54,6 @@ def test_htf_context_does_not_label_short_history_as_ema200(monkeypatch):
     result = asyncio.run(scenario())
 
     assert result["ema200"] is None
-    assert result["htf_ema200"] is None
     assert result["trend"] in {"NEUTRAL", "BULLISH", "BEARISH"}
 
 
