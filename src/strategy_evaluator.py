@@ -226,6 +226,8 @@ def _process_position(
         return equity, position, trade
 
     reason, trigger = exit_event
+    if reason == "STOP" and position["be_moved"]:
+        reason = "BREAKEVEN"
     if reason == "TP1" and position["tp2"] > 0:
         partial_quantity = position["remaining_qty"] / 2.0
         equity = _close_quantity(

@@ -168,7 +168,7 @@ def test_breakeven_trigger_moves_stop_to_entry_for_later_bars():
     )
 
     trade = result["trades"][0]
-    assert trade["exit_reason"] == "STOP"
+    assert trade["exit_reason"] == "BREAKEVEN"
     assert trade["exit_price"] == pytest.approx(100 * 1.0005)
 
 
@@ -198,7 +198,7 @@ def test_tp1_fill_moves_stop_to_breakeven():
     )
 
     trade = result["trades"][0]
-    assert trade["exit_reason"] == "STOP"
+    assert trade["exit_reason"] == "BREAKEVEN"
     assert trade["exit_price"] == pytest.approx(100 * 1.0005)
     assert trade["net_pnl"] > 0  # half booked at TP1
 

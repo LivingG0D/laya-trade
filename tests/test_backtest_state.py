@@ -70,3 +70,41 @@ def test_engine_split_reproduces_live_decision():
     for key in ("position", "long_prob", "short_prob", "hold_prob", "directional_conviction"):
         assert blended[key] == live[key]
     assert engine._agent.texts[0] == engine._agent.texts[1] == engine._agent_summary(LIVE_STATE)
+
+
+def test_htf_window_excludes_candles_not_closed_at_bar_close():
+    from experiments.strategy_baseline import htf_window
+
+    hour = [{"time": t} for t in range(0, 10 * 3600, 3600)]
+    opens = [c["time"] for c in hour]
+    # 5m bar opening 04:55 closes 05:00 -> the 04:00 hour candle has just closed.
+    window = htf_window(hour, opens, 3600, bar_close=5 * 3600, size=3)
+    assert [c["time"] for c in window] == [2 * 3600, 3 * 3600, 4 * 3600]
+    # One second earlier the 04:00 candle is still forming.
+    window = htf_window(hour, opens, 3600, bar_close=5 * 3600 - 1, size=3)
+    assert window[-1]["time"] == 3 * 3600
+
+
+def test_random_decisions_are_seeded_and_match_rate():
+    from experiments.strategy_baseline import random_decisions
+
+    first = random_decisions(2000, rate=0.1, seed=7)
+    assert first == random_decisions(2000, rate=0.1, seed=7)
+    assert first != random_decisions(2000, rate=0.1, seed=8)
+    directional = [d for d in first if d["position"] != "NEUTRAL_HOLD"]
+    assert 150 < len(directional) < 250
+    assert {d["position"] for d in directional} == {"STRONG_LONG", "STRONG_SHORT"}
+
+
+def test_ema_cross_decisions_fire_only_on_crosses():
+    from experiments.strategy_baseline import ema_cross_decisions
+
+    states = [
+        {"ema9": 1.0, "ema21": 2.0},
+        {"ema9": 3.0, "ema21": 2.0},  # cross up
+        {"ema9": 4.0, "ema21": 2.0},  # still above
+        {"ema9": 1.0, "ema21": 2.0},  # cross down
+        {"ema9": None, "ema21": 2.0},
+    ]
+    positions = [d["position"] for d in ema_cross_decisions(states)]
+    assert positions == ["NEUTRAL_HOLD", "STRONG_LONG", "NEUTRAL_HOLD", "STRONG_SHORT", "NEUTRAL_HOLD"]

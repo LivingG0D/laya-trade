@@ -1,153 +1,276 @@
-"""Reproducible expectancy baseline for the AutoTrader entry/exit geometry.
+"""Backtest of the live auto-trader decision path against simple baselines.
 
-Fetches real historical candles, runs the real indicator pipeline and the real
-Laya decision + signal generator over every bar, then replays the resulting
-signal sequence through `evaluate_signal_sequence` with explicit costs.
+For every closed 5m bar over the last ``--days`` days it rebuilds the exact
+state the auto-trader decides on (last 150 closed candles per timeframe,
+15m/1h context only once those candles have closed), runs the decision
+engines, turns decisions into signals with the live SignalGenerator, and
+replays them through `evaluate_signal_sequence` with costs and the live
+break-even and opposing-signal exits.
 
-Run:  python experiments/strategy_baseline.py --bars 150 --interval 5m
+Run:  python experiments/strategy_baseline.py                     # defaults
+      python experiments/strategy_baseline.py --engines fallback --days 7
 
-This is the honest test of the strategy's mechanics. It does NOT re-fit
-anything: it measures the R multiple actually produced by the configured
-stop/target geometry against the real signal stream.
+It re-fits nothing. Results are in R (multiples of the risk per trade).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
+import hashlib
 import json
 import os
+import random
 import sys
 import time
-from typing import Any, Dict, List
+from pathlib import Path
+from statistics import mean
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.indicators import compute_all_indicators  # noqa: E402
-from src.laya_engine import LayaEngine  # noqa: E402
-from src.market_data import MarketDataService  # noqa: E402
+import httpx  # noqa: E402
+
+from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
+from src.auto_trader import merge_timeframes, timeframe_snapshot  # noqa: E402
+from src.config import BASE_DIR  # noqa: E402
 from src.signal_generator import SignalGenerator  # noqa: E402
 from src.strategy_evaluator import (  # noqa: E402
     CostModel,
     EvaluationConfig,
     evaluate_signal_sequence,
+    walk_forward_windows,
 )
 
-SYMBOLS = ["BTCUSDT.P", "ETHUSDT.P", "SOLUSDT.P"]
+ENTRY_TF = "5m"
+CONTEXT_TFS = ("15m", "1h")
+WINDOW = 150  # candles per timeframe, as the live auto-trader fetches
+WARMUP_DAYS = 7  # enough 1h history to fill the first window
+SCRATCH = BASE_DIR / "scratch"
+HOLD = {"position": "NEUTRAL_HOLD"}
+KNOWN_GAPS = [
+    "Binance futures prices stand in for Toobit.",
+    "Funding costs are 0.",
+    "Sizing is fixed-risk; live uses fixed margin. Compare results in R.",
+    "No order-book or funding context (the live auto-trader does not fetch them either).",
+    "Batched model inference can differ from single calls in the last decimals.",
+]
 
 
-async def build_signal_series(
-    market: MarketDataService, symbol: str, interval: str, bars: int, leverage: float
-) -> Dict[str, Any]:
-    candles = await market.fetch_klines(symbol=symbol, interval=interval, limit=bars)
-    if not candles:
-        raise RuntimeError(f"no candles returned for {symbol}")
-
-    # One indicator pass over the whole series, then slice per bar.
-    computed = compute_all_indicators(candles)
-    series: List[Dict[str, Any]] = computed["series"]
-    series = series[-bars:]
-    candles = candles[-bars:]
-
-    engine = LayaEngine()
-    generator = SignalGenerator()
-
-    signals: List[Dict[str, Any]] = []
-    decision_latencies: List[float] = []
-    for index, state in enumerate(series):
-        state = dict(state)
-        state["symbol"] = symbol
-        state["interval"] = interval
-        state["leverage"] = leverage
-        state["is_closed"] = True
-        started = time.time()
-        try:
-            decision = await engine.decide(state)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  decision failed at {index}: {exc}", file=sys.stderr)
-            decision = {}
-        decision_latencies.append(time.time() - started)
-        signals.append(generator.generate_signal(state, decision))
-        if index and index % 25 == 0:
-            print(f"  {symbol} {index}/{len(series)} signals", file=sys.stderr)
-
-    realized_rr: List[float] = []
-    for signal in signals:
-        entry = float(signal.get("entry_price", 0) or 0)
-        stop = float(signal.get("stop_loss", 0) or 0)
-        tp1 = float(signal.get("take_profit_1", 0) or 0)
-        if entry > 0 and stop > 0 and tp1 > 0 and stop != entry:
-            risk = abs(entry - stop)
-            reward = abs(tp1 - entry)
-            if risk > 0:
-                realized_rr.append(reward / risk)
-
-    return {
-        "symbol": symbol,
-        "interval": interval,
-        "candles": candles,
-        "signals": signals,
-        "realized_rr": realized_rr,
-        "decision_latencies": decision_latencies,
-    }
+def htf_window(candles: Sequence[Mapping[str, Any]], opens: Sequence[int], step: int,
+               bar_close: int, size: int = WINDOW) -> List[Mapping[str, Any]]:
+    """The last ``size`` candles whose close time is at or before ``bar_close``."""
+    closed = bisect.bisect_right(opens, bar_close - step)
+    return list(candles[max(0, closed - size):closed])
 
 
-def summarize(bundle: Dict[str, Any], config: EvaluationConfig, costs: CostModel) -> Dict[str, Any]:
-    result = evaluate_signal_sequence(
-        bundle["candles"], bundle["signals"], config=config, costs=costs
-    )
-    rr = bundle["realized_rr"]
-    directional = [s for s in bundle["signals"] if str(s.get("action", "")).upper() != "NEUTRAL"]
-    summary = {
-        "symbol": bundle["symbol"],
-        "interval": bundle["interval"],
-        "bars": len(bundle["candles"]),
-        "directional_signals": len(directional),
-        "directional_pct": round(100.0 * len(directional) / max(1, len(bundle["signals"])), 1),
-        "mean_target_rr": round(sum(rr) / len(rr), 3) if rr else None,
-        "trades": result.get("trade_count", 0),
-        "win_rate_pct": result.get("win_rate_pct"),
-        "expectancy_r": result.get("expectancy_r"),
-        "profit_factor": result.get("profit_factor"),
-        "net_profit": result.get("net_profit"),
-        "return_pct": result.get("return_pct"),
-        "max_drawdown_pct": result.get("max_drawdown_pct"),
-        "skipped_low_confidence": result.get("skipped_low_confidence"),
-        "skipped_invalid_signals": result.get("skipped_invalid_signals"),
-    }
-    return summary
+def _decision(position: str) -> Dict[str, Any]:
+    return {"position": position, "directional_conviction": 0.99, "engine": "baseline"}
+
+
+def random_decisions(count: int, rate: float, seed: int) -> List[Dict[str, Any]]:
+    """Enter at ``rate`` of bars in a random direction; everything else holds."""
+    rng = random.Random(seed)
+    out = []
+    for _ in range(count):
+        if rng.random() < rate:
+            out.append(_decision("STRONG_LONG" if rng.random() < 0.5 else "STRONG_SHORT"))
+        else:
+            out.append(HOLD)
+    return out
+
+
+def ema_cross_decisions(states: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Long when EMA9 crosses above EMA21, short when it crosses below."""
+    out: List[Dict[str, Any]] = []
+    prev: Optional[float] = None
+    for state in states:
+        fast, slow = state.get("ema9"), state.get("ema21")
+        diff = None if fast is None or slow is None else fast - slow
+        if prev is not None and diff is not None and prev <= 0 < diff:
+            out.append(_decision("STRONG_LONG"))
+        elif prev is not None and diff is not None and prev >= 0 > diff:
+            out.append(_decision("STRONG_SHORT"))
+        else:
+            out.append(HOLD)
+        prev = diff
+    return out
+
+
+def build_states(history: Dict[str, List[Dict[str, Any]]], symbol: str, start: int,
+                 leverage: int) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Auto-trader states for every entry bar opening at or after ``start``."""
+    entry = history[ENTRY_TF]
+    entry_step = INTERVAL_SECONDS[ENTRY_TF]
+    opens = {tf: [c["time"] for c in history[tf]] for tf in CONTEXT_TFS}
+    memo: Dict[tuple, Dict[str, Any]] = {}
+    candles, states = [], []
+    for i, bar in enumerate(entry):
+        if bar["time"] < start or i + 1 < WINDOW:
+            continue
+        bar_close = bar["time"] + entry_step
+        snapshots = {ENTRY_TF: timeframe_snapshot(entry[i + 1 - WINDOW:i + 1], symbol, ENTRY_TF, leverage)}
+        for tf in CONTEXT_TFS:
+            window = htf_window(history[tf], opens[tf], INTERVAL_SECONDS[tf], bar_close)
+            if len(window) < WINDOW:
+                break
+            key = (tf, window[-1]["time"])
+            if key not in memo:
+                memo[key] = timeframe_snapshot(window, symbol, tf, leverage)
+            snapshots[tf] = memo[key]
+        else:
+            candles.append(bar)
+            states.append(merge_timeframes(snapshots))
+    return candles, states
+
+
+def model_decisions(engine, states: List[Dict[str, Any]], cache_path: Path) -> List[Dict[str, Any]]:
+    """Model-only decisions, cached by the hash of the exact text the model sees."""
+    cache: Dict[str, Dict[str, Any]] = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    keys = [hashlib.sha256(engine._agent_summary(s).encode()).hexdigest() for s in states]
+    missing = [i for i, k in enumerate(keys) if k not in cache]
+    chunk = 512
+    for n in range(0, len(missing), chunk):
+        idx = missing[n:n + chunk]
+        for i, decision in zip(idx, engine._agent_decisions([states[i] for i in idx])):
+            cache[keys[i]] = decision
+        print(f"    model {min(n + chunk, len(missing))}/{len(missing)}", file=sys.stderr)
+        cache_path.write_text(json.dumps(cache))
+    return [cache[k] for k in keys]
+
+
+def evaluate(candles, signals, config: EvaluationConfig, costs: CostModel, window_bars: int) -> Dict[str, Any]:
+    full = evaluate_signal_sequence(candles, signals, config, costs)
+    windows = []
+    for w in walk_forward_windows(len(candles), window_bars, window_bars):
+        if w["test_end"] - w["test_start"] < 2:
+            continue
+        r = evaluate_signal_sequence(candles[w["test_start"]:w["test_end"]],
+                                     signals[w["test_start"]:w["test_end"]], config, costs)
+        windows.append(r["expectancy_r"] if r["trade_count"] else None)
+    traded = [w for w in windows if w is not None]
+    row = {k: full[k] for k in ("trade_count", "win_rate_pct", "expectancy_r", "profit_factor",
+                                "max_drawdown_pct", "avg_cost_r", "return_pct")}
+    row["windows"] = len(windows)
+    row["windows_positive"] = sum(1 for w in traded if w > 0)
+    row["window_expectancy_r"] = windows
+    exits: Dict[str, int] = {}
+    for trade in full["trades"]:
+        exits[trade["exit_reason"]] = exits.get(trade["exit_reason"], 0) + 1
+    row["exit_reasons"] = exits
+    return row
+
+
+def average_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    out = {}
+    for key in ("trade_count", "win_rate_pct", "expectancy_r", "max_drawdown_pct", "avg_cost_r",
+                "return_pct", "windows", "windows_positive"):
+        out[key] = mean(r[key] for r in rows)
+    pfs = [r["profit_factor"] for r in rows if r["profit_factor"] is not None]
+    out["profit_factor"] = mean(pfs) if pfs else None
+    out["expectancy_r_range"] = [min(r["expectancy_r"] for r in rows), max(r["expectancy_r"] for r in rows)]
+    return out
+
+
+def print_table(rows: List[Dict[str, Any]]) -> None:
+    head = f"{'symbol':<11}{'strategy':<14}{'trades':>7}{'win%':>7}{'exp R':>8}{'PF':>6}{'maxDD%':>8}{'cost R':>8}{'win windows':>13}"
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        pf = "-" if r["profit_factor"] is None else f"{r['profit_factor']:.2f}"
+        print(f"{r['symbol']:<11}{r['strategy']:<14}{r['trade_count']:>7.0f}{r['win_rate_pct']:>7.1f}"
+              f"{r['expectancy_r']:>8.3f}{pf:>6}{r['max_drawdown_pct']:>8.1f}{r['avg_cost_r']:>8.3f}"
+              f"{r['windows_positive']:>7.0f}/{r['windows']:<5.0f}")
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--bars", type=int, default=150)
-    parser.add_argument("--interval", default="5m")
-    parser.add_argument("--leverage", type=float, default=10.0)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--days", type=float, default=90)
+    parser.add_argument("--symbols", default="BTCUSDT.P,ETHUSDT.P,SOLUSDT.P")
+    parser.add_argument("--engines", default="live,model,fallback")
     parser.add_argument("--fee-bps", type=float, default=4.0)
     parser.add_argument("--slippage-bps", type=float, default=2.0)
-    parser.add_argument("--min-confidence", type=float, default=70.0)
+    parser.add_argument("--min-confidence", type=float, default=65.0)
+    parser.add_argument("--leverage", type=int, default=50)
+    parser.add_argument("--window-days", type=float, default=14)
+    parser.add_argument("--seeds", type=int, default=5)
     args = parser.parse_args()
 
-    costs = CostModel(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps, funding_bps_per_bar=0.0)
-    market = MarketDataService()
-    rows = []
-    for symbol in SYMBOLS:
-        print(f"building signals for {symbol} ({args.bars} x {args.interval})...", file=sys.stderr)
-        bundle = await build_signal_series(market, symbol, args.interval, args.bars, args.leverage)
-        for threshold in (0.0, args.min_confidence):
-            config = EvaluationConfig(
-                initial_equity=1000.0,
-                risk_per_trade=0.01,
-                max_leverage=args.leverage,
-                min_confidence_pct=threshold,
-            )
-            row = summarize(bundle, config, costs)
-            row["min_confidence_pct"] = threshold
-            rows.append(row)
-            print(json.dumps(row), file=sys.stderr)
-    await market.close()
+    engines = [e for e in args.engines.split(",") if e]
+    costs = CostModel(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+    live_exits = dict(breakeven_trigger_pct=0.09 / args.leverage, opposing_exit_confidence=70.0,
+                      max_leverage=float(args.leverage), risk_per_trade=0.01)
+    strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, **live_exits)
+    baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, **live_exits)
+    window_bars = int(args.window_days * 86400 / INTERVAL_SECONDS[ENTRY_TF])
 
-    print(json.dumps(rows, indent=2))
+    from src.laya_engine import LayaEngine
+
+    engine = LayaEngine()
+    if {"live", "model"} & set(engines):
+        if not await engine.start_server() or engine._agent is None:
+            print("Native Laya model did not load; running fallback only.", file=sys.stderr)
+            engines = [e for e in engines if e == "fallback"]
+
+    now = time.time()
+    start = int(now - args.days * 86400)
+    rows: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for symbol in [s.strip() for s in args.symbols.split(",") if s.strip()]:
+            print(f"{symbol}: loading history", file=sys.stderr)
+            history = {
+                tf: await load_history(client, symbol, tf, args.days + WARMUP_DAYS, SCRATCH / "history", now=now)
+                for tf in (ENTRY_TF, *CONTEXT_TFS)
+            }
+            candles, states = build_states(history, symbol, start, args.leverage)
+            print(f"{symbol}: {len(states)} bars", file=sys.stderr)
+
+            fallback = [engine._fallback_decision(s, 0.0) for s in states]
+            decisions: Dict[str, List[Dict[str, Any]]] = {}
+            if "fallback" in engines:
+                decisions["fallback"] = fallback
+            if {"live", "model"} & set(engines):
+                cache = SCRATCH / "backtest_cache" / f"{engine.model_filename}_{symbol.replace('.', '_')}.json"
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                model = model_decisions(engine, states, cache)
+                if "model" in engines:
+                    decisions["model"] = model
+                if "live" in engines:
+                    decisions["live"] = [engine._blend(m, f) for m, f in zip(model, fallback)]
+
+            generator = SignalGenerator(leverage=args.leverage)
+
+            def to_signals(ds):
+                return [generator.generate_signal(s, d) for s, d in zip(states, ds)]
+
+            directional_rate = 0.0
+            for name, ds in decisions.items():
+                signals = to_signals(ds)
+                if name == engines[0]:
+                    directional_rate = sum(s["action"] != "NEUTRAL" for s in signals) / max(1, len(signals))
+                rows.append({"symbol": symbol, "strategy": name,
+                             **evaluate(candles, signals, strategy_cfg, costs, window_bars)})
+
+            rows.append({"symbol": symbol, "strategy": "flat",
+                         **evaluate(candles, [{}] * len(candles), baseline_cfg, costs, window_bars)})
+            seeds = [evaluate(candles, to_signals(random_decisions(len(states), directional_rate, seed)),
+                              baseline_cfg, costs, window_bars) for seed in range(args.seeds)]
+            rows.append({"symbol": symbol, "strategy": "random", "directional_rate": directional_rate,
+                         **average_rows(seeds)})
+            rows.append({"symbol": symbol, "strategy": "ema_cross",
+                         **evaluate(candles, to_signals(ema_cross_decisions(states)), baseline_cfg, costs, window_bars)})
+
+    await engine.close()
+    out_dir = SCRATCH / "backtests"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
+                                    "rows": rows}, indent=2, default=str))
+    print_table(rows)
+    print(f"\nrandom = entries at the first engine's signal rate, same bracket, mean of {args.seeds} seeds")
+    print("Known gaps: " + " ".join(KNOWN_GAPS))
+    print(f"Saved {out_path}")
     return 0
 
 
