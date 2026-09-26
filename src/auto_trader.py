@@ -183,7 +183,7 @@ class AutoTrader:
         # Load persisted settings and state
         self._load_state()
         self._edge_tables: Dict[str, EdgeTable] = {}
-        self._edge_tables_file: Optional[str] = None
+        self._edge_tables_file: Optional[tuple] = None
         self._apply_generator_settings()
         self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
         self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
@@ -346,10 +346,13 @@ class AutoTrader:
     def _edge_table(self, symbol: str) -> Optional[EdgeTable]:
         """Outcome table for a symbol from the configured file; None when unavailable."""
         name = self.settings.get("edge_table_file") or ""
-        if name != self._edge_tables_file:
-            self._edge_tables, self._edge_tables_file = {}, name
-            path = EDGE_TABLE_DIR / name
-            if name and path.is_file():
+        path = EDGE_TABLE_DIR / name
+        version = (name, path.stat().st_mtime_ns) if name and path.is_file() else (name, None)
+        if version != self._edge_tables_file:
+            self._edge_tables, self._edge_tables_file = {}, version
+            if version[1] is None:
+                self.add_log("warning", "EDGE_GATE", f"Edge table '{name}' not found in {EDGE_TABLE_DIR}; gate blocks all trades.")
+            else:
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                     self._edge_tables = {
@@ -822,13 +825,6 @@ class AutoTrader:
             }
             self._set_active_trade(trade)
 
-        max_hold = trade.get("max_hold_seconds")
-        if max_hold and time.time() - float(trade.get("open_time", time.time())) >= float(max_hold):
-            result = await self.toobit_client.flash_close(symbol)
-            if result.get("success"):
-                self._handle_trade_closed(position, reason="time stop")
-            return
-
         analysis_result = await self._analyze_symbol(display_symbol)
         analysis = analysis_result["signal"] if analysis_result else None
         entry_price = float(position.get("entryPrice", trade.get("entry_price", 0.0)))
@@ -1026,11 +1022,43 @@ class AutoTrader:
             self._save_state()
             self.add_log("success", "ORDER", f"Position opened: {leverage}x {position_side} {quantity} {symbol}.")
 
+    async def _enforce_time_stops(self) -> None:
+        """Market-close managed trades held past their signal's max_hold_seconds."""
+        now = time.time()
+        expired = [
+            trade for trade in list(self._active_trades.values())
+            if trade.get("max_hold_seconds")
+            and now - float(trade.get("open_time", now)) >= float(trade["max_hold_seconds"])
+        ]
+        if not expired:
+            return
+        mode_error = self._mode_mismatch_reason()
+        if mode_error:
+            # Closing through a client of the wrong mode could hit the wrong account.
+            self.add_log("danger", "TIME_STOP", f"Time stop skipped: {mode_error}")
+            return
+        for trade in expired:
+            symbol = trade.get("exchange_symbol") or trade.get("symbol")
+            try:
+                result = await self.toobit_client.flash_close(symbol)
+            except Exception as exc:
+                result = {"success": False, "message": str(exc)}
+            if result and result.get("success"):
+                self._handle_trade_closed(trade, reason="time stop")
+            elif not trade.get("time_stop_failed"):
+                trade["time_stop_failed"] = True  # log once, retry every tick
+                self.add_log("danger", "TIME_STOP",
+                             f"Time stop close failed for {trade.get('symbol')}: "
+                             f"{(result or {}).get('message', 'not confirmed')}. Exchange SL/TP still apply.")
+
     async def tick(self):
         """Periodic evaluation of market conditions, active trades, and circuit breakers."""
         # 1. Date rollover check for daily loss counter
         if self._roll_day():
             self._save_state()
+
+        # Time stops run even while disabled or halted: a barrier trade must not outlive its horizon.
+        await self._enforce_time_stops()
 
         # 2. Check if AutoTrader is enabled
         if not self.enabled:

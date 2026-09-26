@@ -37,17 +37,55 @@ def test_risk_pct_sizing_loses_the_configured_share_at_the_stop(tmp_path, monkey
     assert client.create_order.await_args.kwargs["quantity"] == pytest.approx(1.0)
 
 
+EXPIRED = {
+    "symbol": "BTCUSDT.P", "exchange_symbol": "BTC-SWAP-USDT", "side": "LONG", "entry_price": 100.0,
+    "stop_loss": 99.4, "take_profit_1": 101.2, "take_profit_2": 0.0, "be_moved": False,
+    "max_hold_seconds": 7200,
+}
+
+
 def test_time_stop_closes_positions_held_past_their_limit(tmp_path, monkeypatch):
     trader, client = make_trader(tmp_path, monkeypatch)
-    trader._set_active_trade({
-        "symbol": "BTCUSDT.P", "exchange_symbol": "BTC-SWAP-USDT", "side": "LONG", "entry_price": 100.0,
-        "stop_loss": 99.4, "take_profit_1": 101.2, "take_profit_2": 0.0, "be_moved": False,
-        "open_time": time.time() - 7300, "max_hold_seconds": 7200,
-    })
+    trader.enabled = True
+    trader._set_active_trade(dict(EXPIRED, open_time=time.time() - 7300))
 
-    asyncio.run(trader._manage_position(position()))
+    asyncio.run(trader.tick())
+
+    client.flash_close.assert_awaited_once_with("BTC-SWAP-USDT")
+    assert trader.get_active_trade("BTCUSDT.P") is None
+
+
+def test_time_stop_still_runs_when_trader_is_disabled_or_halted(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    trader.enabled = False
+    trader.status = "HALTED"
+    trader._set_active_trade(dict(EXPIRED, open_time=time.time() - 7300))
+
+    asyncio.run(trader.tick())
 
     client.flash_close.assert_awaited_once()
+
+
+def test_failed_time_stop_is_logged_and_protection_keeps_running(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    client.flash_close.return_value = {"success": False, "message": "rejected"}
+    trader._set_active_trade(dict(EXPIRED, open_time=time.time() - 7300))
+
+    asyncio.run(trader._enforce_time_stops())
+    asyncio.run(trader._manage_position(position()))
+
+    assert any(log["category"] == "TIME_STOP" and log["level"] == "danger" for log in trader.logs)
+    assert trader.get_active_trade("BTCUSDT.P") is not None
+    assert trader._analysis_results["BTCUSDT.P"]["state"] == "READY"  # supervision still ran
+
+
+def test_time_stop_skips_trades_within_their_limit(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    trader._set_active_trade(dict(EXPIRED, open_time=time.time() - 60))
+
+    asyncio.run(trader._enforce_time_stops())
+
+    client.flash_close.assert_not_awaited()
 
 
 def test_breakeven_tp1_fees_moves_only_on_tp1_and_covers_costs(tmp_path, monkeypatch):
@@ -99,3 +137,25 @@ def test_edge_table_file_setting_cannot_escape_the_table_directory(tmp_path, mon
     trader, _ = make_trader(tmp_path, monkeypatch)
     asyncio.run(trader.update_settings({"edge_table_file": "../../.env"}))
     assert trader.settings["edge_table_file"] == ".env"
+
+
+def test_edge_table_reloads_when_file_changes_or_appears(tmp_path, monkeypatch):
+    import os
+
+    trader, _ = make_trader(tmp_path, monkeypatch, symbols=["BTCUSDT.P"])
+    table_dir = tmp_path / "edge_tables"
+    table_dir.mkdir()
+    monkeypatch.setattr(auto_trader_module, "EDGE_TABLE_DIR", table_dir)
+    trader.settings.update(edge_gate=True, edge_table_file="gate.json")
+
+    assert trader._edge_table("BTCUSDT.P") is None  # missing file
+    assert any("gate.json" in log["message"] for log in trader.logs)
+
+    path = table_dir / "gate.json"
+    path.write_text(json.dumps({"BTCUSDT.P": {"min_samples": 30, "stats": {"LONG:80": {"n": 50, "mean_r": 0.1}}}}))
+    assert trader._edge_table("BTCUSDT.P").expected_r({"action": "LONG", "confidence_pct": 80}) == pytest.approx(0.1)
+
+    path.write_text(json.dumps({"BTCUSDT.P": {"min_samples": 30, "stats": {"LONG:80": {"n": 50, "mean_r": -0.2}}}}))
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000))
+    assert trader._edge_table("BTCUSDT.P").expected_r({"action": "LONG", "confidence_pct": 80}) == pytest.approx(-0.2)
