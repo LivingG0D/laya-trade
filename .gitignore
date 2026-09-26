@@ -50,3 +50,6 @@ logs/
 .cache/
 .pytest_cache/
 scratch/
+
+# Recorded market data
+data/
