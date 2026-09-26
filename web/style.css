@@ -1334,7 +1334,8 @@ kbd {
 /* Narrow desktop: the price group gives way first */
 @media (max-width: 1279px) {
   .nav-metric-secondary { display: none; }
-  .status-chip .chip-label { display: none; }
+  /* Visually hidden, still announced: the chip's status text names the button */
+  .status-chip .chip-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .status-chip { padding: 0 8px; }
   .btn-analyze .kbd-hint { display: none; }
 }
@@ -1388,7 +1389,7 @@ kbd {
   .nav-status { grid-area: status; justify-self: end; }
   .status-chip { height: 44px; min-width: 44px; justify-content: center; }
   .status-chip .toobit-nav-pill,
-  .status-chip .autotrade-pill { display: none; }
+  .status-chip .autotrade-pill { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .coin-selector-btn { height: 44px; }
   .coin-btn-search-icon { display: none; }
   .nav-popover { right: 12px; }

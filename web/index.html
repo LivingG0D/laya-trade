@@ -119,8 +119,9 @@
 
       <div class="nav-right">
         <div class="nav-status">
-          <button type="button" class="status-chip" popovertarget="feedPopover" aria-label="Live feed and sound settings">
+          <button type="button" class="status-chip" popovertarget="feedPopover">
             <span class="status-dot" aria-hidden="true"></span>
+            <span class="sr-only">Price feed:</span>
             <span id="wsStatusText" class="chip-label">Connecting…</span>
           </button>
           <div id="feedPopover" class="nav-popover" popover>
@@ -131,13 +132,13 @@
             </button>
           </div>
 
-          <button type="button" id="btnToobitConnect" class="status-chip" aria-label="Toobit account">
+          <button type="button" id="btnToobitConnect" class="status-chip">
             <i data-lucide="wallet"></i>
             <span class="chip-label">Toobit</span>
             <span class="toobit-nav-pill demo" id="toobitNavStatus">Demo</span>
           </button>
 
-          <button type="button" id="btnAutoTradeModal" class="status-chip" aria-label="Auto-trader">
+          <button type="button" id="btnAutoTradeModal" class="status-chip">
             <span class="autotrade-status-dot" id="navAutoTradeDot" aria-hidden="true"></span>
             <span class="chip-label">Auto-trader</span>
             <span class="autotrade-pill off" id="navAutoTradePill">Off</span>
@@ -516,7 +517,8 @@
       <button type="button" class="mobile-tab-btn" data-tab="signals" aria-pressed="false">
         <i data-lucide="sparkles"></i>
         <span>Laya</span>
-        <span class="tab-signal-pill" id="mobileTabSignalPill" data-side="neutral" aria-label="Laya says wait"></span>
+        <span class="tab-signal-pill" id="mobileTabSignalPill" data-side="neutral" aria-hidden="true"></span>
+        <span class="sr-only" id="mobileTabSignalText">, says wait</span>
       </button>
       <button type="button" class="mobile-tab-btn" data-tab="position" aria-pressed="false">
         <i data-lucide="wallet"></i>

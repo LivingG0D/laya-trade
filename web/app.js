@@ -649,11 +649,10 @@ function applySignal(signal, _latest, laya) {
   const verdict = isLong ? "Long" : isShort ? "Short" : "Wait";
   const conf = Math.max(0, Math.min(100, Number(signal.confidence_pct) || 0));
 
-  // Mobile tab bar: dot in the verdict colour
-  if (mobileTabSignalPill) {
-    mobileTabSignalPill.dataset.side = side;
-    mobileTabSignalPill.setAttribute("aria-label", `Laya says ${verdict.toLowerCase()}`);
-  }
+  // Mobile tab bar: dot in the verdict colour, plus the verdict as text for screen readers
+  if (mobileTabSignalPill) mobileTabSignalPill.dataset.side = side;
+  const mobileTabSignalText = document.getElementById("mobileTabSignalText");
+  if (mobileTabSignalText) mobileTabSignalText.textContent = `, says ${verdict.toLowerCase()}`;
 
   // 1. Verdict word + confidence needle
   signalCard.dataset.side = side;
@@ -1452,6 +1451,8 @@ document.addEventListener("keydown", (e) => {
 
   // Open <dialog>s handle their own Escape; shortcuts stay off until they close
   if (document.querySelector("dialog[open]")) return;
+  // Space must still press the focused button / toggle the focused <summary>
+  if (e.code === "Space" && e.target.closest("button, summary, a, label")) return;
 
   if (e.code === "Space") {
     e.preventDefault();
