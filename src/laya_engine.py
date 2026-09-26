@@ -400,73 +400,89 @@ class LayaEngine:
             except Exception as e:
                 logger.warning(f"INT8 ONNX model inference failed: {e}. Checking secondary runtimes.")
 
-        # 2. Secondary: PyTorch native fine-tuned agent
+        # 2. Secondary: PyTorch native fine-tuned agent, blended with the rule-based scorer
         if self._agent is not None:
             try:
-                htf = market_state.get("htf") or {}
-                depth = market_state.get("depth") or {}
-                adx_val = market_state.get("adx", 20.0)
-                obi_val = depth.get("imbalance_pct", 0.0)
-                is_sqz = "ACTIVE" if market_state.get("is_squeeze") else "OFF"
-                summary_text = (
-                    f"Asset: {market_state.get('symbol', 'BTCUSDT.P')} | "
-                    f"Micro TF: {market_state.get('interval', '5m')} | "
-                    f"Price: {market_state.get('price')} | "
-                    f"1H Macro Trend: {htf.get('trend', 'NEUTRAL')} | "
-                    f"Market Regime: {market_state.get('market_regime', 'CHOP_RANGE')} | "
-                    f"ADX: {adx_val:.1f} | "
-                    f"Order Book OBI: {obi_val:+.1f}% | "
-                    f"TTM Squeeze: {is_sqz} | "
-                    f"Trend State: {market_state.get('trend_state')}"
-                )
-                questions = {
-                    "position": {
-                        "type": "choice",
-                        "instructions": "Determine optimal trading position",
-                        "criteria": {
-                            "STRONG_LONG": "Clear upward trend",
-                            "SCALP_LONG": "Support bounce",
-                            "NEUTRAL_HOLD": "Choppy range",
-                            "SCALP_SHORT": "Resistance rejection",
-                            "STRONG_SHORT": "Clear downward breakdown"
-                        }
-                    }
-                }
-                res = await asyncio.to_thread(self._agent.predict, summary_text, questions)
+                agent_res = (await asyncio.to_thread(self._agent_decisions, [market_state]))[0]
                 latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
-                agent_res = self._format_laya_response(res, latency_ms, engine_type=f"{self.model_filename}_{self.device}")
-
-                # Blend Neural GPU predictions with Multi-Timeframe mathematical confluence
-                mtf_res = self._fallback_decision(market_state, latency_ms)
-                p_long = 0.50 * agent_res["long_prob"] + 0.50 * mtf_res["long_prob"]
-                p_short = 0.50 * agent_res["short_prob"] + 0.50 * mtf_res["short_prob"]
-                p_hold = 0.50 * agent_res["hold_prob"] + 0.50 * mtf_res["hold_prob"]
-
-                dir_sum = max(1e-5, p_long + p_short)
-                dir_ratio = p_long / dir_sum
-
-                if p_long > p_short and dir_ratio >= 0.525 and p_long >= p_hold * 0.90:
-                    pos_choice = "STRONG_LONG" if dir_ratio >= 0.55 else "SCALP_LONG"
-                elif p_short > p_long and (1.0 - dir_ratio) >= 0.525 and p_short >= p_hold * 0.90:
-                    pos_choice = "STRONG_SHORT" if (1.0 - dir_ratio) >= 0.55 else "SCALP_SHORT"
-                else:
-                    pos_choice = "NEUTRAL_HOLD"
-
-                conviction = dir_ratio if "LONG" in pos_choice else ((1.0 - dir_ratio) if "SHORT" in pos_choice else max(dir_ratio, 1.0 - dir_ratio))
-
-                agent_res["position"] = pos_choice
-                agent_res["long_prob"] = round(p_long, 3)
-                agent_res["short_prob"] = round(p_short, 3)
-                agent_res["hold_prob"] = round(p_hold, 3)
-                agent_res["directional_conviction"] = round(float(conviction), 4)
-                agent_res["confidence_prob"] = round(float(conviction), 3)
-                return agent_res
+                agent_res["latency_ms"] = latency_ms
+                return self._blend(agent_res, self._fallback_decision(market_state, latency_ms))
             except Exception as e:
                 logger.warning(f"Native fine-tuned model inference failed: {e}. Trying fallback.")
 
         # 3. Fallback calibrated System 1 decision engine
         latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
         return self._fallback_decision(market_state, latency_ms)
+
+    _AGENT_QUESTIONS = {
+        "position": {
+            "type": "choice",
+            "instructions": "Determine optimal trading position",
+            "criteria": {
+                "STRONG_LONG": "Clear upward trend",
+                "SCALP_LONG": "Support bounce",
+                "NEUTRAL_HOLD": "Choppy range",
+                "SCALP_SHORT": "Resistance rejection",
+                "STRONG_SHORT": "Clear downward breakdown"
+            }
+        }
+    }
+
+    def _agent_summary(self, market_state: Dict[str, Any]) -> str:
+        """Text state the native agent is queried with."""
+        htf = market_state.get("htf") or {}
+        depth = market_state.get("depth") or {}
+        adx_val = market_state.get("adx", 20.0)
+        obi_val = depth.get("imbalance_pct", 0.0)
+        is_sqz = "ACTIVE" if market_state.get("is_squeeze") else "OFF"
+        return (
+            f"Asset: {market_state.get('symbol', 'BTCUSDT.P')} | "
+            f"Micro TF: {market_state.get('interval', '5m')} | "
+            f"Price: {market_state.get('price')} | "
+            f"1H Macro Trend: {htf.get('trend', 'NEUTRAL')} | "
+            f"Market Regime: {market_state.get('market_regime', 'CHOP_RANGE')} | "
+            f"ADX: {adx_val:.1f} | "
+            f"Order Book OBI: {obi_val:+.1f}% | "
+            f"TTM Squeeze: {is_sqz} | "
+            f"Trend State: {market_state.get('trend_state')}"
+        )
+
+    def _agent_decisions(self, market_states, batch_size: int = 32):
+        """Model-only decisions (no blend) for one or many states; blocking, call off the event loop."""
+        texts = [self._agent_summary(state) for state in market_states]
+        if len(texts) == 1:
+            raw = [self._agent.predict(texts[0], self._AGENT_QUESTIONS)]
+        else:
+            raw = self._agent.predict_batch(texts, self._AGENT_QUESTIONS, batch_size=batch_size)
+        engine_type = f"{self.model_filename}_{self.device}"
+        return [self._format_laya_response(r, 0.0, engine_type=engine_type) for r in raw]
+
+    def _blend(self, agent_res: Dict[str, Any], mtf_res: Dict[str, Any]) -> Dict[str, Any]:
+        """Blend neural predictions 50/50 with the multi-timeframe rule-based scorer."""
+        agent_res = dict(agent_res)
+        p_long = 0.50 * agent_res["long_prob"] + 0.50 * mtf_res["long_prob"]
+        p_short = 0.50 * agent_res["short_prob"] + 0.50 * mtf_res["short_prob"]
+        p_hold = 0.50 * agent_res["hold_prob"] + 0.50 * mtf_res["hold_prob"]
+
+        dir_sum = max(1e-5, p_long + p_short)
+        dir_ratio = p_long / dir_sum
+
+        if p_long > p_short and dir_ratio >= 0.525 and p_long >= p_hold * 0.90:
+            pos_choice = "STRONG_LONG" if dir_ratio >= 0.55 else "SCALP_LONG"
+        elif p_short > p_long and (1.0 - dir_ratio) >= 0.525 and p_short >= p_hold * 0.90:
+            pos_choice = "STRONG_SHORT" if (1.0 - dir_ratio) >= 0.55 else "SCALP_SHORT"
+        else:
+            pos_choice = "NEUTRAL_HOLD"
+
+        conviction = dir_ratio if "LONG" in pos_choice else ((1.0 - dir_ratio) if "SHORT" in pos_choice else max(dir_ratio, 1.0 - dir_ratio))
+
+        agent_res["position"] = pos_choice
+        agent_res["long_prob"] = round(p_long, 3)
+        agent_res["short_prob"] = round(p_short, 3)
+        agent_res["hold_prob"] = round(p_hold, 3)
+        agent_res["directional_conviction"] = round(float(conviction), 4)
+        agent_res["confidence_prob"] = round(float(conviction), 3)
+        return agent_res
 
     def _format_laya_response(self, raw_data: Dict[str, Any], latency_ms: float, engine_type: str) -> Dict[str, Any]:
         """Format raw Laya server or agent JSON into structured signal data."""
