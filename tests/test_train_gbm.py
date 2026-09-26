@@ -18,6 +18,8 @@ def test_schedule_trains_first_then_steps_and_holds_out_the_end():
     assert all(b[0] == a[1] for a, b in zip(windows, windows[1:]))  # contiguous
     assert windows[-1][1] == 305 * DAY  # stops where the holdout begins
     assert holdout == (305 * DAY, 365 * DAY)
+    # 120 + 6 * 30 = 300: the 5-day stub before the holdout folds into the last window
+    assert len(windows) == 6 and windows[-1] == (270 * DAY, 305 * DAY)
 
 
 def test_train_mask_purges_labels_that_overlap_the_test_window():
@@ -66,3 +68,30 @@ def test_label_metrics_report_top_bucket_hit_rates_and_direction_skill():
     assert m["long"]["top_1pct_hit_rate"] == pytest.approx(1.0)
     # Among bars where exactly one side won, p_long - p_short separates them perfectly.
     assert m["direction_auc"] == pytest.approx(1.0)
+
+
+def test_subsample_keeps_every_symbol():
+    from experiments.train_gbm import subsample_mask
+
+    times = np.repeat(np.arange(10) * 300, 10)  # 10 symbols at every timestamp, sorted by time
+    symbols = np.tile(np.arange(10), 10)
+    keep = subsample_mask(times, 2)
+    assert set(symbols[keep]) == set(range(10))
+    assert keep.sum() == 50
+
+
+def test_pass_checks_count_every_window_and_need_enough_holdout_trades():
+    from experiments.train_gbm import pass_checks
+
+    good = {"trade_count": 40, "expectancy_r": 0.3, "avg_cost_r": 0.13}
+    random_block = {"trade_count": 40, "expectancy_r": 0.0}
+    windows = [{"model": good}] * 2 + [{"model": {"trade_count": 0, "expectancy_r": 0.0}}] * 3
+    checks = pass_checks(windows, {"model": good, "random": random_block},
+                         {"model": good, "random": random_block}, round_trip_cost_r=0.2)
+    assert not checks["windows_positive_60pct"]  # 2 of 5 windows, not 2 of 2
+    assert checks["beats_random_by_costs"]  # 0.3 - 0.0 > 0.2
+
+    few = {"trade_count": 5, "expectancy_r": 0.5, "avg_cost_r": 0.13}
+    checks = pass_checks([{"model": good}] * 5, {"model": good, "random": random_block},
+                         {"model": few, "random": random_block}, round_trip_cost_r=0.2)
+    assert not checks["holdout_expectancy_positive"]

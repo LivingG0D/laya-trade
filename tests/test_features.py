@@ -74,3 +74,12 @@ def test_live_window_matches_full_history_on_the_last_bar():
     live = build_features(window).iloc[-1]
     np.testing.assert_allclose(live[FEATURE_COLUMNS].astype(float), full[FEATURE_COLUMNS].astype(float),
                                rtol=2e-3, atol=2e-4)
+
+
+def test_stale_higher_timeframe_data_is_not_carried_forward():
+    frames = synthetic_frames(3000)
+    frames["1h"] = frames["1h"].iloc[:10]  # the 1h history stops early
+    feats = build_features(frames)
+    last_1h_close = int(frames["1h"]["time"].iloc[-1]) + 3600
+    late = feats[feats["time"] + 300 > last_1h_close + 3600]
+    assert late["h1_ret_1"].isna().all()

@@ -58,7 +58,29 @@ def walk_forward_schedule(start: int, end: int, first_train_days: float, step_da
     while t < holdout_start:
         windows.append((t, min(int(t + step_days * DAY), holdout_start)))
         t = windows[-1][1]
+    # A stub shorter than half a step folds into the window before it.
+    if len(windows) > 1 and windows[-1][1] - windows[-1][0] < step_days * DAY / 2:
+        windows[-2:] = [(windows[-2][0], windows[-1][1])]
     return windows, (holdout_start, int(end))
+
+
+def subsample_mask(times: np.ndarray, every: int) -> np.ndarray:
+    """Every Nth bar in time, for all symbols alike (rows are sorted by time, then symbol)."""
+    return (times // BAR) % max(every, 1) == 0
+
+
+def pass_checks(windows: List[Dict[str, Any]], walk_forward: Dict[str, Any], holdout: Dict[str, Any],
+                round_trip_cost_r: float, min_holdout_trades: int = 30) -> Dict[str, bool]:
+    """The spec's pass criteria. Every walk-forward window counts, traded or not."""
+    positive = sum(1 for w in windows if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
+    model, rand = walk_forward["model"], walk_forward["random"]
+    return {
+        "holdout_expectancy_positive": holdout["model"]["trade_count"] >= min_holdout_trades
+            and holdout["model"]["expectancy_r"] > 0,
+        "windows_positive_60pct": bool(windows) and positive / len(windows) >= 0.6,
+        "beats_random_by_costs": model["trade_count"] > 0
+            and model["expectancy_r"] - rand["expectancy_r"] > round_trip_cost_r,
+    }
 
 
 def train_mask(times: np.ndarray, test_start: int, label_seconds: int = LABEL_SECONDS) -> np.ndarray:
@@ -242,7 +264,7 @@ def main() -> int:
 
     def fit_before(test_start: int) -> SignalModel:
         mask = train_mask(times, test_start) & data["y_long"].notna().to_numpy()
-        idx = np.flatnonzero(mask)[::args.subsample]
+        idx = np.flatnonzero(mask & subsample_mask(times, args.subsample))
         return SignalModel(max_iter=args.max_iter).fit(X[idx], data["y_long"].to_numpy()[idx],
                                                         data["y_short"].to_numpy()[idx])
 
@@ -274,13 +296,10 @@ def main() -> int:
 
     wf, ho = report["walk_forward"], report["holdout"]
     positive_windows = sum(1 for w in report["windows"] if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
-    traded_windows = sum(1 for w in report["windows"] if w["model"]["trade_count"])
-    checks = {
-        "holdout_expectancy_positive": ho["model"]["trade_count"] > 0 and ho["model"]["expectancy_r"] > 0,
-        "windows_positive_60pct": traded_windows > 0 and positive_windows / traded_windows >= 0.6,
-        "beats_random_by_costs": wf["model"]["trade_count"] > 0 and
-            wf["model"]["expectancy_r"] - wf["random"]["expectancy_r"] > wf["model"]["avg_cost_r"],
-    }
+    traded_windows = len(report["windows"])
+    # Full round trip in R, slippage included (avg_cost_r holds fees only).
+    round_trip_cost_r = 2 * (args.fee_bps + args.slippage_bps) / 1e4 / BARRIER_SL_PCT
+    checks = pass_checks(report["windows"], wf, ho, round_trip_cost_r)
     report["pass_checks"], report["passed"] = checks, all(checks.values())
     if report["passed"]:
         final = fit_before(end + LABEL_SECONDS)

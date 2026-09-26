@@ -123,3 +123,21 @@ def test_fetch_range_retries_rate_limits(tmp_path):
     candles = asyncio.run(run())
     assert calls["n"] == 2
     assert candles[-1]["time"] == T0 + (BARS - 1) * STEP
+
+
+def test_fetch_range_retries_connection_errors():
+    requests = []
+    good = fake_binance(requests)
+    calls = {"n": 0}
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("reset")
+        return good(request)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(flaky)) as client:
+            return await fetch_range(client, "BTCUSDT.P", "5m", T0 + 3900 * STEP, T0 + BARS * STEP, retry_delay=0)
+
+    assert asyncio.run(run())[-1]["time"] == T0 + (BARS - 1) * STEP

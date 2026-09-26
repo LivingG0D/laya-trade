@@ -53,8 +53,10 @@ file, which does not affect AUC.
   costs; random entries at the same trade count and flat as baselines; per
   30-day window and on the holdout.
 - **Pass criteria (all):** holdout expectancy > 0R after costs pooled across
-  symbols; at least 60% of walk-forward windows positive; beats random by more
-  than the average cost per trade.
+  symbols, on at least 30 holdout trades; at least 60% of all walk-forward
+  windows positive (a window with no trades counts as not positive); beats
+  random by more than the full round-trip cost (0.12% = 0.2R, slippage
+  included).
 
 ## Part C: Live wiring (only if Part B passes)
 

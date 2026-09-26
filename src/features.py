@@ -109,7 +109,9 @@ def build_features(frames: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         htf = frames[tf].reset_index(drop=True)
         feats = _htf_features(htf).add_prefix(HTF_PREFIX[tf] + "_")
         feats["htf_close"] = htf["time"].astype(np.int64) + STEP_SECONDS[tf]
-        out = pd.merge_asof(out, feats, left_on="bar_close", right_on="htf_close", direction="backward")
+        # tolerance: a gap in higher-timeframe history leaves NaN instead of reusing an old candle
+        out = pd.merge_asof(out, feats, left_on="bar_close", right_on="htf_close", direction="backward",
+                            tolerance=STEP_SECONDS[tf])
         out = out.drop(columns="htf_close")
     out = out.drop(columns="bar_close")
     out[FEATURE_COLUMNS] = out[FEATURE_COLUMNS].astype(np.float32)

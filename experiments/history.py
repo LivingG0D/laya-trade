@@ -48,7 +48,13 @@ async def fetch_range(
     while True:
         params = {"symbol": to_binance_symbol(symbol), "interval": interval, "limit": page, "endTime": end_ms}
         for attempt in range(retries + 1):
-            resp = await client.get(KLINES_URL, params=params)
+            try:
+                resp = await client.get(KLINES_URL, params=params)
+            except httpx.TransportError:
+                if attempt == retries:
+                    raise
+                await asyncio.sleep(retry_delay * 2 ** attempt)
+                continue
             if resp.status_code not in (418, 429) and resp.status_code < 500 or attempt == retries:
                 break
             await asyncio.sleep(retry_delay * 2 ** attempt)
