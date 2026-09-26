@@ -9,21 +9,25 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .config import (
+    ROUND_TRIP_COST_PCT,
     DEFAULT_LEVERAGE,
     BASE_DIR,
     SUPPORTED_SYMBOLS,
     SUPPORTED_TIMEFRAMES,
 )
 from .indicators import compute_all_indicators
+from .edge_gate import EdgeTable
 from .market_data import to_toobit_symbol
 
 logger = logging.getLogger("auto_trader")
 
 STATE_FILE = BASE_DIR / "scratch" / "autotrade_state.json"
+EDGE_TABLE_DIR = BASE_DIR / "scratch" / "edge_tables"
 
 
 def _position_key(symbol: str) -> str:
@@ -137,6 +141,12 @@ class AutoTrader:
             "max_daily_loss_usd": 5.0,  # Circuit breaker: halt if daily loss reaches $5.00
             "max_consecutive_losses": 3,  # Circuit breaker: halt after 3 losses
             "cooldown_seconds": 30,  # Wait 30s after closing before next trade
+            # Phase 1 options; defaults keep the original behaviour.
+            "exit_profile": "legacy",  # "legacy" ATR/R bracket, "barrier" +1.2%/-0.6%/2h
+            "breakeven_mode": "legacy",  # "legacy" 9% ROE or TP1 -> entry+0.05%, "tp1_fees", "off"
+            "max_cost_share": None,  # reject trades whose round-trip costs exceed this share of risk
+            "edge_gate": False,  # trade only buckets with positive measured R (replaces min_confidence)
+            "edge_table_file": "",  # file in scratch/edge_tables written by the backtest
         }
 
         # Real-time Metrics & Circuit Breaker Tracking
@@ -171,6 +181,9 @@ class AutoTrader:
 
         # Load persisted settings and state
         self._load_state()
+        self._edge_tables: Dict[str, EdgeTable] = {}
+        self._edge_tables_file: Optional[str] = None
+        self._apply_generator_settings()
         self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
         self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
 
@@ -323,6 +336,29 @@ class AutoTrader:
         self._active_trades.pop(_position_key(symbol), None)
         self._active_trade = next(iter(self._active_trades.values()), None)
 
+    def _apply_generator_settings(self) -> None:
+        """Share exit profile and cost filter with the signal generator (dashboard shows the same plan)."""
+        if hasattr(self.signal_generator, "exit_profile"):
+            self.signal_generator.exit_profile = self.settings["exit_profile"]
+            self.signal_generator.max_cost_share = self.settings["max_cost_share"]
+
+    def _edge_table(self, symbol: str) -> Optional[EdgeTable]:
+        """Outcome table for a symbol from the configured file; None when unavailable."""
+        name = self.settings.get("edge_table_file") or ""
+        if name != self._edge_tables_file:
+            self._edge_tables, self._edge_tables_file = {}, name
+            path = EDGE_TABLE_DIR / name
+            if name and path.is_file():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    self._edge_tables = {
+                        sym: EdgeTable(stats=row["stats"], min_samples=int(row["min_samples"]))
+                        for sym, row in data.items()
+                    }
+                except (ValueError, KeyError, TypeError) as exc:
+                    logger.warning("Could not load edge table %s: %s", path, exc)
+        return self._edge_tables.get(symbol) or self._edge_tables.get(str(symbol).upper())
+
     def _mode_mismatch_reason(self) -> Optional[str]:
         """Return a safety reason when configured and exchange modes differ."""
         expected_demo = self.settings.get("mode") == "demo"
@@ -392,7 +428,7 @@ class AutoTrader:
             # Sizing mode & margin
             if "sizing_mode" in new_settings:
                 mode = str(new_settings["sizing_mode"]).lower()
-                if mode in ("fixed_margin", "pct_equity"):
+                if mode in ("fixed_margin", "pct_equity", "risk_pct"):
                     self.settings["sizing_mode"] = mode
 
             if "fixed_margin_usd" in new_settings:
@@ -463,6 +499,20 @@ class AutoTrader:
 
             if "shadow_mode" in new_settings:
                 self.settings["shadow_mode"] = bool(new_settings["shadow_mode"])
+
+            if new_settings.get("exit_profile") in ("legacy", "barrier"):
+                self.settings["exit_profile"] = new_settings["exit_profile"]
+            if new_settings.get("breakeven_mode") in ("legacy", "tp1_fees", "off"):
+                self.settings["breakeven_mode"] = new_settings["breakeven_mode"]
+            if "max_cost_share" in new_settings:
+                raw = new_settings["max_cost_share"]
+                self.settings["max_cost_share"] = None if raw in (None, "") else max(0.05, min(1.0, float(raw)))
+            if "edge_gate" in new_settings:
+                self.settings["edge_gate"] = bool(new_settings["edge_gate"])
+            if "edge_table_file" in new_settings:
+                # Basename only: the file must live in scratch/edge_tables.
+                self.settings["edge_table_file"] = Path(str(new_settings["edge_table_file"] or "")).name
+            self._apply_generator_settings()
 
             if self.enabled:
                 mode_error = self._mode_mismatch_reason()
@@ -734,12 +784,18 @@ class AutoTrader:
                 continue
             if "LONG" not in action and "SHORT" not in action:
                 continue
-            if confidence < float(self.settings["min_confidence"]):
+            if self.settings.get("edge_gate"):
+                table = self._edge_table(result["symbol"])
+                if table is None or not table.allows(signal):
+                    continue
+                signal["expected_r"] = table.expected_r(signal)
+            elif confidence < float(self.settings["min_confidence"]):
                 continue
             if time.time() - float(signal.get("analysis_timestamp", 0.0)) > float(self.settings["signal_ttl_seconds"]):
                 continue
             candidates.append(result)
-        candidates.sort(key=lambda item: float(item["signal"].get("confidence_pct", 0.0)), reverse=True)
+        rank = "expected_r" if self.settings.get("edge_gate") else "confidence_pct"
+        candidates.sort(key=lambda item: float(item["signal"].get(rank) or 0.0), reverse=True)
         return candidates
 
     async def _manage_position(self, position: Dict[str, Any]) -> None:
@@ -764,6 +820,13 @@ class AutoTrader:
                 "open_time": time.time(),
             }
             self._set_active_trade(trade)
+
+        max_hold = trade.get("max_hold_seconds")
+        if max_hold and time.time() - float(trade.get("open_time", time.time())) >= float(max_hold):
+            result = await self.toobit_client.flash_close(symbol)
+            if result.get("success"):
+                self._handle_trade_closed(position, reason="time stop")
+            return
 
         analysis_result = await self._analyze_symbol(display_symbol)
         analysis = analysis_result["signal"] if analysis_result else None
@@ -815,12 +878,16 @@ class AutoTrader:
                 except Exception as exc:
                     self.add_log("danger", "BRACKET", f"Could not confirm exchange TP/SL for {display_symbol}: {exc}")
 
-        if self.settings.get("auto_breakeven", True) and not trade.get("be_moved"):
+        be_mode = self.settings.get("breakeven_mode", "legacy")
+        if self.settings.get("auto_breakeven", True) and be_mode != "off" and not trade.get("be_moved"):
             take_profit = float(trade.get("take_profit_1", 0.0))
-            should_move = (pnl_pct >= 9.0 or (side == "LONG" and mark_price >= take_profit > 0)
+            tp1_reached = ((side == "LONG" and mark_price >= take_profit > 0)
                            or (side == "SHORT" and mark_price <= take_profit > 0))
+            should_move = tp1_reached or (be_mode == "legacy" and pnl_pct >= 9.0)
             if should_move and entry_price > 0:
-                new_stop = entry_price * 1.0005 if side == "LONG" else entry_price * 0.9995
+                # tp1_fees: the stop covers round-trip costs, so a break-even exit does not lose money.
+                offset = ROUND_TRIP_COST_PCT if be_mode == "tp1_fees" else 0.0005
+                new_stop = entry_price * (1.0 + offset) if side == "LONG" else entry_price * (1.0 - offset)
                 try:
                     result = await self.toobit_client.set_position_tpsl(
                         symbol=symbol,
@@ -839,7 +906,12 @@ class AutoTrader:
             action = str(analysis.get("action", "")).upper()
             confidence = float(analysis.get("confidence_pct", 0.0))
             opposed = (side == "LONG" and "SHORT" in action) or (side == "SHORT" and "LONG" in action)
-            if opposed and confidence >= 70.0:
+            if self.settings.get("edge_gate"):
+                table = self._edge_table(display_symbol)
+                strong = table is not None and table.allows(analysis)
+            else:
+                strong = confidence >= 70.0
+            if opposed and strong:
                 result = await self.toobit_client.flash_close(symbol)
                 if result.get("success"):
                     self._handle_trade_closed(position, reason=f"opposing {action}")
@@ -877,12 +949,18 @@ class AutoTrader:
         if available_margin < 0.50:
             self.add_log("warning", "ORDER", f"Pre-flight skipped for {symbol}: insufficient available margin.")
             return
-        if self.settings["sizing_mode"] == "pct_equity":
+        leverage = int(self.settings["leverage"])
+        planned_stop = float(signal.get("stop_loss") or signal.get("targets", {}).get("stop_loss", 0.0) or 0.0)
+        if self.settings["sizing_mode"] == "risk_pct" and planned_stop > 0:
+            # Lose equity_risk_pct of equity if the stop fills: notional = risk / stop distance.
+            stop_pct = abs(entry_price - planned_stop) / entry_price
+            risk_usd = total_equity * float(self.settings["equity_risk_pct"]) / 100.0
+            target_margin = max(0.50, risk_usd / max(stop_pct, 1e-6) / leverage)
+        elif self.settings["sizing_mode"] == "pct_equity":
             target_margin = max(0.50, total_equity * float(self.settings["equity_risk_pct"]) / 100.0)
         else:
             target_margin = max(0.50, float(self.settings["fixed_margin_usd"]))
         target_margin = min(target_margin, available_margin * 0.20)
-        leverage = int(self.settings["leverage"])
         notional_value = target_margin * leverage
         rules = await self.toobit_client.get_symbol_rules(symbol)
         multiplier = float(rules.get("multiplier", 1.0))
@@ -937,6 +1015,7 @@ class AutoTrader:
                 "take_profit_2": take_profit_2,
                 "be_moved": False,
                 "open_time": time.time(),
+                "max_hold_seconds": signal.get("max_hold_seconds"),
             })
             self._symbol_cooldowns[_position_key(symbol)] = time.time() + float(self.settings["per_symbol_cooldown_seconds"])
             self.stats["total_trades"] += 1
