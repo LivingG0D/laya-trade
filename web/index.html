@@ -4,96 +4,88 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0e14">
-  <meta name="description" content="Laya AI — real-time crypto perpetual futures chart analyzer with Laya System-1 signals, position management and Toobit integration.">
-  <title>Laya Crypto AI Trade Analyzer — BTCUSDT.P (Toobit)</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>₿</text></svg>">
-  
-  <!-- Modern Typography Fonts -->
+  <meta name="theme-color" content="#16181B">
+  <meta name="description" content="Laya Trade: live crypto perpetual futures chart with Laya's AI verdict, position management and Toobit integration.">
+  <title>Laya Trade — BTCUSDT.P</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2316181B'/><path d='M22 70 L50 26 L78 70' fill='none' stroke='%23FFB020' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- CSS Stylesheet -->
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="/static/style.css">
-  
+
   <!-- TradingView Lightweight Charts (v4.1.3), vendored -->
   <script src="/static/lib/lightweight-charts.standalone.production.js"></script>
-  <!-- Lucide icons: only the 48 we use -->
+  <!-- Lucide icons: only the ones we use -->
   <script src="/static/lib/icons.js"></script>
 </head>
-<body class="dark-theme">
-  <!-- Toast Feedback Notification Container -->
+<body>
   <div id="toastContainer" class="toast-container" role="status" aria-live="polite"></div>
 
   <div class="app-layout">
-    <!-- ============================================== -->
-    <!-- TOP NAVIGATION & STATUS BAR -->
-    <!-- ============================================== -->
+    <!-- Header: left (brand, coin, timeframe) · middle (price) · right (status, Analyze) -->
     <header class="top-nav">
       <div class="nav-left">
         <div class="brand">
-          <span class="brand-badge">LAYA AI</span>
-          <span class="exchange-badge" title="Live Perpetual Futures Feed">TOOBIT</span>
-          <h1 class="brand-title">Laya Trade</h1>
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1 class="brand-title">Laya</h1>
         </div>
 
         <div class="asset-selector-wrap" id="coinSelectorWrap">
-          <!-- Clean TradingView-style Coin Selector Trigger Button -->
-          <button type="button" id="coinSelectorBtn" class="coin-selector-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="Search and select trading coin" title="Search coin (Press / or Ctrl+K)">
-            <span class="coin-btn-icon" id="coinBtnIcon">₿</span>
+          <button type="button" id="coinSelectorBtn" class="coin-selector-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="Change coin" title="Change coin (/ or Ctrl+K)">
+            <span class="coin-btn-icon" id="coinBtnIcon" aria-hidden="true">₿</span>
             <span class="coin-btn-symbol" id="coinBtnSymbol">BTCUSDT.P</span>
-            <span class="coin-btn-badge">Toobit</span>
             <i data-lucide="search" class="coin-btn-search-icon"></i>
           </button>
 
-          <!-- Hidden select to guarantee 100% backward compatibility with all existing scripts -->
-          <label for="symbolSelect" class="sr-only">Select Perpetual Market</label>
+          <!-- Hidden select: the coin search writes to it and app.js listens for its change event -->
+          <label for="symbolSelect" class="sr-only">Market</label>
           <select id="symbolSelect" class="sr-only" aria-hidden="true" tabindex="-1">
-            <optgroup label="👑 Major Mega Caps (Default)">
-              <option value="BTCUSDT.P" selected>₿ BTCUSDT.P (Toobit)</option>
-              <option value="ETHUSDT.P">Ξ ETHUSDT.P (Toobit)</option>
-              <option value="SOLUSDT.P">◎ SOLUSDT.P (Toobit)</option>
-              <option value="BNBUSDT.P">🟡 BNBUSDT.P (Toobit)</option>
-              <option value="XRPUSDT.P">✕ XRPUSDT.P (Toobit)</option>
+            <optgroup label="Major">
+              <option value="BTCUSDT.P" selected>BTCUSDT.P</option>
+              <option value="ETHUSDT.P">ETHUSDT.P</option>
+              <option value="SOLUSDT.P">SOLUSDT.P</option>
+              <option value="BNBUSDT.P">BNBUSDT.P</option>
+              <option value="XRPUSDT.P">XRPUSDT.P</option>
             </optgroup>
-            <optgroup label="🔥 Top Meme Coins">
-              <option value="1000PEPEUSDT.P">🐸 1000PEPEUSDT.P (Toobit)</option>
-              <option value="DOGEUSDT.P">Ð DOGEUSDT.P (Toobit)</option>
-              <option value="1000SHIBUSDT.P">🐕 1000SHIBUSDT.P (Toobit)</option>
-              <option value="1000BONKUSDT.P">🦴 1000BONKUSDT.P (Toobit)</option>
-              <option value="1000FLOKIUSDT.P">⚔️ 1000FLOKIUSDT.P (Toobit)</option>
-              <option value="WIFUSDT.P">🧢 WIFUSDT.P (Toobit)</option>
-              <option value="POPCATUSDT.P">🐱 POPCATUSDT.P (Toobit)</option>
-              <option value="NEIROUSDT.P">🐶 NEIROUSDT.P (Toobit)</option>
-              <option value="TURBOUSDT.P">🏎️ TURBOUSDT.P (Toobit)</option>
+            <optgroup label="Meme">
+              <option value="1000PEPEUSDT.P">1000PEPEUSDT.P</option>
+              <option value="DOGEUSDT.P">DOGEUSDT.P</option>
+              <option value="1000SHIBUSDT.P">1000SHIBUSDT.P</option>
+              <option value="1000BONKUSDT.P">1000BONKUSDT.P</option>
+              <option value="1000FLOKIUSDT.P">1000FLOKIUSDT.P</option>
+              <option value="WIFUSDT.P">WIFUSDT.P</option>
+              <option value="POPCATUSDT.P">POPCATUSDT.P</option>
+              <option value="NEIROUSDT.P">NEIROUSDT.P</option>
+              <option value="TURBOUSDT.P">TURBOUSDT.P</option>
             </optgroup>
-            <optgroup label="⚡ Layer 1 & Layer 2">
-              <option value="SUIUSDT.P">💧 SUIUSDT.P (Toobit)</option>
-              <option value="AVAXUSDT.P">🔺 AVAXUSDT.P (Toobit)</option>
-              <option value="ADAUSDT.P">₳ ADAUSDT.P (Toobit)</option>
-              <option value="NEARUSDT.P">Ⓝ NEARUSDT.P (Toobit)</option>
-              <option value="TONUSDT.P">💎 TONUSDT.P (Toobit)</option>
-              <option value="ARBUSDT.P">🔵 ARBUSDT.P (Toobit)</option>
-              <option value="OPUSDT.P">🔴 OPUSDT.P (Toobit)</option>
-              <option value="APTUSDT.P">🌐 APTUSDT.P (Toobit)</option>
-              <option value="SEIUSDT.P">🔴 SEIUSDT.P (Toobit)</option>
-              <option value="DOTUSDT.P">● DOTUSDT.P (Toobit)</option>
-              <option value="LTCUSDT.P">Ł LTCUSDT.P (Toobit)</option>
+            <optgroup label="Layer 1 and 2">
+              <option value="SUIUSDT.P">SUIUSDT.P</option>
+              <option value="AVAXUSDT.P">AVAXUSDT.P</option>
+              <option value="ADAUSDT.P">ADAUSDT.P</option>
+              <option value="NEARUSDT.P">NEARUSDT.P</option>
+              <option value="TONUSDT.P">TONUSDT.P</option>
+              <option value="ARBUSDT.P">ARBUSDT.P</option>
+              <option value="OPUSDT.P">OPUSDT.P</option>
+              <option value="APTUSDT.P">APTUSDT.P</option>
+              <option value="SEIUSDT.P">SEIUSDT.P</option>
+              <option value="DOTUSDT.P">DOTUSDT.P</option>
+              <option value="LTCUSDT.P">LTCUSDT.P</option>
             </optgroup>
-            <optgroup label="🤖 AI & Infrastructure">
-              <option value="TAOUSDT.P">🧠 TAOUSDT.P (Toobit)</option>
-              <option value="FETUSDT.P">🤖 FETUSDT.P (Toobit)</option>
-              <option value="RENDERUSDT.P">🎨 RENDERUSDT.P (Toobit)</option>
-              <option value="LINKUSDT.P">🔗 LINKUSDT.P (Toobit)</option>
-              <option value="TIAUSDT.P">🧱 TIAUSDT.P (Toobit)</option>
-              <option value="INJUSDT.P">⚡ INJUSDT.P (Toobit)</option>
-              <option value="KASUSDT.P">🪙 KASUSDT.P (Toobit)</option>
+            <optgroup label="AI and infrastructure">
+              <option value="TAOUSDT.P">TAOUSDT.P</option>
+              <option value="FETUSDT.P">FETUSDT.P</option>
+              <option value="RENDERUSDT.P">RENDERUSDT.P</option>
+              <option value="LINKUSDT.P">LINKUSDT.P</option>
+              <option value="TIAUSDT.P">TIAUSDT.P</option>
+              <option value="INJUSDT.P">INJUSDT.P</option>
+              <option value="KASUSDT.P">KASUSDT.P</option>
             </optgroup>
           </select>
         </div>
 
-        <div class="timeframe-group" role="group" aria-label="Timeframe Selection">
+        <div class="timeframe-group" role="group" aria-label="Timeframe">
           <button class="tf-btn" data-interval="1m">1m</button>
           <button class="tf-btn active" data-interval="5m">5m</button>
           <button class="tf-btn" data-interval="15m">15m</button>
@@ -102,940 +94,389 @@
         </div>
       </div>
 
-      <div class="nav-center">
-        <div class="ticker-metrics">
-          <div class="metric-item main-price-box">
-            <span class="metric-label">Live Price</span>
-            <div class="price-val-wrap">
-          <span id="livePrice" class="metric-value price-up">--</span>
+      <div class="nav-center ticker-metrics">
+        <div class="metric-item main-price-box">
+          <span class="metric-label sr-only">Price</span>
+          <span id="livePrice" class="metric-value">--</span>
         </div>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">24h Change</span>
-            <span id="priceChange" class="metric-value">--%</span>
-          </div>
-          <div class="metric-item nav-metric-secondary hide-on-compact">
-            <span class="metric-label">24h High</span>
-            <span id="high24h" class="metric-value">--</span>
-          </div>
-          <div class="metric-item nav-metric-secondary hide-on-compact">
-            <span class="metric-label">24h Low</span>
-            <span id="low24h" class="metric-value">--</span>
-          </div>
-          <div class="metric-item nav-metric-secondary hide-on-mobile">
-            <span class="metric-label">24h Vol (USDT)</span>
-            <span id="volume24h" class="metric-value">--</span>
-          </div>
+        <div class="metric-item">
+          <span class="metric-label sr-only">24h change</span>
+          <span id="priceChange" class="metric-value">--%</span>
+        </div>
+        <div class="metric-item nav-metric-secondary">
+          <span class="metric-label">24h high</span>
+          <span id="high24h" class="metric-value">--</span>
+        </div>
+        <div class="metric-item nav-metric-secondary">
+          <span class="metric-label">24h low</span>
+          <span id="low24h" class="metric-value">--</span>
+        </div>
+        <div class="metric-item nav-metric-secondary">
+          <span class="metric-label">24h volume</span>
+          <span id="volume24h" class="metric-value">--</span>
         </div>
       </div>
 
       <div class="nav-right">
-        <!-- Beginner vs Pro Mode Switcher -->
-        <div class="mode-switch-wrap" role="tablist" aria-label="Interface Mode">
-          <button class="mode-btn active" id="btnSimpleMode" role="tab" aria-selected="true" aria-controls="simpleModeContainer" title="Switch to Beginner Simple Mode">
-            <span class="mode-icon">🌱</span>
-            <span class="mode-text">Simple</span>
+        <div class="nav-status">
+          <button type="button" class="status-chip" popovertarget="feedPopover" aria-label="Live feed and sound settings">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="wsStatusText" class="chip-label">Connecting…</span>
           </button>
-          <button class="mode-btn" id="btnProMode" role="tab" aria-selected="false" aria-controls="proModeContainer" title="Switch to Pro Trader Mode">
-            <span class="mode-icon">⚡</span>
-            <span class="mode-text">Pro</span>
+          <div id="feedPopover" class="nav-popover" popover>
+            <p class="nav-popover-text">Live prices stream from Toobit. Laya plays a short tone when it finds a long or short setup.</p>
+            <button type="button" id="btnAudioToggle" class="popover-row active" aria-pressed="true">
+              <i data-lucide="bell" id="audioIcon"></i>
+              <span class="audio-label">Sound alerts on</span>
+            </button>
+          </div>
+
+          <button type="button" id="btnToobitConnect" class="status-chip" aria-label="Toobit account">
+            <i data-lucide="wallet"></i>
+            <span class="chip-label">Toobit</span>
+            <span class="toobit-nav-pill demo" id="toobitNavStatus">Demo</span>
+          </button>
+
+          <button type="button" id="btnAutoTradeModal" class="status-chip" aria-label="Auto-trader">
+            <span class="autotrade-status-dot" id="navAutoTradeDot" aria-hidden="true"></span>
+            <span class="chip-label">Auto-trader</span>
+            <span class="autotrade-pill off" id="navAutoTradePill">Off</span>
           </button>
         </div>
 
-        <!-- Audio Alert Chime Toggle -->
-        <button id="btnAudioToggle" class="icon-toggle-btn active" title="Signal Sound Alerts (Active)" aria-label="Toggle Signal Sound">
-          <i data-lucide="bell" id="audioIcon"></i>
-        </button>
-
-        <!-- WebSocket Stream Status -->
-        <div class="ws-status-pill" title="Toobit WebSocket Connection">
-          <span class="status-dot pulsing"></span>
-          <span id="wsStatusText" class="ws-label">Live Stream</span>
-        </div>
-
-        <!-- Toobit Account & Positions Connection -->
-        <button id="btnToobitConnect" class="btn-toobit-connect" title="Manage Toobit Account & Positions">
-          <i data-lucide="wallet"></i>
-          <span class="toobit-btn-text hide-on-compact">Toobit</span>
-          <span class="toobit-nav-pill demo" id="toobitNavStatus">Demo</span>
-        </button>
-
-        <!-- Auto-Trading Cockpit Trigger -->
-        <button id="btnAutoTradeModal" class="btn-autotrade" title="Autonomous Algorithmic Trading Cockpit" aria-label="Open Auto-Trader">
-          <span class="autotrade-status-dot" id="navAutoTradeDot"></span>
-          <i data-lucide="bot"></i>
-          <span class="autotrade-btn-text hide-on-compact">Auto-Trader</span>
-          <span class="autotrade-pill off" id="navAutoTradePill">OFF</span>
-        </button>
-
-        <!-- Primary Action Button -->
-        <button id="analyzeBtn" class="btn-primary" title="Trigger Laya System 1 Inference (Shortcut: Space)">
+        <button type="button" id="analyzeBtn" class="btn-analyze" title="Ask Laya for a verdict (Space)">
           <i data-lucide="zap"></i>
-          <span>Analyze Market</span>
-          <kbd class="kbd-hint hide-on-mobile">Space</kbd>
+          <span>Analyze</span>
+          <kbd class="kbd-hint">Space</kbd>
         </button>
       </div>
     </header>
 
-    <!-- Mobile View Switcher (Only visible on screens < 900px) -->
-    <nav class="mobile-view-tabs" id="mobileViewTabs" aria-label="Mobile View Switcher">
-      <button class="mobile-tab-btn active" data-tab="chart" aria-pressed="true">
-        <i data-lucide="line-chart"></i>
-        <span>Chart</span>
-      </button>
-      <button class="mobile-tab-btn" data-tab="signals" aria-pressed="false">
-        <i data-lucide="bot"></i>
-        <span>AI Signals</span>
-        <span class="tab-signal-pill" id="mobileTabSignalPill">WAIT</span>
-      </button>
-      <button class="mobile-tab-btn" data-tab="history" aria-pressed="false">
-        <i data-lucide="history"></i>
-        <span>History</span>
-        <span class="tab-count-badge" id="mobileTabHistoryCount">0</span>
-      </button>
-    </nav>
-
-    <!-- ============================================== -->
-    <!-- MAIN WORKSPACE -->
-    <!-- ============================================== -->
     <main class="main-content" id="mainContent" data-active-tab="chart">
-      <!-- Left Chart Section -->
-      <section class="chart-section" id="chartSectionView">
-        <!-- Chart HUD Bar -->
+      <!-- Chart -->
+      <section class="chart-section" id="chartSectionView" aria-label="Price chart">
         <div class="chart-header-hud">
           <div class="legend-hud" id="legendHud">
             <span class="symbol-tag" id="hudSymbol">BTCUSDT.P</span>
             <span class="tf-tag" id="hudInterval">5m</span>
-            <span class="hud-item hide-on-tiny">O: <strong id="hudO">--</strong></span>
-            <span class="hud-item hide-on-tiny">H: <strong id="hudH">--</strong></span>
-            <span class="hud-item hide-on-tiny">L: <strong id="hudL">--</strong></span>
-            <span class="hud-item">C: <strong id="hudC">--</strong></span>
-            <span class="hud-item hide-on-compact">Vol: <strong id="hudV">--</strong></span>
-            <span class="hud-item hud-ema9 hide-on-mobile">EMA9: <strong id="hudEma9">--</strong></span>
-            <span class="hud-item hud-ema21 hide-on-mobile">EMA21: <strong id="hudEma21">--</strong></span>
-            <span class="hud-item hud-ema50 hide-on-compact">EMA50: <strong id="hudEma50">--</strong></span>
-            <span class="hud-item hud-rsi hide-on-compact">RSI: <strong id="hudRsi">--</strong></span>
-            <!-- Institutional Confluence Pills -->
-            <div class="hud-inst-strip" id="hudInstStrip">
-              <span class="inst-pill" id="hudHtfPill" title="1-Hour Macro Trend Confluence">
+            <span class="hud-item">O <strong id="hudO">--</strong></span>
+            <span class="hud-item">H <strong id="hudH">--</strong></span>
+            <span class="hud-item">L <strong id="hudL">--</strong></span>
+            <span class="hud-item">C <strong id="hudC">--</strong></span>
+            <span class="hud-item">Vol <strong id="hudV">--</strong></span>
+            <span class="hud-item">EMA9 <strong id="hudEma9">--</strong></span>
+            <span class="hud-item">EMA21 <strong id="hudEma21">--</strong></span>
+            <span class="hud-item">EMA50 <strong id="hudEma50">--</strong></span>
+            <span class="hud-item">RSI <strong id="hudRsi">--</strong></span>
+            <span class="hud-sep" aria-hidden="true"></span>
+            <span class="hud-inst-strip" id="hudInstStrip">
+              <span class="inst-pill" id="hudHtfPill" title="1-hour trend">
                 <span class="inst-pill-dot neutral" id="hudHtfDot"></span>
                 <span id="hudHtfVal">1H: --</span>
               </span>
-              <span class="inst-pill" id="hudRegimePill" title="Wilder ADX(14) Market Regime & TTM Squeeze">
+              <span class="inst-pill" id="hudRegimePill" title="Market regime (ADX 14) and squeeze">
                 <span id="hudRegimeVal">Regime: --</span>
               </span>
-              <span class="inst-pill" id="hudObiPill" title="Toobit Live Order Book Depth Imbalance">
+              <span class="inst-pill" id="hudObiPill" title="Order book imbalance">
                 <span id="hudObiVal">OBI: --%</span>
               </span>
-              <span class="inst-pill hide-on-compact" id="hudFundingPill" title="Perpetual Funding Rate">
+              <span class="inst-pill" id="hudFundingPill" title="Funding rate">
                 <span id="hudFundingVal">Funding: --%</span>
               </span>
-            </div>
+            </span>
           </div>
 
           <div class="chart-controls-group">
-            <div class="chart-toggles hide-on-compact">
-              <label class="toggle-control" title="Toggle EMA 9, 21, 50 Ribbon">
+            <div class="chart-toggles" role="group" aria-label="Chart layers">
+              <label class="toggle-control" title="EMA 9 and 21">
                 <input type="checkbox" id="toggleEMA" checked>
-                <span>EMA Ribbon</span>
+                <span>EMA</span>
               </label>
-              <label class="toggle-control" title="Toggle Bollinger Bands (20, 2)">
+              <label class="toggle-control" title="Bollinger bands (20, 2)">
                 <input type="checkbox" id="toggleBB">
                 <span>Bollinger</span>
               </label>
-              <label class="toggle-control" title="Toggle Target Entry, SL, TP Horizontal Lines">
+              <label class="toggle-control" title="Laya's entry, stop-loss and take-profit lines">
                 <input type="checkbox" id="toggleTargetLines" checked>
-                <span>Target Lines</span>
+                <span>Targets</span>
               </label>
-              <label class="toggle-control" title="Toggle Open Position Lines & HUD on Chart">
+              <label class="toggle-control" title="Your open position on the chart">
                 <input type="checkbox" id="togglePositionLines" checked>
                 <span>Position</span>
               </label>
-              <label class="toggle-control" title="Auto evaluate on candle close">
+              <label class="toggle-control" title="Re-analyze on each candle close and every 20 seconds">
                 <input type="checkbox" id="toggleAutoAnalyze" checked>
-                <span>Auto (20s)</span>
+                <span>Auto-analyze</span>
               </label>
             </div>
 
             <div class="chart-action-buttons">
-              <button id="btnFitChart" class="chart-tool-btn" title="Auto-Fit / Reset Chart Zoom" aria-label="Auto-fit chart">
+              <button type="button" id="btnFitChart" class="chart-tool-btn" title="Fit chart to data">
                 <i data-lucide="maximize-2"></i>
-                <span class="tool-label hide-on-mobile">Fit</span>
+                <span>Fit</span>
               </button>
-              <button id="btnFullscreenChart" class="chart-tool-btn" title="Toggle Fullscreen Chart Mode" aria-label="Toggle fullscreen chart">
+              <button type="button" id="btnFullscreenChart" class="chart-tool-btn" title="Full screen (F)" aria-label="Full screen chart">
                 <i data-lucide="expand" id="fullscreenIcon"></i>
               </button>
             </div>
           </div>
         </div>
 
-        <!-- TradingView Chart Mount Container -->
         <div id="chartContainer" class="chart-container"></div>
 
-        <!-- On-Chart Floating Active Position Overlay (HUD) -->
-        <div id="chartPositionBadge" class="chart-pos-hud hide" role="region" aria-label="Open Position HUD">
+        <!-- Open position overlay -->
+        <div id="chartPositionBadge" class="chart-pos-hud hide" role="region" aria-label="Open position">
           <div class="pos-hud-left">
             <span class="pos-hud-side long" id="posHudSide">LONG 50x</span>
             <div class="pos-hud-info">
               <span class="pos-hud-sym" id="posHudSymbol">BTCUSDT.P</span>
-              <span class="pos-hud-entry" id="posHudEntry">Entry: $0.004180</span>
+              <span class="pos-hud-entry" id="posHudEntry">Entry: --</span>
             </div>
           </div>
           <div class="pos-hud-metrics">
             <div class="pos-hud-pnl pnl-green" id="posHudPnl">+$0.00 (+0.0%)</div>
             <div class="pos-hud-liq" id="posHudLiq">Liq: --</div>
           </div>
-          <div class="pos-hud-actions">
-            <button id="btnHudFlashClose" class="pos-hud-flash-btn" title="Instant Market Flash Close">
-              <i data-lucide="zap"></i>
-              <span>Flash Close</span>
-            </button>
-          </div>
+          <button type="button" id="btnHudFlashClose" class="pos-hud-flash-btn" title="Close this position at market price">
+            <i data-lucide="x"></i>
+            <span>Close</span>
+          </button>
         </div>
 
-        <!-- Chart Loading Overlay -->
         <div id="chartLoading" class="chart-loading" role="status" aria-live="polite">
           <span class="chart-loading-spinner" aria-hidden="true"></span>
           <span>Loading market data…</span>
         </div>
       </section>
 
-      <!-- Right AI Intelligence Sidebar -->
-      <aside class="sidebar-section" id="sidebarSectionView">
+      <!-- Sidebar: verdict and position lead; details below -->
+      <aside class="sidebar-section" id="sidebarSectionView" aria-label="Laya and your position">
 
-        <!-- ============================================== -->
-        <!-- SIMPLE MODE CONTAINER (FOR COMPLETE BEGINNERS) -->
-        <!-- ============================================== -->
-        <div id="simpleModeContainer" class="simple-mode-panel" role="tabpanel" aria-labelledby="btnSimpleMode">
-          <!-- Hero Decision Box -->
-          <div class="simple-hero-card" id="simpleHeroCard">
-            <div class="simple-hero-top">
-              <div class="simple-hero-badge neutral" id="simpleHeroBadge">
-                <span class="simple-hero-icon" id="simpleHeroIcon">⚪</span>
-                <div class="simple-hero-titles">
-                  <span class="simple-hero-action" id="simpleHeroAction">WAIT & RELAX</span>
-                  <span class="simple-hero-sub" id="simpleHeroSub">Market is consolidating. Wait for a clearer setup.</span>
-                </div>
-              </div>
-              <span class="risk-badge low" id="simpleRiskBadge">🛡️ Safe Zone</span>
+        <!-- 1. Laya verdict -->
+        <section class="sb-block verdict" id="signalCard" data-side="neutral" data-view="signals" aria-labelledby="verdictHeading">
+          <h2 class="sb-heading" id="verdictHeading">Laya verdict</h2>
+          <div class="verdict-top">
+            <div class="signal-badge neutral" id="signalBadge">
+              <span class="verdict-word" id="signalAction">Wait</span>
             </div>
-
-            <!-- Win Chance Meter -->
-            <div class="simple-meter-box">
-              <div class="simple-meter-header">
-                <span>AI Confidence Rating</span>
-                <strong id="simpleConfidenceText">Moderate Chance (50%)</strong>
-              </div>
-              <div class="simple-meter-track">
-                <div class="simple-meter-bar" id="simpleMeterBar" style="width: 50%;"></div>
-              </div>
+            <div class="confidence-wrap">
+              <span class="conf-val" id="confidenceVal">--%</span>
+              <span class="conf-label">confidence</span>
             </div>
           </div>
 
-          <!-- Beginner Auto-Trading Control Card -->
-          <div class="simple-plan-card autotrade-card" id="simpleAutoTradeCard">
-            <div class="card-header-styled">
-              <div class="simple-card-title">
-                <i data-lucide="bot"></i>
-                <span>AI Auto-Trader</span>
+          <div class="conf-scale" id="confidenceNeedle" style="--conf: 0" role="img" aria-label="Confidence scale from 0 to 100">
+            <div class="conf-track"></div>
+            <div class="conf-needle"></div>
+            <div class="conf-ticks" aria-hidden="true"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+          </div>
+
+          <p class="signal-subtext" id="signalSubtext">Press Analyze for Laya's first verdict.</p>
+          <span class="risk-badge" id="signalRiskBadge" data-level="low">Whipsaw risk --</span>
+
+          <table class="plan-table">
+            <caption class="sr-only">Trade plan</caption>
+            <tbody>
+              <tr><th scope="row">Entry</th><td id="targetEntry">--</td><td class="roe" id="targetEntrySub">--</td></tr>
+              <tr class="tp"><th scope="row">Take profit 1</th><td id="targetTP1">--</td><td class="roe" id="targetTP1Roe">--</td></tr>
+              <tr class="tp"><th scope="row">Take profit 2</th><td id="targetTP2">--</td><td class="roe" id="targetTP2Roe">--</td></tr>
+              <tr><th scope="row">Break-even</th><td id="targetBE">--</td><td class="roe" id="targetBERoe">--</td></tr>
+              <tr class="sl"><th scope="row">Stop-loss</th><td id="targetSL">--</td><td class="roe" id="targetSLRoe">--</td></tr>
+              <tr><th scope="row">Liquidation</th><td id="targetLiq">--</td><td class="roe" id="targetLiqDist">--</td></tr>
+            </tbody>
+          </table>
+
+          <div class="plan-footer">
+            <span>Reward/risk <strong id="targetRRR">--</strong></span>
+            <span id="targetHorizon">--</span>
+            <span id="sizingShieldBanner" title="Suggested margin per trade">Margin <strong id="targetRecMargin">--</strong><span class="sr-only"> — </span><span class="plan-footer-rule" id="targetSizingRule"></span></span>
+          </div>
+
+          <button type="button" id="btnCopyTradePlan" class="btn-quiet">
+            <i data-lucide="copy"></i>
+            <span>Copy plan</span>
+          </button>
+        </section>
+
+        <!-- 2. Your position -->
+        <section class="sb-block position-panel-card" id="proPositionCard" data-view="position" aria-labelledby="positionHeading">
+          <div class="sb-heading-row">
+            <h2 class="sb-heading" id="positionHeading">Your position</h2>
+            <button type="button" id="btnProFlashClose" class="btn-flash-close" title="Close this position at market price">
+              <i data-lucide="x"></i>
+              <span>Close position</span>
+            </button>
+          </div>
+
+          <div class="pos-live" data-pos="live">
+            <div class="pos-identity">
+              <span class="pos-symbol" data-pos="symbol">BTC</span>
+              <span class="pos-badge long" data-pos="side">LONG 50x</span>
+              <span class="badge-mini badge-demo" id="proPosModeBadge" data-pos="mode">Demo</span>
+              <button type="button" class="btn-switch-chart-chip hide" data-pos="switchBtn" title="Show this position's chart">View chart</button>
+            </div>
+
+            <div class="pos-hero">
+              <div class="pos-hero-block">
+                <span class="pos-hero-label">Unrealized PnL</span>
+                <span class="pos-hero-pnl pnl-green" data-pos="pnl">--</span>
               </div>
-              <div class="autotrade-card-actions">
-                <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading">
-                  <span class="toggle-knob"></span>
-                  <span class="toggle-label">OFF</span>
-                </button>
+              <div class="pos-hero-block pos-hero-block-right">
+                <span class="pos-hero-label">Return on margin</span>
+                <span class="pos-hero-pct pnl-green" data-pos="pnlPct">--</span>
               </div>
             </div>
-            <div class="autotrade-quick-status">
-              <div class="at-status-indicator">
-                <span class="status-pulse-dot" id="simpleAtStatusDot"></span>
-                <span class="at-status-text" id="simpleAtStatusText">Standby (Turn ON to trade automatically)</span>
+
+            <div class="pos-risk">
+              <div class="pos-risk-head">
+                <span class="pos-risk-title">Distance to liquidation</span>
+                <span class="pos-risk-val" data-pos="liqDist">--</span>
               </div>
-              <div class="at-stats-row">
-                <div class="at-stat-box">
-                  <span class="at-stat-label">Safety Profile</span>
-                  <strong class="at-stat-val" id="simpleAtRiskVal">50x • $1.00 Margin</strong>
-                </div>
-                <div class="at-stat-box">
-                  <span class="at-stat-label">Win Rate</span>
-                  <strong class="at-stat-val pnl-green" data-at="winrate">--% (0 trades)</strong>
-                </div>
+              <div class="pos-risk-track" role="img" aria-label="Price between liquidation and break-even">
+                <div class="pos-risk-danger"></div>
+                <div class="pos-risk-breakeven"></div>
+                <div class="pos-risk-pin safe" data-pos="pin" style="left: 50%;"></div>
+              </div>
+              <div class="pos-risk-scale">
+                <span>Liq <strong data-pos="liq">--</strong></span>
+                <span>Break-even <strong data-pos="entry">--</strong></span>
               </div>
             </div>
-            <div class="autotrade-card-footer">
-              <button type="button" class="btn-at-config" data-at="config">
-                <i data-lucide="sliders"></i> Configure Sizing & Limits
-              </button>
-              <button type="button" class="btn-at-kill-chip" data-at="kill">
-                <i data-lucide="alert-octagon"></i> Kill Switch
-              </button>
+
+            <dl class="pos-stats">
+              <div class="pos-stat-item"><dt>Size</dt><dd data-pos="qty">--</dd></div>
+              <div class="pos-stat-item"><dt>Notional</dt><dd data-pos="notional">--</dd></div>
+              <div class="pos-stat-item"><dt>Margin</dt><dd data-pos="margin">--</dd></div>
+              <div class="pos-stat-item"><dt>Leverage</dt><dd data-pos="lev">--</dd></div>
+              <div class="pos-stat-item"><dt>Entry</dt><dd data-pos="entryStat">--</dd></div>
+              <div class="pos-stat-item"><dt>Mark</dt><dd data-pos="mark">--</dd></div>
+              <div class="pos-stat-item"><dt>Stop-loss</dt><dd class="sl-val" data-pos="sl">--</dd></div>
+              <div class="pos-stat-item"><dt>Take profit</dt><dd class="tp-val" data-pos="tp">--</dd></div>
+            </dl>
+          </div>
+
+          <div class="pos-empty hide" data-pos="empty">
+            <p class="pos-empty-title">No open position.</p>
+            <p class="pos-empty-sub">Simulate one to see Laya's advice.</p>
+          </div>
+
+          <div class="pro-ai-sug-card" id="proAiSugCard">
+            <div class="pro-sug-top">
+              <span class="ai-sug-badge badge-neutral" id="proSugBadge">Wait</span>
+              <span class="alignment-pill neutral" id="proAlignmentPill">No clear trend</span>
+            </div>
+            <strong class="ai-sug-headline" id="proSugHeadline">Evaluating the market</strong>
+            <p class="pro-sug-desc" id="proSugText">Laya's advice for your position appears here.</p>
+            <div class="pro-sug-levels">
+              <span>Suggested stop <strong id="proSugSl">--</strong></span>
+              <span>Suggested target <strong id="proSugTp">--</strong></span>
             </div>
           </div>
 
-          <!-- Live Active Trade & AI Suggestions Card -->
-          <div class="simple-plan-card position-highlight-card" id="simplePositionCard">
-            <div class="card-header-styled">
-              <div class="simple-card-title">
-                <i data-lucide="shield-alert"></i>
-                <span id="simplePosCardTitle">Your Active Trade</span>
-              </div>
-              <button id="btnSimpleFlashClose" class="btn-flash-close" title="Instantly close trade at market price">
-                <i data-lucide="zap-off"></i>
-                <span>Flash Close</span>
-              </button>
+          <div class="demo-test-bar" id="proDemoBar">
+            <button type="button" class="btn-quiet" id="btnProSimLong">
+              <i data-lucide="arrow-up-right"></i> Simulate long
+            </button>
+            <button type="button" class="btn-quiet" id="btnProSimShort">
+              <i data-lucide="arrow-down-right"></i> Simulate short
+            </button>
+          </div>
+        </section>
+
+        <!-- 3. Auto-trader -->
+        <section class="sb-block autotrade-block" id="proAutoTradeCard" data-view="position" aria-labelledby="autotradeHeading">
+          <div class="sb-heading-row">
+            <h2 class="sb-heading" id="autotradeHeading">Auto-trader</h2>
+            <span class="at-mode-badge demo" id="proAtModeBadge">DEMO</span>
+            <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-pressed="false" aria-label="Auto-trader on or off">
+              <span class="toggle-knob"></span>
+              <span class="toggle-label">Off</span>
+            </button>
+          </div>
+          <p class="at-status-msg" id="proAtStatusMsg">Standing by</p>
+          <dl class="at-grid">
+            <div><dt>Status</dt><dd class="val status-idle" id="proAtStatus">idle</dd></div>
+            <div><dt>Sizing</dt><dd id="proAtSizing">--</dd></div>
+            <div><dt>Today</dt><dd class="pnl-green" data-at="daily-pnl">+$0.00</dd></div>
+            <div><dt>Win rate</dt><dd data-at="winrate">--</dd></div>
+            <div class="at-grid-wide"><dt>Loss limits</dt><dd id="proAtCircuit">--</dd></div>
+          </dl>
+          <div class="at-actions">
+            <button type="button" class="btn-quiet" data-at="config">
+              <i data-lucide="sliders"></i>
+              <span>Configure</span>
+            </button>
+            <button type="button" class="btn-kill" data-at="kill">
+              <i data-lucide="alert-octagon"></i>
+              <span>Kill switch</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 4. Details, collapsed by default -->
+        <details class="sb-details" data-persist="why" data-view="signals">
+          <summary>Why Laya chose this</summary>
+          <ul class="reasons-list" id="reasonsList">
+            <li>Press Analyze to see Laya's reasons.</li>
+          </ul>
+        </details>
+
+        <details class="sb-details" data-persist="odds" data-view="signals">
+          <summary>Outcome odds <span class="summary-meta" id="latencyBadge">-- ms</span></summary>
+          <div class="probability-bars">
+            <div class="prob-row"><span class="prob-name">Strong long</span><span class="bar-track"><span class="bar-fill long" id="barStrongLong" style="width: 0%"></span></span><span class="prob-num" id="probStrongLong">0%</span></div>
+            <div class="prob-row"><span class="prob-name">Scalp long</span><span class="bar-track"><span class="bar-fill long soft" id="barScalpLong" style="width: 0%"></span></span><span class="prob-num" id="probScalpLong">0%</span></div>
+            <div class="prob-row"><span class="prob-name">Hold</span><span class="bar-track"><span class="bar-fill neutral" id="barNeutral" style="width: 0%"></span></span><span class="prob-num" id="probNeutral">0%</span></div>
+            <div class="prob-row"><span class="prob-name">Scalp short</span><span class="bar-track"><span class="bar-fill short soft" id="barScalpShort" style="width: 0%"></span></span><span class="prob-num" id="probScalpShort">0%</span></div>
+            <div class="prob-row"><span class="prob-name">Strong short</span><span class="bar-track"><span class="bar-fill short" id="barStrongShort" style="width: 0%"></span></span><span class="prob-num" id="probStrongShort">0%</span></div>
+          </div>
+          <p class="squeeze-risk-row">Whipsaw risk <strong id="squeezeRiskVal">--</strong></p>
+        </details>
+
+        <details class="sb-details" data-persist="levels" data-view="signals">
+          <summary>Levels and indicators</summary>
+          <div class="pivot-gauge-wrap">
+            <div class="pivot-labels">
+              <span>Support <strong id="gaugeSupport">--</strong></span>
+              <span>Price <strong id="gaugePrice">--</strong></span>
+              <span>Resistance <strong id="gaugeResistance">--</strong></span>
             </div>
-
-            <!-- Live Position Summary -->
-            <div class="pos-live" data-pos="live">
-              <div class="pos-identity">
-                <span class="pos-symbol" data-pos="symbol">BTC</span>
-                <span class="pos-badge long" id="simplePosBadge" data-pos="side">LONG (Demo)</span>
-                <span class="badge-mini badge-demo" id="simplePosModeBadge" data-pos="mode">Demo</span>
-                <button type="button" class="btn-switch-chart-chip hide" data-pos="switchBtn" title="Switch chart to this position">View on Chart ↗</button>
-              </div>
-
-              <div class="pos-hero">
-                <div class="pos-hero-block">
-                  <span class="pos-hero-label">Unrealized PnL</span>
-                  <span class="pos-hero-pnl pnl-green" data-pos="pnl">+$6.50</span>
-                </div>
-                <div class="pos-hero-block pos-hero-block-right">
-                  <span class="pos-hero-label">Return on Margin</span>
-                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+15.5%</span>
-                </div>
-              </div>
-
-              <div class="pos-risk">
-                <div class="pos-risk-head">
-                  <span class="pos-risk-title">Liquidation Distance</span>
-                  <span class="pos-risk-val" data-pos="liqDist">8.6% away</span>
-                </div>
-                <div class="pos-risk-track" role="img" aria-label="Price position between liquidation and break-even">
-                  <div class="pos-risk-danger"></div>
-                  <div class="pos-risk-breakeven"></div>
-                  <div class="pos-risk-pin safe" data-pos="pin" style="left: 50%;"></div>
-                </div>
-                <div class="pos-risk-scale">
-                  <span>Liq <strong data-pos="liq">$0.003780</strong></span>
-                  <span>Break-even <strong data-pos="entry">$0.004180</strong></span>
-                </div>
-              </div>
-
-              <div class="pos-stats">
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Size</span>
-                  <span class="pos-stat-val" data-pos="qty">100,000</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Notional</span>
-                  <span class="pos-stat-val" data-pos="notional">$424.50</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Margin</span>
-                  <span class="pos-stat-val" data-pos="margin">$8.36</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Leverage</span>
-                  <span class="pos-stat-val" data-pos="lev">50x</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Entry Price</span>
-                  <span class="pos-stat-val" data-pos="entryStat">$0.004180</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Mark Price</span>
-                  <span class="pos-stat-val" data-pos="mark">$0.004245</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Stop Loss (SL)</span>
-                  <span class="pos-stat-val sl-val" data-pos="sl">--</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Take Profit (TP)</span>
-                  <span class="pos-stat-val tp-val" data-pos="tp">--</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Empty Position State -->
-            <div class="pos-empty hide" data-pos="empty">
-              <i data-lucide="package-open"></i>
-              <p class="pos-empty-title">No open position</p>
-              <p class="pos-empty-sub">Simulate a trade below to test Laya AI advice.</p>
-            </div>
-
-            <!-- AI Suggestion Box -->
-            <div class="ai-suggestion-box" id="simpleAiSuggestionBox">
-              <div class="ai-sug-header">
-                <span class="ai-sug-badge badge-profit" id="simpleSugBadge">KEEP HOLDING 🛡️</span>
-                <strong class="ai-sug-headline" id="simpleSugHeadline">Hold for Target Profit</strong>
-              </div>
-              <p class="ai-sug-text" id="simpleSugText">
-                Laya AI confirms bullish momentum. Keep holding your trade! Moving Stop Loss to break-even eliminates all downside risk.
-              </p>
-            </div>
-
-            <!-- Demo Simulation Buttons -->
-            <div class="demo-quick-actions" id="simpleDemoActions">
-              <span class="demo-action-hint">Test Live Suggestions:</span>
-              <div class="demo-action-btn-group">
-                <button class="btn-demo-chip" id="btnSimpleSimLong" title="Simulate opening a Long trade">
-                  <i data-lucide="arrow-up-right"></i>
-                  <span>Simulate Long</span>
-                </button>
-                <button class="btn-demo-chip" id="btnSimpleSimShort" title="Simulate opening a Short trade">
-                  <i data-lucide="arrow-down-right"></i>
-                  <span>Simulate Short</span>
-                </button>
-              </div>
+            <div class="pivot-gauge-track">
+              <div class="pivot-gauge-pin" id="pivotGaugePin" style="left: 50%;"></div>
             </div>
           </div>
-
-          <!-- 3-Step Action Plan -->
-          <div class="simple-plan-card">
-            <div class="card-header-styled">
-              <div class="simple-card-title">
-                <i data-lucide="check-circle-2"></i>
-                <span>3-Step Action Plan</span>
-              </div>
-              <button id="btnCopyTradePlan" class="btn-copy-plan" title="Copy clean trade setup to clipboard">
-                <i data-lucide="copy"></i>
-                <span>Copy Plan</span>
-              </button>
-            </div>
-
-            <div class="simple-steps">
-              <div class="simple-step-item">
-                <div class="step-num">1</div>
-                <div class="step-info">
-                  <span class="step-label">Entry (Market Price)</span>
-                  <span class="step-value" id="simpleEntryPrice">--</span>
-                  <span class="step-desc">Enter trade around this price</span>
-                </div>
-              </div>
-
-              <div class="simple-step-item profit-step">
-                <div class="step-num">2</div>
-                <div class="step-info">
-                  <span class="step-label">Take Profit Target</span>
-                  <span class="step-value" id="simpleTakeProfit">--</span>
-                  <span class="step-desc" id="simpleTpDesc">Sell here to lock in your profit!</span>
-                </div>
-              </div>
-
-              <div class="simple-step-item be-step">
-                <div class="step-num">🛡️</div>
-                <div class="step-info">
-                  <span class="step-label">Break-Even Trigger (+1.0R)</span>
-                  <span class="step-value" id="simpleBreakEven">--</span>
-                  <span class="step-desc" id="simpleBeDesc">When price hits here, move Stop Loss to Entry for a 100% Risk-Free trade!</span>
-                </div>
-              </div>
-
-              <div class="simple-step-item safety-step">
-                <div class="step-num">3</div>
-                <div class="step-info">
-                  <span class="step-label">Protective Stop Loss</span>
-                  <span class="step-value" id="simpleStopLoss">--</span>
-                  <span class="step-desc" id="simpleSlDesc">Safety exit if price moves against you</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Intuitive Visual Profit/Loss Bar -->
-            <div class="risk-reward-visual-bar">
-              <div class="rr-visual-header">
-                <span class="rr-gain-label" id="rrGainLabel">Target Win: +1.5R</span>
-                <span class="rr-risk-label" id="rrRiskLabel">Max Risk: 1.0R</span>
-              </div>
-              <div class="rr-visual-track">
-                <div class="rr-gain-fill" id="rrGainFill" style="width: 60%;"></div>
-                <div class="rr-risk-fill" id="rrRiskFill" style="width: 40%;"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Beginner Position Calculator Preview -->
-          <div class="simple-plan-card">
-            <div class="simple-card-title">
-              <i data-lucide="calculator"></i>
-              <span>Live Trade Return Calculator</span>
-            </div>
-            <div class="calc-presets-row">
-              <span class="calc-label">Demo Margin:</span>
-              <div class="calc-btn-group" id="calcPresetGroup">
-                <button class="calc-chip" data-amount="100">$100</button>
-                <button class="calc-chip active" data-amount="500">$500</button>
-                <button class="calc-chip" data-amount="1000">$1,000</button>
-              </div>
-            </div>
-            <div class="calc-results-grid">
-              <div class="calc-res-item win-res">
-                <span class="calc-res-title">Estimated Win:</span>
-                <span class="calc-res-val" id="calcWinVal">+$14.50</span>
-              </div>
-              <div class="calc-res-item loss-res">
-                <span class="calc-res-title">Max Risk at SL:</span>
-                <span class="calc-res-val" id="calcLossVal">-$9.70</span>
-              </div>
-            </div>
-            <div class="simple-sizing-note" style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #94a3b8; background: rgba(15, 23, 42, 0.6); padding: 8px 12px; border-radius: 6px; border-left: 3px solid #38bdf8; margin-top: 10px;">
-              <span>🛡️ <strong>Anti-Loss Shield:</strong> Trade with a fixed $10 margin (or max 20% balance) per trade. Never go 100% all-in on 50x leverage to prevent compounding volatility loss.</span>
-            </div>
-          </div>
-
-          <!-- Plain English Why -->
-          <div class="simple-plan-card">
-            <div class="simple-card-title">
-              <i data-lucide="help-circle"></i>
-              <span>Why Did AI Choose This?</span>
-            </div>
-            <ul class="simple-reasons-list" id="simpleReasonsList">
-              <li>Click "Analyze Market" to evaluate market conditions.</li>
-            </ul>
-          </div>
-
-          <!-- Beginner Cheat Sheet -->
-          <details class="beginner-help-box">
-            <summary><i data-lucide="book-open"></i> Beginner Cheat Sheet (Click to learn)</summary>
-            <div class="beginner-help-content">
-              <div class="help-item">
-                <strong>🟢 Long / Buy:</strong> You make profit when the coin price goes <em>UP</em>.
-              </div>
-              <div class="help-item">
-                <strong>🔴 Short / Sell:</strong> You make profit when the coin price goes <em>DOWN</em>.
-              </div>
-              <div class="help-item">
-                <strong>🛡️ Stop Loss:</strong> An automatic emergency brake. It closes your trade if the market crashes, protecting you from losing your capital.
-              </div>
-              <div class="help-item">
-                <strong>🎯 Take Profit:</strong> Your target goal where you automatically cash out your winnings.
-              </div>
-            </div>
-          </details>
-        </div>
-
-        <!-- ============================================== -->
-        <!-- PRO MODE CONTAINER (FOR ADVANCED USERS) -->
-        <!-- ============================================== -->
-        <div id="proModeContainer" class="pro-mode-panel" role="tabpanel" aria-labelledby="btnProMode" style="display: none;">
-          <!-- Active Signal Banner -->
-          <div class="signal-card" id="signalCard">
-            <div class="signal-card-header">
-              <div class="signal-badge neutral" id="signalBadge">
-                <span id="signalAction">NEUTRAL</span>
-              </div>
-              <div class="confidence-wrap">
-                <span class="conf-label">Confidence</span>
-                <span class="conf-val" id="confidenceVal">--%</span>
-              </div>
-            </div>
-
-            <div class="signal-subtext" id="signalSubtext">
-              Awaiting real-time tick or on-demand analysis...
-            </div>
-
-            <!-- Trade Execution Plan -->
-            <div class="trade-plan-grid">
-              <div class="plan-item">
-                <span class="plan-label">Entry (50x)</span>
-                <span class="plan-val" id="targetEntry">--</span>
-                <span class="plan-sub" id="targetEntrySub">50x Leverage</span>
-              </div>
-              <div class="plan-item">
-                <span class="plan-label">Stop Loss (SL)</span>
-                <span class="plan-val sl-val" id="targetSL">--</span>
-                <span class="plan-sub sl-val" id="targetSLRoe">Max -40.0% ROE</span>
-              </div>
-              <div class="plan-item">
-                <span class="plan-label">Break-Even (+0.45R)</span>
-                <span class="plan-val be-val" id="targetBE">--</span>
-                <span class="plan-sub be-val" id="targetBERoe">Shield to Entry</span>
-              </div>
-              <div class="plan-item">
-                <span class="plan-label">Take Profit 1 (+0.8R)</span>
-                <span class="plan-val tp-val" id="targetTP1">--</span>
-                <span class="plan-sub tp-val" id="targetTP1Roe">+16% - +25% ROE</span>
-              </div>
-              <div class="plan-item">
-                <span class="plan-label">Take Profit 2 (+1.4R)</span>
-                <span class="plan-val tp-val" id="targetTP2">--</span>
-                <span class="plan-sub tp-val" id="targetTP2Roe">+28% - +35% ROE</span>
-              </div>
-              <div class="plan-item">
-                <span class="plan-label">Est. Liquidation</span>
-                <span class="plan-val" id="targetLiq" style="color: #f59e0b;">--</span>
-                <span class="plan-sub" id="targetLiqDist" style="color: var(--text-dim);">Safe below SL</span>
-              </div>
-            </div>
-
-            <div class="risk-reward-banner">
-              <span>Risk/Reward Ratio: <strong id="targetRRR">1 : 2.0</strong></span>
-              <span class="time-horizon" id="targetHorizon">Scalp (5m)</span>
-            </div>
-
-            <!-- Anti-Volatility-Drag Position Sizing Shield -->
-            <div class="sizing-shield-banner" id="sizingShieldBanner" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; margin-top: 8px; border-radius: 6px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(56, 189, 248, 0.25); font-size: 0.8rem; color: #94a3b8;">
-              <span>🛡️ <strong style="color: #38bdf8;">Margin Shield:</strong> <span id="targetRecMargin" style="color: #f8fafc; font-weight: 600;">$10.00 Fixed</span></span>
-              <span style="color: #34d399; font-weight: 500;" id="targetSizingRule">Max 20% Kelly (Anti-Drag)</span>
-            </div>
-
-            <div class="reasons-list-wrap">
-              <div class="reasons-title"><i data-lucide="info"></i> Signal Confluence Rationale</div>
-              <ul class="reasons-list" id="reasonsList">
-                <li>Click "Analyze Market" to evaluate indicators.</li>
-              </ul>
-            </div>
-          </div>
-
-          <!-- Pro Mode Auto-Trading Cockpit Card -->
-          <div class="panel-card autotrade-pro-card" id="proAutoTradeCard">
-            <div class="panel-header">
-              <div class="panel-header-left">
-                <h3><i data-lucide="cpu"></i> Autonomous Algorithmic Desk</h3>
-              </div>
-              <div class="pro-at-header-controls">
-                <span class="at-mode-badge demo" id="proAtModeBadge">Demo</span>
-                <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading">
-                  <span class="toggle-knob"></span>
-                  <span class="toggle-label">OFF</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="pro-at-body">
-              <div class="pro-at-metric-grid">
-                <div class="pro-at-metric">
-                  <span class="lbl">Engine Status</span>
-                  <span class="val status-idle" id="proAtStatus">IDLE</span>
-                </div>
-                <div class="pro-at-metric">
-                  <span class="lbl">Leverage & Sizing</span>
-                  <span class="val" id="proAtSizing">50x • Fixed $1.00</span>
-                </div>
-                <div class="pro-at-metric">
-                  <span class="lbl">Realized PnL</span>
-                  <span class="val pnl-green" data-at="daily-pnl">+$0.00</span>
-                </div>
-                <div class="pro-at-metric">
-                  <span class="lbl">Circuit Breaker</span>
-                  <span class="val" id="proAtCircuit">Safe (0/3 losses)</span>
-                </div>
-              </div>
-
-              <!-- Live Execution Feed Snippet -->
-              <div class="pro-at-log-snippet" id="proAtLogSnippet">
-                <div class="snippet-item">
-                  <span class="snippet-time">--:--:--</span>
-                  <span class="snippet-cat">[SYSTEM]</span>
-                  <span class="snippet-msg">Auto-trading standing by...</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="pro-at-footer">
-              <button type="button" class="btn-pro-secondary" data-at="config">
-                <i data-lucide="sliders"></i>
-                <span>Settings & Audit Log</span>
-              </button>
-              <button type="button" class="btn-pro-kill" data-at="kill">
-                <i data-lucide="alert-octagon"></i>
-                <span>Emergency Stop</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Toobit Open Position & AI Guidance Card -->
-          <div class="panel-card position-panel-card" id="proPositionCard">
-            <div class="panel-header">
-              <div class="panel-header-left">
-                <h3><i data-lucide="wallet"></i> Toobit Position & AI Advice</h3>
-              </div>
-              <button id="btnProFlashClose" class="btn-flash-close" title="Execute Toobit flashClose market order">
-                <i data-lucide="zap-off"></i>
-                <span>Flash Close</span>
-              </button>
-            </div>
-
-            <!-- Position Summary -->
-            <div class="pos-live" data-pos="live">
-              <div class="pos-identity">
-                <span class="pos-symbol" id="proPosSym" data-pos="symbol">BTC</span>
-                <span class="pos-badge long" id="proPosSideBadge" data-pos="side">LONG 50x</span>
-                <span class="badge-mini badge-demo" id="proPosModeBadge" data-pos="mode">Demo</span>
-                <button type="button" class="btn-switch-chart-chip hide" data-pos="switchBtn" title="Switch chart to this position">View on Chart ↗</button>
-              </div>
-
-              <div class="pos-hero">
-                <div class="pos-hero-block">
-                  <span class="pos-hero-label">Unrealized PnL</span>
-                  <span class="pos-hero-pnl pnl-green" data-pos="pnl">+$6.50</span>
-                </div>
-                <div class="pos-hero-block pos-hero-block-right">
-                  <span class="pos-hero-label">Return on Margin</span>
-                  <span class="pos-hero-pct pnl-green" data-pos="pnlPct">+77.8%</span>
-                </div>
-              </div>
-
-              <div class="pos-risk">
-                <div class="pos-risk-head">
-                  <span class="pos-risk-title">Liquidation Distance</span>
-                  <span class="pos-risk-val" data-pos="liqDist">8.6% away</span>
-                </div>
-                <div class="pos-risk-track" role="img" aria-label="Price position between liquidation and break-even">
-                  <div class="pos-risk-danger"></div>
-                  <div class="pos-risk-breakeven"></div>
-                  <div class="pos-risk-pin safe" data-pos="pin" style="left: 50%;"></div>
-                </div>
-                <div class="pos-risk-scale">
-                  <span>Liq <strong data-pos="liq">$0.003780</strong></span>
-                  <span>Break-even <strong data-pos="entry">$0.004180</strong></span>
-                </div>
-              </div>
-
-              <div class="pos-stats">
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Size</span>
-                  <span class="pos-stat-val" data-pos="qty">100,000</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Notional</span>
-                  <span class="pos-stat-val" data-pos="notional">$424.50</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Margin</span>
-                  <span class="pos-stat-val" data-pos="margin">$8.36</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Leverage</span>
-                  <span class="pos-stat-val" data-pos="lev">50x</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Entry Price</span>
-                  <span class="pos-stat-val" data-pos="entryStat">$0.004180</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Mark Price</span>
-                  <span class="pos-stat-val" data-pos="mark">$0.004245</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Stop Loss (SL)</span>
-                  <span class="pos-stat-val sl-val" data-pos="sl">--</span>
-                </div>
-                <div class="pos-stat-item">
-                  <span class="pos-stat-label">Take Profit (TP)</span>
-                  <span class="pos-stat-val tp-val" data-pos="tp">--</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Empty Position State -->
-            <div class="pos-empty hide" data-pos="empty">
-              <i data-lucide="package-open"></i>
-              <p class="pos-empty-title">No open position</p>
-              <p class="pos-empty-sub">Simulate a contract below to test Laya AI advice.</p>
-            </div>
-
-            <!-- AI Position Advice Box -->
-            <div class="pro-ai-sug-card" id="proAiSugCard">
-              <div class="pro-sug-top">
-                <div class="pro-sug-tag-group">
-                  <span class="ai-sug-badge badge-profit" id="proSugBadge">KEEP HOLDING 🛡️</span>
-                  <span class="alignment-pill aligned" id="proAlignmentPill">Aligned with Trend</span>
-                </div>
-                <div class="pro-sug-levels">
-                  <span>Trail SL: <strong id="proSugSl">$0.004180</strong></span>
-                  <span>Target TP1: <strong id="proSugTp">$0.004350</strong></span>
-                </div>
-              </div>
-              <p class="pro-sug-desc" id="proSugText">
-                Laya AI System-1 probabilities favor continued upward move. Keep holding your LONG position towards target.
-              </p>
-            </div>
-
-            <!-- Demo Simulation Bar -->
-            <div class="demo-test-bar" id="proDemoBar">
-              <span class="demo-test-lbl">Simulate Contract:</span>
-              <button class="btn-demo-mini" id="btnProSimLong" title="Simulate opening a Long contract">
-                <i data-lucide="arrow-up-right"></i> +Long (Demo)
-              </button>
-              <button class="btn-demo-mini" id="btnProSimShort" title="Simulate opening a Short contract">
-                <i data-lucide="arrow-down-right"></i> +Short (Demo)
-              </button>
-            </div>
-          </div>
-
-          <!-- Laya System 1 Calibrated Probabilities -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <h3><i data-lucide="cpu"></i> Laya System-1 Probabilities</h3>
-              <span class="badge-mini" id="latencyBadge">⚡ -- ms</span>
-            </div>
-
-            <div class="probability-bars">
-              <div class="prob-row">
-                <div class="prob-meta">
-                  <span class="prob-name">STRONG LONG</span>
-                  <span class="prob-num" id="probStrongLong">0%</span>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill green-fill" id="barStrongLong" style="width: 0%"></div>
-                </div>
-              </div>
-
-              <div class="prob-row">
-                <div class="prob-meta">
-                  <span class="prob-name">SCALP LONG</span>
-                  <span class="prob-num" id="probScalpLong">0%</span>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill lime-fill" id="barScalpLong" style="width: 0%"></div>
-                </div>
-              </div>
-
-              <div class="prob-row">
-                <div class="prob-meta">
-                  <span class="prob-name">NEUTRAL / HOLD</span>
-                  <span class="prob-num" id="probNeutral">0%</span>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill gray-fill" id="barNeutral" style="width: 0%"></div>
-                </div>
-              </div>
-
-              <div class="prob-row">
-                <div class="prob-meta">
-                  <span class="prob-name">SCALP SHORT</span>
-                  <span class="prob-num" id="probScalpShort">0%</span>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill orange-fill" id="barScalpShort" style="width: 0%"></div>
-                </div>
-              </div>
-
-              <div class="prob-row">
-                <div class="prob-meta">
-                  <span class="prob-name">STRONG SHORT</span>
-                  <span class="prob-num" id="probStrongShort">0%</span>
-                </div>
-                <div class="bar-track">
-                  <div class="bar-fill red-fill" id="barStrongShort" style="width: 0%"></div>
-                </div>
-              </div>
-            </div>
-
-            <div class="squeeze-risk-row">
-              <span>Squeeze / Whipsaw Risk:</span>
-              <strong id="squeezeRiskVal">Low (12%)</strong>
-            </div>
-          </div>
-
-          <!-- Pivot Support & Resistance Range Gauge -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <h3><i data-lucide="compass"></i> Pivot Range Position</h3>
-            </div>
-            <div class="pivot-gauge-wrap">
-              <div class="pivot-labels">
-                <span class="pivot-low-lbl">Support: <strong id="gaugeSupport">--</strong></span>
-                <span class="pivot-mid-lbl">Price: <strong id="gaugePrice">--</strong></span>
-                <span class="pivot-high-lbl">Resistance: <strong id="gaugeResistance">--</strong></span>
-              </div>
-              <div class="pivot-gauge-track">
-                <div class="pivot-gauge-pin" id="pivotGaugePin" style="left: 50%;"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Technical Telemetry Indicators -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <h3><i data-lucide="activity"></i> Technical Indicators Telemetry</h3>
-            </div>
-            <div class="telemetry-grid">
-              <div class="telem-box">
-                <span class="telem-title">RSI (14)</span>
-                <span class="telem-value" id="telemRsi">--</span>
-                <span class="telem-state" id="telemRsiState">Neutral</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Trend State</span>
-                <span class="telem-value" id="telemTrend">--</span>
-                <span class="telem-state" id="telemTrendState">Alignment</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">MACD Histogram</span>
-                <span class="telem-value" id="telemMacd">--</span>
-                <span class="telem-state" id="telemMacdState">Momentum</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Volume Spike</span>
-                <span class="telem-value" id="telemVolSpike">--</span>
-                <span class="telem-state" id="telemVolState">Relative to SMA</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Support Level</span>
-                <span class="telem-value" id="telemSupport">--</span>
-                <span class="telem-state">Key Pivot Low</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Resistance Level</span>
-                <span class="telem-value" id="telemResistance">--</span>
-                <span class="telem-state">Key Pivot High</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Wilder ADX (14)</span>
-                <span class="telem-value" id="telemAdx">--</span>
-                <span class="telem-state" id="telemRegimeState">Market Regime</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">TTM Squeeze</span>
-                <span class="telem-value" id="telemSqueeze">--</span>
-                <span class="telem-state" id="telemSqueezeState">Compression</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">Order Book Depth</span>
-                <span class="telem-value" id="telemObi">--%</span>
-                <span class="telem-state" id="telemObiState">Bid/Ask Ratio</span>
-              </div>
-              <div class="telem-box">
-                <span class="telem-title">1H Macro Confluence</span>
-                <span class="telem-value" id="telemHtf">--</span>
-                <span class="telem-state" id="telemHtfState">HTF Trend</span>
-              </div>
-            </div>
-          </div>
-        </div>
+          <dl class="telemetry-grid">
+            <div class="telem-box"><dt>MACD histogram</dt><dd id="telemMacd">--</dd><dd class="telem-state" id="telemMacdState">--</dd></div>
+            <div class="telem-box"><dt>Volume vs average</dt><dd id="telemVolSpike">--</dd><dd class="telem-state" id="telemVolState">--</dd></div>
+            <div class="telem-box"><dt>ADX (14)</dt><dd id="telemAdx">--</dd><dd class="telem-state" id="telemRegimeState">--</dd></div>
+            <div class="telem-box"><dt>Squeeze</dt><dd id="telemSqueeze">--</dd><dd class="telem-state" id="telemSqueezeState">--</dd></div>
+          </dl>
+        </details>
       </aside>
     </main>
 
-    <!-- ============================================== -->
-    <!-- BOTTOM SIGNAL HISTORY DRAWER -->
-    <!-- ============================================== -->
+    <!-- Signal history drawer -->
     <footer class="history-drawer collapsed" id="historyDrawer">
       <div class="history-header" id="historyDrawerHeader">
         <div class="history-title-wrap">
-          <button class="drawer-toggle-btn" id="drawerToggleBtn" aria-label="Toggle Signal History Drawer">
-            <i data-lucide="chevron-up" id="drawerChevron"></i>
+          <button type="button" class="drawer-toggle-btn" aria-label="Show or hide signal history">
+            <i data-lucide="chevron-up"></i>
           </button>
-          <div class="history-title">
-            <i data-lucide="history"></i>
-            <span>Live AI Signal History</span>
-          </div>
-          <span class="history-count" id="historyCount">0 Signals</span>
+          <h2 class="history-title">Signal history</h2>
+          <span class="history-count" id="historyCount">0 signals</span>
         </div>
 
         <div class="history-actions">
-          <div class="history-filter-group" role="group">
-            <button class="hist-filter-btn active" data-filter="all">All</button>
-            <button class="hist-filter-btn" data-filter="long">Longs</button>
-            <button class="hist-filter-btn" data-filter="short">Shorts</button>
+          <div class="history-filter-group" role="group" aria-label="Filter signals">
+            <button type="button" class="hist-filter-btn active" data-filter="all">All</button>
+            <button type="button" class="hist-filter-btn" data-filter="long">Longs</button>
+            <button type="button" class="hist-filter-btn" data-filter="short">Shorts</button>
           </div>
-          <button id="btnExportHistory" class="hist-action-btn hide-on-compact" title="Export History as CSV" aria-label="Export signal history as CSV">
+          <button type="button" id="btnExportHistory" class="hist-action-btn" title="Export as CSV">
             <i data-lucide="download"></i>
             <span>CSV</span>
           </button>
-          <button id="btnClearHistory" class="hist-action-btn" title="Clear History Log" aria-label="Clear signal history">
+          <button type="button" id="btnClearHistory" class="hist-action-btn" title="Clear history" aria-label="Clear signal history">
             <i data-lucide="trash-2"></i>
           </button>
         </div>
@@ -1049,28 +490,48 @@
               <th>Symbol</th>
               <th>Timeframe</th>
               <th>Signal</th>
-              <th>Entry Price</th>
-              <th>Stop Loss</th>
-              <th>Take Profit 1</th>
-              <th>Take Profit 2</th>
+              <th>Entry</th>
+              <th>Stop-loss</th>
+              <th>Take profit 1</th>
+              <th>Take profit 2</th>
               <th>Confidence</th>
               <th>Latency</th>
             </tr>
           </thead>
           <tbody id="historyTableBody">
             <tr class="empty-row">
-              <td colspan="10">No signals triggered yet. Click "Analyze Market" to evaluate market conditions.</td>
+              <td colspan="10">No signals yet. Press Analyze to check the market.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </footer>
+
+    <!-- Phone tab bar (< 768px) -->
+    <nav class="mobile-view-tabs" id="mobileViewTabs" aria-label="Views">
+      <button type="button" class="mobile-tab-btn active" data-tab="chart" aria-pressed="true">
+        <i data-lucide="line-chart"></i>
+        <span>Chart</span>
+      </button>
+      <button type="button" class="mobile-tab-btn" data-tab="signals" aria-pressed="false">
+        <i data-lucide="sparkles"></i>
+        <span>Laya</span>
+        <span class="tab-signal-pill" id="mobileTabSignalPill" data-side="neutral" aria-label="Laya says wait"></span>
+      </button>
+      <button type="button" class="mobile-tab-btn" data-tab="position" aria-pressed="false">
+        <i data-lucide="wallet"></i>
+        <span>Position</span>
+      </button>
+      <button type="button" class="mobile-tab-btn" data-tab="history" aria-pressed="false">
+        <i data-lucide="history"></i>
+        <span>History</span>
+        <span class="tab-count-badge" id="mobileTabHistoryCount">0</span>
+      </button>
+    </nav>
   </div>
 
-  <!-- ============================================== -->
-  <!-- COIN / SYMBOL SEARCH MODAL (TRADINGVIEW STYLE) -->
-  <!-- ============================================== -->
-  <dialog id="coinSearchModal" class="modal-overlay" aria-labelledby="coinSearchTitle">
+  <!-- Coin search -->
+  <dialog id="coinSearchModal" class="modal-overlay" aria-label="Change coin">
     <div class="modal-card coin-search-modal-card">
       <div class="coin-modal-search-bar">
         <i data-lucide="search" class="coin-modal-search-icon"></i>
@@ -1078,116 +539,106 @@
           type="text"
           id="coinSearchInput"
           class="coin-modal-search-input"
-          placeholder="Search coin or pair (e.g. BTC, ETH, SOL, PEPE, DOGE)..."
+          placeholder="Search coins, e.g. BTC, SOL, PEPE"
           autocomplete="off"
           spellcheck="false"
-          aria-label="Search trading coins"
+          aria-label="Search coins"
         />
         <button type="button" id="coinSearchClear" class="coin-modal-clear-btn hide" aria-label="Clear search">
           <i data-lucide="x"></i>
         </button>
-        <button type="button" id="btnCloseCoinSearch" class="modal-close-btn" aria-label="Close Coin Search Modal">
+        <button type="button" id="btnCloseCoinSearch" class="modal-close-btn" aria-label="Close">
           <i data-lucide="x"></i>
         </button>
       </div>
 
-      <!-- Category Filter Tabs -->
-      <div class="coin-modal-tabs" role="tablist">
+      <div class="coin-modal-tabs" role="group" aria-label="Category">
         <button type="button" class="coin-tab-btn active" data-category="all">All (32)</button>
-        <button type="button" class="coin-tab-btn" data-category="major">👑 Major</button>
-        <button type="button" class="coin-tab-btn" data-category="meme">🔥 Meme</button>
-        <button type="button" class="coin-tab-btn" data-category="l1">⚡ L1/L2</button>
-        <button type="button" class="coin-tab-btn" data-category="ai">🤖 AI/Infra</button>
+        <button type="button" class="coin-tab-btn" data-category="major">Major</button>
+        <button type="button" class="coin-tab-btn" data-category="meme">Meme</button>
+        <button type="button" class="coin-tab-btn" data-category="l1">Layer 1 and 2</button>
+        <button type="button" class="coin-tab-btn" data-category="ai">AI and infrastructure</button>
       </div>
 
-      <!-- Coin List Container -->
       <div id="coinListContainer" class="coin-modal-list" role="listbox">
-        <!-- Rendered dynamically -->
       </div>
 
-      <!-- Modal Footer -->
       <div class="coin-modal-footer">
-        <span id="coinCountDisplay" class="coin-modal-count">32 perpetual pairs</span>
+        <span id="coinCountDisplay" class="coin-modal-count">32 pairs</span>
         <div class="coin-modal-hints">
           <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
           <span><kbd>↵</kbd> select</span>
-          <span><kbd>ESC</kbd> close</span>
+          <span><kbd>Esc</kbd> close</span>
         </div>
       </div>
     </div>
   </dialog>
 
-  <!-- ============================================== -->
-  <!-- TOOBIT API CONNECTION MODAL -->
-  <!-- ============================================== -->
+  <!-- Toobit account -->
   <dialog id="toobitModal" class="modal-overlay" aria-labelledby="toobitModalTitle">
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-wrap">
           <i data-lucide="wallet" class="modal-title-icon"></i>
           <div>
-            <h2 id="toobitModalTitle">Connect Toobit Account</h2>
-            <span class="modal-subtitle">Perpetual Futures Position Management & Live AI Advisory</span>
+            <h2 id="toobitModalTitle">Toobit account</h2>
+            <span class="modal-subtitle">Connect live API keys, or practise with the demo account.</span>
           </div>
         </div>
-        <button id="btnCloseToobitModal" class="modal-close-btn" autofocus aria-label="Close Modal">
+        <button id="btnCloseToobitModal" class="modal-close-btn" autofocus aria-label="Close">
           <i data-lucide="x"></i>
         </button>
       </div>
 
       <div class="modal-body">
-        <!-- Account Status Banner -->
         <div class="account-status-banner" id="modalAccountBanner">
           <div class="status-banner-left">
             <span class="status-indicator-dot demo" id="modalStatusDot"></span>
             <div>
-              <strong id="modalStatusText">Simulated Demo Mode Active</strong>
-              <span class="sub" id="modalStatusSub">Trading with virtual $5,000 USDT</span>
+              <strong id="modalStatusText">Demo account</strong>
+              <span class="sub" id="modalStatusSub">Trading with $5,000 virtual USDT</span>
             </div>
           </div>
           <div class="status-banner-balance" id="modalBalanceBox">
-            <span class="bal-label">Available Margin</span>
+            <span class="bal-label">Available margin</span>
             <strong class="bal-val" id="modalAvailableBal">$5,000.00 USDT</strong>
           </div>
         </div>
 
-        <!-- Mode Toggle Tabs -->
-        <div class="modal-tabs" role="tablist" aria-label="Account Mode">
+        <div class="modal-tabs" role="tablist" aria-label="Account type">
           <button class="modal-tab-btn active" id="tabModeLive" role="tab" aria-selected="true" aria-controls="tabContentLive">
-            <i data-lucide="key"></i> Live API Keys
+            <i data-lucide="key"></i> API keys
           </button>
           <button class="modal-tab-btn" id="tabModeDemo" role="tab" aria-selected="false" aria-controls="tabContentDemo">
-            <i data-lucide="shield-check"></i> Demo Simulation
+            <i data-lucide="shield-check"></i> Demo account
           </button>
         </div>
 
-        <!-- Tab 1: Live API Form -->
         <div id="tabContentLive" class="tab-content active" role="tabpanel" aria-labelledby="tabModeLive">
-          <!-- Live API Validation Error Notice -->
           <div id="toobitConnectError" class="modal-error-box hide" role="alert">
             <div class="modal-error-icon">
               <i data-lucide="alert-triangle"></i>
             </div>
             <div class="modal-error-body">
-              <div class="modal-error-title">Connection Failed</div>
+              <div class="modal-error-title">Could not connect</div>
               <div class="modal-error-desc" id="toobitConnectErrorText"></div>
             </div>
           </div>
 
           <form id="toobitApiForm" class="toobit-form">
             <div class="form-group">
-              <label for="toobitApiKey">Toobit API Key</label>
+              <label for="toobitApiKey">API key</label>
               <div class="input-wrap">
-                <input type="text" id="toobitApiKey" placeholder="Paste your Toobit API Key" autocomplete="off" spellcheck="false">
+                <input type="text" id="toobitApiKey" placeholder="Paste your Toobit API key" autocomplete="off" spellcheck="false">
                 <i data-lucide="key" class="input-icon"></i>
               </div>
             </div>
 
             <div class="form-group">
-              <label for="toobitApiSecret">Toobit Secret Key</label>
+              <label for="toobitApiSecret">Secret key</label>
               <div class="input-wrap">
-                <input type="password" id="toobitApiSecret" placeholder="Paste your Toobit Secret Key" autocomplete="off" spellcheck="false">
-                <button type="button" id="btnToggleSecret" class="btn-toggle-eye" aria-label="Toggle Secret Visibility">
+                <input type="password" id="toobitApiSecret" placeholder="Paste your Toobit secret key" autocomplete="off" spellcheck="false">
+                <button type="button" id="btnToggleSecret" class="btn-toggle-eye" aria-label="Show or hide the secret key">
                   <i data-lucide="eye" id="eyeIcon"></i>
                 </button>
               </div>
@@ -1196,17 +647,17 @@
             <div class="security-notice">
               <i data-lucide="shield"></i>
               <div class="sec-text">
-                <strong>Local & Private:</strong> Keys are used strictly on your machine to query positions and submit flash close orders. 
-                <span class="highlight">Never enable 'Withdrawal' permissions</span> on your API key.
+                Keys stay on this machine and are only used to read positions and send close orders.
+                <strong>Never give the key withdrawal permission.</strong>
               </div>
             </div>
 
             <div class="modal-form-actions">
               <button type="submit" id="btnSaveToobitKeys" class="btn-primary-modal">
                 <i data-lucide="check-circle"></i>
-                <span>Connect & Validate API</span>
+                <span>Connect</span>
               </button>
-              <button type="button" id="btnDisconnectToobit" class="btn-secondary-modal" title="Disconnect and clear keys">
+              <button type="button" id="btnDisconnectToobit" class="btn-secondary-modal" title="Disconnect and forget the keys">
                 <i data-lucide="log-out"></i>
                 <span>Disconnect</span>
               </button>
@@ -1214,20 +665,19 @@
           </form>
         </div>
 
-        <!-- Tab 2: Demo Simulation Mode Details -->
         <div id="tabContentDemo" class="tab-content hide" role="tabpanel" aria-labelledby="tabModeDemo">
           <div class="demo-explanation-box">
             <div class="demo-icon-wrap">
               <i data-lucide="sparkles"></i>
             </div>
-            <h3>Zero-Risk Simulation Mode</h3>
+            <h3>Demo account</h3>
             <p>
-              Test Laya AI's real-time position management suggestions with live Toobit market ticks without risking real money. You get a virtual $5,000 USDT balance and can simulate opening and closing Long and Short contracts instantly.
+              Practise with live Toobit prices and $5,000 virtual USDT. Simulate longs and shorts and see Laya's advice without risking real money.
             </p>
             <div class="demo-quick-buttons">
               <button type="button" id="btnActivateDemoMode" class="btn-demo-prime">
                 <i data-lucide="play-circle"></i>
-                <span>Activate Demo Account ($5,000 USDT)</span>
+                <span>Turn on demo account</span>
               </button>
             </div>
           </div>
@@ -1236,9 +686,7 @@
     </div>
   </dialog>
 
-  <!-- ============================================== -->
-  <!-- AUTONOMOUS TRADING CONTROLLER & AUDIT MODAL    -->
-  <!-- ============================================== -->
+  <!-- Auto-trader -->
   <dialog id="autoTradeModal" class="modal-overlay" aria-labelledby="autoTradeModalTitle">
     <div class="modal-card autotrade-modal-card">
       <div class="modal-header">
@@ -1247,115 +695,108 @@
             <i data-lucide="cpu"></i>
           </div>
           <div>
-            <h2 id="autoTradeModalTitle">Autonomous Trading Desk</h2>
-            <span class="modal-subtitle" id="atDeskSubtitle">Multi-Symbol Probabilistic Execution Desk</span>
+            <h2 id="autoTradeModalTitle">Auto-trader</h2>
+            <span class="modal-subtitle" id="atDeskSubtitle">Scans your symbols and trades Laya's signals within your limits.</span>
           </div>
         </div>
         <div class="modal-header-actions">
           <div class="at-master-switch-wrap">
-            <span class="at-switch-label">MASTER:</span>
-            <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-label="Toggle Auto-Trading Master Switch">
+            <span class="at-switch-label">Auto-trader</span>
+            <button type="button" class="btn-autotrade-switch" data-at="toggle" aria-pressed="false" aria-label="Auto-trader on or off">
               <span class="toggle-knob"></span>
-              <span class="toggle-label">OFF</span>
+              <span class="toggle-label">Off</span>
             </button>
           </div>
-          <button id="btnCloseAutoTradeModal" class="modal-close-btn" autofocus aria-label="Close Modal">
+          <button id="btnCloseAutoTradeModal" class="modal-close-btn" autofocus aria-label="Close">
             <i data-lucide="x"></i>
           </button>
         </div>
       </div>
 
       <div class="modal-body">
-        <!-- Execution State Banner: makes PAPER vs REAL capital unmistakable -->
+        <!-- Execution state: makes paper vs real capital unmistakable -->
         <div class="at-risk-banner" id="atRiskBanner" data-state="shadow" role="status" aria-live="polite">
           <span class="at-risk-dot" aria-hidden="true"></span>
           <div class="at-risk-copy">
-            <strong id="atRiskTitle">SHADOW MODE</strong>
+            <strong id="atRiskTitle">Shadow mode</strong>
             <span id="atRiskDetail">Signals are evaluated but no orders are sent to the exchange.</span>
           </div>
-          <span class="at-risk-tag" id="atRiskTag">PAPER</span>
+          <span class="at-risk-tag" id="atRiskTag">Paper</span>
         </div>
 
-        <!-- Live Status Bar -->
         <div class="at-modal-status-bar" id="modalAtStatusBar">
           <div class="status-bar-item">
-            <span class="lbl">STATUS</span>
+            <span class="lbl">Status</span>
             <div class="val-pill status-idle" id="modalAtStatusPill">
               <span class="status-pulse-dot" id="modalAtStatusDot"></span>
-              <span id="modalAtStatusText">STANDBY (OFF)</span>
+              <span id="modalAtStatusText">idle</span>
             </div>
           </div>
           <div class="status-bar-item">
-            <span class="lbl">MODE</span>
-            <span class="val-tag demo" id="modalAtModeTag">DEMO SIMULATION</span>
+            <span class="lbl">Mode</span>
+            <span class="val-tag demo" id="modalAtModeTag">Demo, shadow</span>
           </div>
           <div class="status-bar-item">
-            <span class="lbl">POSITIONS</span>
+            <span class="lbl">Positions</span>
             <span class="val-bold" id="modalAtPositionsVal">0 / 2</span>
           </div>
           <div class="status-bar-item">
-            <span class="lbl">WIN RATE</span>
-            <span class="val-bold pnl-green" data-at="winrate">--% (0 trades)</span>
+            <span class="lbl">Win rate</span>
+            <span class="val-bold" data-at="winrate">--</span>
           </div>
           <div class="status-bar-item">
-            <span class="lbl">DAILY REALIZED PNL</span>
+            <span class="lbl">Today's PnL</span>
             <span class="val-bold" data-at="daily-pnl">+$0.00</span>
           </div>
         </div>
 
-        <!-- Navigation Tabs -->
-        <div class="modal-tabs" role="tablist" aria-label="Auto-Trader Sections">
+        <div class="modal-tabs" role="tablist" aria-label="Auto-trader sections">
           <button class="modal-tab-btn active" id="tabAtDesk" role="tab" aria-selected="true" aria-controls="tabContentAtDesk">
-            <i data-lucide="layout-dashboard"></i> Live Desk
+            <i data-lucide="layout-dashboard"></i> Desk
           </button>
           <button class="modal-tab-btn" id="tabAtSettings" role="tab" aria-selected="false" aria-controls="tabContentAtSettings">
-            <i data-lucide="sliders"></i> Risk & Strategy Controls
+            <i data-lucide="sliders"></i> Strategy
           </button>
           <button class="modal-tab-btn" id="tabAtSafety" role="tab" aria-selected="false" aria-controls="tabContentAtSafety">
-            <i data-lucide="shield-check"></i> Safety Circuit Breakers
+            <i data-lucide="shield-check"></i> Loss limits
           </button>
           <button class="modal-tab-btn" id="tabAtLogs" role="tab" aria-selected="false" aria-controls="tabContentAtLogs">
-            <i data-lucide="terminal"></i> Live Audit Log
+            <i data-lucide="terminal"></i> Log
           </button>
         </div>
 
-        <!-- Tab 0: Live Desk (positions + signals) -->
         <div id="tabContentAtDesk" class="tab-content active" role="tabpanel" aria-labelledby="tabAtDesk">
-          <!-- Managed Positions -->
           <section class="at-desk-section" aria-labelledby="atDeskPositionsHeading">
             <div class="at-desk-section-head">
               <div class="at-desk-title">
                 <i data-lucide="layers"></i>
-                <h3 id="atDeskPositionsHeading">Managed Positions</h3>
+                <h3 id="atDeskPositionsHeading">Open positions</h3>
                 <span class="at-count-chip" id="atDeskPositionCount">0</span>
               </div>
-              <span class="at-desk-note" id="atDeskBracketNote">Exchange-confirmed brackets only</span>
+              <span class="at-desk-note" id="atDeskBracketNote">Stop-loss and take-profit as confirmed by the exchange</span>
             </div>
             <div class="at-position-grid" id="atDeskPositions"></div>
           </section>
 
-          <!-- Signal Grid -->
           <section class="at-desk-section" aria-labelledby="atDeskSignalsHeading">
             <div class="at-desk-section-head">
               <div class="at-desk-title">
                 <i data-lucide="activity"></i>
-                <h3 id="atDeskSignalsHeading">Multi-Timeframe Signals</h3>
+                <h3 id="atDeskSignalsHeading">Signals by symbol</h3>
               </div>
-              <span class="at-desk-note" id="atDeskScanNote">Parallel scan</span>
+              <span class="at-desk-note" id="atDeskScanNote">Scanning</span>
             </div>
             <div class="at-signal-grid" id="atDeskSignals"></div>
           </section>
         </div>
 
-        <!-- Tab 1: Risk & Strategy Settings -->
         <div id="tabContentAtSettings" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtSettings">
           <form id="atSettingsForm" class="toobit-form">
-            <!-- Universe & Execution Scope -->
             <fieldset class="at-fieldset">
-              <legend class="at-legend">Universe &amp; Execution Scope</legend>
+              <legend class="at-legend">What to trade</legend>
 
               <div class="form-group">
-                <label>Active Symbols</label>
+                <label>Symbols</label>
                 <div class="at-chip-group" id="atSymbolChips" role="group" aria-label="Active trading symbols"></div>
                 <span class="input-hint">Scanned in parallel. Symbols already holding a position are managed, not re-entered.</span>
               </div>
@@ -1368,7 +809,7 @@
                 </div>
 
                 <div class="form-group">
-                  <label for="atSettingMaxPositions">Max Concurrent Positions</label>
+                  <label for="atSettingMaxPositions">Most positions at once</label>
                   <div class="input-wrap">
                     <input type="number" id="atSettingMaxPositions" min="1" max="2" step="1" value="2">
                     <span class="input-suffix-tag">positions</span>
@@ -1381,13 +822,13 @@
                 <label class="custom-checkbox-row at-shadow-toggle">
                   <input type="checkbox" id="atSettingShadowMode" checked>
                   <div class="cb-text">
-                    <strong>Shadow Mode <span class="at-chip-tag safe">Recommended</span></strong>
+                    <strong>Shadow mode <span class="at-chip-tag safe">Recommended</span></strong>
                     <span>Evaluate every signal and log the decision, but never send an order to the exchange.</span>
                   </div>
                 </label>
 
                 <div class="form-group">
-                  <label for="atSettingPerSymbolCooldown">Per-Symbol Cooldown</label>
+                  <label for="atSettingPerSymbolCooldown">Wait before re-entering a symbol</label>
                   <div class="input-wrap">
                     <input type="number" id="atSettingPerSymbolCooldown" min="0" max="600" step="5" value="60">
                     <span class="input-suffix-tag">seconds</span>
@@ -1398,41 +839,38 @@
             </fieldset>
 
             <div class="form-row-dual">
-              <!-- Mode Selection -->
               <div class="form-group">
-                <label for="atSettingMode">Execution Mode</label>
+                <label for="atSettingMode">Account</label>
                 <select id="atSettingMode" class="styled-select">
-                  <option value="demo">🧪 Demo Simulation (Virtual $5,000 Equity)</option>
-                  <option value="live">⚡ Live Toobit Futures (Real Capital)</option>
+                  <option value="demo">Demo ($5,000 virtual)</option>
+                  <option value="live">Live Toobit futures (real money)</option>
                 </select>
-                <span class="input-hint">Live mode requires API Keys with Futures Trading permission.</span>
+                <span class="input-hint">Live needs API keys with futures trading permission.</span>
               </div>
 
-              <!-- Leverage Multiplier -->
               <div class="form-group">
-                <label for="atSettingLeverage">Leverage Multiplier</label>
+                <label for="atSettingLeverage">Leverage</label>
                 <select id="atSettingLeverage" class="styled-select">
-                  <option value="10" selected>10x Leverage (Conservative)</option>
-                  <option value="20">20x Leverage (Balanced)</option>
-                  <option value="50">50x Leverage (High Risk)</option>
+                  <option value="10" selected>10x (conservative)</option>
+                  <option value="20">20x (balanced)</option>
+                  <option value="50">50x (high risk)</option>
                 </select>
-                <span class="input-hint">Isolated margin with ATR-clamped Stop Loss.</span>
+                <span class="input-hint">Isolated margin. Stop-loss distance follows volatility (ATR).</span>
               </div>
             </div>
 
             <div class="form-row-dual">
-              <!-- Sizing Mode & Margin -->
               <div class="form-group">
-                <label for="atSettingSizingMode">Position Sizing Method</label>
+                <label for="atSettingSizingMode">Position size</label>
                 <select id="atSettingSizingMode" class="styled-select">
-                  <option value="fixed_margin" selected>Fixed Margin (USDT per trade)</option>
-                  <option value="pct_equity">% of Account Equity</option>
+                  <option value="fixed_margin" selected>Fixed margin (USDT per trade)</option>
+                  <option value="pct_equity">Percent of account equity</option>
                 </select>
-                <span class="input-hint">Never risk compounding volatility losses.</span>
+                <span class="input-hint">Fixed margin keeps each loss the same size.</span>
               </div>
 
               <div class="form-group">
-                <label for="atSettingMarginVal">Margin Allocation</label>
+                <label for="atSettingMarginVal">Margin per trade</label>
                 <div class="input-wrap">
                   <input type="number" id="atSettingMarginVal" step="0.5" min="0.5" max="50" value="1.0">
                   <span class="input-suffix-tag" id="atMarginUnit">USDT</span>
@@ -1447,52 +885,49 @@
             </div>
 
             <div class="form-row-dual">
-              <!-- Minimum Confidence Filter -->
               <div class="form-group">
-                <label for="atSettingMinConf">Minimum Signal Confidence</label>
+                <label for="atSettingMinConf">Minimum confidence</label>
                 <select id="atSettingMinConf" class="styled-select">
-                  <option value="60">60% Confidence (Higher Frequency)</option>
-                  <option value="65" selected>65% Confidence (Recommended Balanced)</option>
-                  <option value="70">70% Confidence (Strict Confluence)</option>
-                  <option value="75">75% Confidence (Ultra High Conviction)</option>
+                  <option value="60">60% (more trades)</option>
+                  <option value="65" selected>65% (recommended)</option>
+                  <option value="70">70% (stricter)</option>
+                  <option value="75">75% (fewest trades)</option>
                 </select>
-                <span class="input-hint">Skips choppy regimes and low-confidence setups.</span>
+                <span class="input-hint">Signals below this are skipped.</span>
               </div>
 
-              <!-- Cooldown Seconds -->
               <div class="form-group">
-                <label for="atSettingCooldown">Cooldown Between Trades</label>
+                <label for="atSettingCooldown">Wait between trades</label>
                 <div class="input-wrap">
                   <input type="number" id="atSettingCooldown" min="10" max="300" value="30">
                   <span class="input-suffix-tag">seconds</span>
                 </div>
-                <span class="input-hint">Guards against volatility whipsaws and revenge trading.</span>
+                <span class="input-hint">Avoids rapid re-entries after a whipsaw.</span>
               </div>
             </div>
 
-            <!-- Protective Strategy Rules -->
             <div class="at-checkbox-group">
               <label class="custom-checkbox-row">
                 <input type="checkbox" id="atSettingAutoBracket" checked>
                 <div class="cb-text">
-                  <strong>Automatic Exchange Bracket Orders (SL & TP)</strong>
-                  <span>Immediately attaches Stop-Loss clamped at 0.35%–0.80% and Take-Profit targets on entry.</span>
+                  <strong>Place stop-loss and take-profit on entry</strong>
+                  <span>Stop-loss is kept between 0.35% and 0.80% from entry.</span>
                 </div>
               </label>
 
               <label class="custom-checkbox-row">
                 <input type="checkbox" id="atSettingAutoBreakeven" checked>
                 <div class="cb-text">
-                  <strong>Auto Break-Even Profit Lock (at TP1)</strong>
-                  <span>Once price reaches Take-Profit 1, Stop-Loss is moved to entry to remove downside on the remaining runner.</span>
+                  <strong>Move stop-loss to entry at take profit 1</strong>
+                  <span>Removes the downside on the rest of the position.</span>
                 </div>
               </label>
 
               <label class="custom-checkbox-row">
                 <input type="checkbox" id="atSettingReversalExit" checked>
                 <div class="cb-text">
-                  <strong>Opposing Signal Protection (Flash Close on Reversal)</strong>
-                  <span>Instantly exits position if Laya detects strong high-conviction counter-trend momentum (≥70%).</span>
+                  <strong>Close on a strong opposite signal</strong>
+                  <span>Exits when Laya calls the other direction with 70% confidence or more.</span>
                 </div>
               </label>
             </div>
@@ -1500,61 +935,60 @@
             <div class="modal-form-actions">
               <button type="submit" id="btnSaveAtSettings" class="btn-primary-modal">
                 <i data-lucide="check"></i>
-                <span>Save Strategy Settings</span>
+                <span>Save strategy</span>
               </button>
             </div>
           </form>
         </div>
 
-        <!-- Tab 2: Safety Circuit Breakers -->
         <div id="tabContentAtSafety" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtSafety">
           <div class="at-safety-banner">
             <i data-lucide="shield-alert" class="safety-banner-icon"></i>
             <div>
-              <strong>Institutional Circuit Breakers Active</strong>
-              <p>Hard limits enforced by the risk engine. If any limit is breached, auto-trading halts immediately to preserve your capital.</p>
+              <strong>Loss limits</strong>
+              <p>If a limit is hit, the auto-trader stops until you switch it on again.</p>
             </div>
           </div>
 
           <form id="atSafetyForm" class="toobit-form">
             <div class="form-row-dual">
               <div class="form-group">
-                <label for="atSettingMaxDailyLoss">Daily Loss Circuit Breaker ($ USD)</label>
+                <label for="atSettingMaxDailyLoss">Daily loss limit</label>
                 <div class="input-wrap">
                   <input type="number" id="atSettingMaxDailyLoss" step="1.0" min="1.0" max="200.0" value="5.0">
                   <span class="input-suffix-tag">USDT</span>
                 </div>
-                <span class="input-hint">Shuts down auto-trading if cumulative daily loss exceeds this amount.</span>
+                <span class="input-hint">Stops trading once today's losses reach this amount.</span>
               </div>
 
               <div class="form-group">
-                <label for="atSettingMaxConsec">Consecutive Loss Halt Limit</label>
+                <label for="atSettingMaxConsec">Losses in a row</label>
                 <div class="input-wrap">
                   <input type="number" id="atSettingMaxConsec" min="2" max="10" value="3">
                   <span class="input-suffix-tag">losses</span>
                 </div>
-                <span class="input-hint">Pauses auto-trading after N back-to-back losses for human review.</span>
+                <span class="input-hint">Stops trading after this many losses in a row.</span>
               </div>
             </div>
 
             <div class="safety-metrics-grid">
               <div class="safety-metric-card">
-                <span class="sm-lbl">Today's Realized PnL</span>
+                <span class="sm-lbl">Today's PnL</span>
                 <span class="sm-val" data-at="daily-pnl">+$0.00</span>
                 <span class="sm-sub" id="safetyDailyLimitLabel">Cap: -$5.00 USDT</span>
               </div>
               <div class="safety-metric-card">
-                <span class="sm-lbl">Consecutive Losses</span>
+                <span class="sm-lbl">Losses in a row</span>
                 <span class="sm-val" id="safetyConsecLosses">0 / 3</span>
                 <span class="sm-sub">Max allowed: 3</span>
               </div>
               <div class="safety-metric-card">
-                <span class="sm-lbl">80% Free Margin Shield</span>
-                <span class="sm-val pnl-green">ARMED</span>
-                <span class="sm-sub">Max 20% margin per trade</span>
+                <span class="sm-lbl">Margin cap</span>
+                <span class="sm-val pnl-green">On</span>
+                <span class="sm-sub">At most 20% of margin per trade</span>
               </div>
               <div class="safety-metric-card" id="atLiquidationCard">
-                <span class="sm-lbl">Liquidation Distance</span>
+                <span class="sm-lbl">Distance to liquidation</span>
                 <span class="sm-val" id="atLiquidationVal">—</span>
                 <span class="sm-sub" id="atLiquidationSub">Based on configured leverage</span>
               </div>
@@ -1563,41 +997,38 @@
             <div class="modal-form-actions">
               <button type="submit" id="btnSaveAtSafety" class="btn-secondary-modal">
                 <i data-lucide="save"></i>
-                <span>Update Circuit Breaker Limits</span>
+                <span>Save loss limits</span>
               </button>
             </div>
           </form>
 
-          <!-- Emergency Kill Switch Action -->
           <div class="at-emergency-section">
             <div class="emergency-text">
-              <strong>Emergency Kill Switch</strong>
-              <p>Immediately disconnects auto-trading, cancels all resting exchange orders, and flash-closes all open positions at market price.</p>
+              <strong>Kill switch</strong>
+              <p>Stops the auto-trader, cancels all open orders and closes every position at market price.</p>
             </div>
             <button type="button" data-at="kill" class="btn-emergency-kill">
               <i data-lucide="alert-octagon"></i>
-              <span>🚨 ACTIVATE EMERGENCY KILL SWITCH</span>
+              <span>Use kill switch</span>
             </button>
           </div>
         </div>
 
-        <!-- Tab 3: Live Audit Log -->
         <div id="tabContentAtLogs" class="tab-content hide" role="tabpanel" aria-labelledby="tabAtLogs">
           <div class="at-logs-header">
             <div class="logs-title">
               <i data-lucide="terminal"></i>
-              <span>Real-Time Audit Trail & Execution Stream</span>
+              <span>Everything the auto-trader decided and did</span>
             </div>
             <button type="button" id="btnClearAtLogs" class="btn-clear-logs" title="Clear log entries">
               <i data-lucide="trash-2"></i> Clear
             </button>
           </div>
           <div class="at-terminal-box" id="atTerminalBox" role="log" aria-live="polite">
-            <!-- Logs rendered dynamically -->
             <div class="log-line info">
               <span class="log-time">--:--:--</span>
-              <span class="log-badge system">SYSTEM</span>
-              <span class="log-msg">Audit terminal ready. Awaiting events...</span>
+              <span class="log-badge system">system</span>
+              <span class="log-msg">No events yet.</span>
             </div>
           </div>
         </div>

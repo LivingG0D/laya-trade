@@ -35,7 +35,6 @@ let chartMarkers = [];
 let lastAnalyzedCandleTime = 0;
 let lastKnownPrice = null;
 let currentSignal = null;
-let currentCalcAmount = 500;
 let rawSignalHistory = [];
 let activeHistoryFilter = "all";
 let activeKlineRequestId = 0;
@@ -53,7 +52,6 @@ const toggleAutoAnalyze = document.getElementById("toggleAutoAnalyze");
 const btnFitChart = document.getElementById("btnFitChart");
 const btnFullscreenChart = document.getElementById("btnFullscreenChart");
 const btnAudioToggle = document.getElementById("btnAudioToggle");
-const audioIcon = document.getElementById("audioIcon");
 const chartLoading = document.getElementById("chartLoading");
 
 // On-Chart Floating Position HUD Elements
@@ -63,13 +61,6 @@ const posHudSymbol = document.getElementById("posHudSymbol");
 const posHudEntry = document.getElementById("posHudEntry");
 const posHudPnl = document.getElementById("posHudPnl");
 const posHudLiq = document.getElementById("posHudLiq");
-
-// Mode Switch Elements
-const btnSimpleMode = document.getElementById("btnSimpleMode");
-const btnProMode = document.getElementById("btnProMode");
-const simpleModeContainer = document.getElementById("simpleModeContainer");
-const proModeContainer = document.getElementById("proModeContainer");
-let currentMode = localStorage.getItem("laya_mode") || "simple";
 
 // Ticker Elements
 const livePriceEl = document.getElementById("livePrice");
@@ -93,38 +84,15 @@ const hudEma21 = document.getElementById("hudEma21");
 const hudEma50 = document.getElementById("hudEma50");
 const hudRsi = document.getElementById("hudRsi");
 
-// Simple Mode Elements
-const simpleHeroCard = document.getElementById("simpleHeroCard");
-const simpleHeroBadge = document.getElementById("simpleHeroBadge");
-const simpleHeroIcon = document.getElementById("simpleHeroIcon");
-const simpleHeroAction = document.getElementById("simpleHeroAction");
-const simpleHeroSub = document.getElementById("simpleHeroSub");
-const simpleConfidenceText = document.getElementById("simpleConfidenceText");
-const simpleMeterBar = document.getElementById("simpleMeterBar");
-const simpleRiskBadge = document.getElementById("simpleRiskBadge");
-
-const simpleEntryPrice = document.getElementById("simpleEntryPrice");
-const simpleTakeProfit = document.getElementById("simpleTakeProfit");
-const simpleStopLoss = document.getElementById("simpleStopLoss");
-const simpleTpDesc = document.getElementById("simpleTpDesc");
-const simpleSlDesc = document.getElementById("simpleSlDesc");
-const simpleReasonsList = document.getElementById("simpleReasonsList");
 const btnCopyTradePlan = document.getElementById("btnCopyTradePlan");
-const rrGainLabel = document.getElementById("rrGainLabel");
-const rrRiskLabel = document.getElementById("rrRiskLabel");
-const rrGainFill = document.getElementById("rrGainFill");
-const rrRiskFill = document.getElementById("rrRiskFill");
 
-// Position Calculator Elements
-const calcPresetGroup = document.getElementById("calcPresetGroup");
-const calcWinVal = document.getElementById("calcWinVal");
-const calcLossVal = document.getElementById("calcLossVal");
-
-// Pro Mode Signal Card Elements
+// Laya verdict elements
 const signalCard = document.getElementById("signalCard");
 const signalBadge = document.getElementById("signalBadge");
 const signalAction = document.getElementById("signalAction");
 const confidenceVal = document.getElementById("confidenceVal");
+const confidenceNeedle = document.getElementById("confidenceNeedle");
+const signalRiskBadge = document.getElementById("signalRiskBadge");
 const signalSubtext = document.getElementById("signalSubtext");
 const targetEntry = document.getElementById("targetEntry");
 const targetEntrySub = document.getElementById("targetEntrySub");
@@ -142,10 +110,6 @@ const targetRRR = document.getElementById("targetRRR");
 const targetHorizon = document.getElementById("targetHorizon");
 const reasonsList = document.getElementById("reasonsList");
 const latencyBadge = document.getElementById("latencyBadge");
-
-// Simple Mode Break-Even Element
-const simpleBreakEven = document.getElementById("simpleBreakEven");
-const simpleBeDesc = document.getElementById("simpleBeDesc");
 
 // Institutional Confluence HUD Strip Elements
 const hudHtfVal = document.getElementById("hudHtfVal");
@@ -168,24 +132,14 @@ const barStrongShort = document.getElementById("barStrongShort");
 const squeezeRiskVal = document.getElementById("squeezeRiskVal");
 
 // Telemetry & Gauge Elements
-const telemRsi = document.getElementById("telemRsi");
-const telemRsiState = document.getElementById("telemRsiState");
-const telemTrend = document.getElementById("telemTrend");
-const telemTrendState = document.getElementById("telemTrendState");
 const telemMacd = document.getElementById("telemMacd");
 const telemMacdState = document.getElementById("telemMacdState");
 const telemVolSpike = document.getElementById("telemVolSpike");
 const telemVolState = document.getElementById("telemVolState");
-const telemSupport = document.getElementById("telemSupport");
-const telemResistance = document.getElementById("telemResistance");
 const telemAdx = document.getElementById("telemAdx");
 const telemRegimeState = document.getElementById("telemRegimeState");
 const telemSqueeze = document.getElementById("telemSqueeze");
 const telemSqueezeState = document.getElementById("telemSqueezeState");
-const telemObi = document.getElementById("telemObi");
-const telemObiState = document.getElementById("telemObiState");
-const telemHtf = document.getElementById("telemHtf");
-const telemHtfState = document.getElementById("telemHtfState");
 const gaugeSupport = document.getElementById("gaugeSupport");
 const gaugePrice = document.getElementById("gaugePrice");
 const gaugeResistance = document.getElementById("gaugeResistance");
@@ -200,7 +154,7 @@ const btnExportHistory = document.getElementById("btnExportHistory");
 const btnClearHistory = document.getElementById("btnClearHistory");
 const histFilterButtons = document.querySelectorAll(".hist-filter-btn");
 
-// Mobile Elements
+// Mobile Elements (bottom tab bar)
 const mainContent = document.getElementById("mainContent");
 const mobileTabButtons = document.querySelectorAll(".mobile-tab-btn");
 const mobileTabSignalPill = document.getElementById("mobileTabSignalPill");
@@ -208,6 +162,21 @@ const mobileTabHistoryCount = document.getElementById("mobileTabHistoryCount");
 
 // (Toasts + audio chimes live in ./js/feedback.js; the Toobit
 //  account & position controller lives in ./js/toobit.js)
+
+// Chart colours come from the stylesheet tokens so CSS stays the single source.
+// Hex values only, so an alpha suffix ("33" = 20%) can be appended.
+const cssVar = (name, fallback) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+const palette = {
+  bg: cssVar("--bg", "#16181B"),
+  line: cssVar("--line", "#2C3036"),
+  text: cssVar("--text", "#E6E3DC"),
+  muted: cssVar("--muted", "#8B8F96"),
+  amber: cssVar("--amber", "#FFB020"),
+  long: cssVar("--long", "#3FB8A0"),
+  short: cssVar("--short", "#E0604A"),
+};
+const volumeColor = (up) => (up ? palette.long : palette.short) + "33";
 
 // --------------------------------------------------------
 // Initialize TradingView Lightweight Chart
@@ -219,22 +188,22 @@ function initChart() {
 
   chart = LightweightCharts.createChart(container, {
     layout: {
-      background: { type: "solid", color: "#0b0e14" },
-      textColor: "#94a3b8",
-      fontSize: 11,
-      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+      background: { type: "solid", color: palette.bg },
+      textColor: palette.muted,
+      fontSize: 12,
+      fontFamily: "'Barlow', system-ui, sans-serif",
     },
     grid: {
-      vertLines: { color: "rgba(255, 255, 255, 0.03)" },
-      horzLines: { color: "rgba(255, 255, 255, 0.03)" },
+      vertLines: { color: palette.line + "80" },
+      horzLines: { color: palette.line + "80" },
     },
     crosshair: {
       mode: LightweightCharts.CrosshairMode.Normal,
-      vertLine: { color: "#3b82f6", width: 1, style: 3, labelBackgroundColor: "#1e293b" },
-      horzLine: { color: "#3b82f6", width: 1, style: 3, labelBackgroundColor: "#1e293b" },
+      vertLine: { color: palette.muted, width: 1, style: 3, labelBackgroundColor: palette.line },
+      horzLine: { color: palette.muted, width: 1, style: 3, labelBackgroundColor: palette.line },
     },
     rightPriceScale: {
-      borderColor: "#242b3b",
+      borderColor: palette.line,
       autoScale: true,
       alignLabels: true,
       scaleMargins: {
@@ -243,7 +212,7 @@ function initChart() {
       },
     },
     timeScale: {
-      borderColor: "#242b3b",
+      borderColor: palette.line,
       timeVisible: true,
       secondsVisible: false,
     },
@@ -251,11 +220,11 @@ function initChart() {
 
   // Candlestick Series
   candleSeries = chart.addCandlestickSeries({
-    upColor: "#0ecb81",
-    downColor: "#f6465d",
+    upColor: palette.long,
+    downColor: palette.short,
     borderVisible: false,
-    wickUpColor: "#0ecb81",
-    wickDownColor: "#f6465d",
+    wickUpColor: palette.long,
+    wickDownColor: palette.short,
     priceFormat: {
       type: "price",
       precision: currentSymbol.includes("PEPE") ? 7 : 4,
@@ -277,25 +246,26 @@ function initChart() {
     visible: false,
   });
 
-  // Technical EMA Lines (Thin 1px lines, clean and subtle)
+  // EMA lines: thin, neutral greys so candles and Laya's amber levels stay dominant
+  const showEma = toggleEMA ? toggleEMA.checked : true;
   ema9Series = chart.addLineSeries({
-    color: "rgba(240, 185, 11, 0.75)",
+    color: palette.text + "B3",
     lineWidth: 1,
     title: "EMA 9",
     priceScaleId: "right",
-    visible: currentMode === "pro",
+    visible: showEma,
   });
 
   ema21Series = chart.addLineSeries({
-    color: "rgba(0, 230, 118, 0.75)",
+    color: palette.muted + "CC",
     lineWidth: 1,
     title: "EMA 21",
     priceScaleId: "right",
-    visible: currentMode === "pro",
+    visible: showEma,
   });
 
   ema50Series = chart.addLineSeries({
-    color: "rgba(0, 176, 255, 0.6)",
+    color: palette.muted + "80",
     lineWidth: 1,
     lineStyle: 2,
     title: "EMA 50",
@@ -304,31 +274,32 @@ function initChart() {
   });
 
   // Bollinger Bands (Off by default to eliminate clutter)
+  const showBb = !!toggleBB?.checked;
   bbUpperSeries = chart.addLineSeries({
-    color: "rgba(168, 85, 247, 0.5)",
+    color: palette.muted + "80",
     lineWidth: 1,
     lineStyle: 2,
     title: "BB Upper",
     priceScaleId: "right",
-    visible: false,
+    visible: showBb,
   });
 
   bbLowerSeries = chart.addLineSeries({
-    color: "rgba(168, 85, 247, 0.5)",
+    color: palette.muted + "80",
     lineWidth: 1,
     lineStyle: 2,
     title: "BB Lower",
     priceScaleId: "right",
-    visible: false,
+    visible: showBb,
   });
 
   bbMiddleSeries = chart.addLineSeries({
-    color: "rgba(168, 85, 247, 0.3)",
+    color: palette.muted + "4D",
     lineWidth: 1,
     lineStyle: 3,
     title: "BB Mid",
     priceScaleId: "right",
-    visible: false,
+    visible: showBb,
   });
 
   // Resize Observer
@@ -388,7 +359,7 @@ function applyDeduplicatedMarkers(inputMarkers = null) {
       markerMap.set(m.time, {
         time: m.time,
         position: isLong ? "belowBar" : "aboveBar",
-        color: isLong ? "#0ecb81" : "#f6465d",
+        color: isLong ? palette.long : palette.short,
         shape: isLong ? "arrowUp" : "arrowDown",
         text: isLong ? "BUY" : "SELL",
         size: 1, // Compact, sharp size
@@ -469,7 +440,7 @@ async function loadKlines(symbol, interval) {
       volumes.push({
         time: bar.time,
         value: bar.volume,
-        color: bar.close >= bar.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
+        color: volumeColor(bar.close >= bar.open),
       });
 
       if (bar.ema9 !== null && !isNaN(bar.ema9)) ema9.push({ time: bar.time, value: bar.ema9 });
@@ -551,6 +522,10 @@ async function load24hTicker(symbol) {
     if (t.low_price !== undefined && low24hEl) {
       low24hEl.textContent = formatPrice(t.low_price);
     }
+    // Narrow headers hide the 24h stats; keep them one hover away on the price
+    if (t.high_price !== undefined && t.low_price !== undefined) {
+      livePriceEl.title = `24h high ${formatPrice(t.high_price)}, low ${formatPrice(t.low_price)}`;
+    }
     if (t.quote_volume && volume24hEl) {
       volume24hEl.textContent = "$" + formatCompact(t.quote_volume);
     } else if (t.volume && volume24hEl) {
@@ -566,71 +541,24 @@ async function load24hTicker(symbol) {
 // --------------------------------------------------------
 function updateTelemetry(latest) {
   if (!latest) return;
-  if (telemRsi) telemRsi.textContent = latest.rsi ? latest.rsi.toFixed(1) : "--";
   if (hudRsi) hudRsi.textContent = latest.rsi ? latest.rsi.toFixed(1) : "--";
 
-  if (telemRsiState) {
-    if (latest.rsi > 70) {
-      telemRsiState.textContent = "Overbought";
-      telemRsiState.style.color = "var(--red-down)";
-    } else if (latest.rsi < 30) {
-      telemRsiState.textContent = "Oversold";
-      telemRsiState.style.color = "var(--green-up)";
-    } else if (latest.rsi >= 50) {
-      telemRsiState.textContent = "Bullish Tilt";
-      telemRsiState.style.color = "var(--cyan-accent)";
-    } else {
-      telemRsiState.textContent = "Bearish Tilt";
-      telemRsiState.style.color = "var(--yellow-accent)";
-    }
-  }
-
-  if (telemTrend) telemTrend.textContent = latest.trend_state || "NEUTRAL";
-  if (telemTrendState) telemTrendState.textContent = latest.trend_state ? latest.trend_state.replace("_", " ") : "Consolidation";
-
   if (telemMacd) telemMacd.textContent = latest.macd_hist ? (latest.macd_hist > 0 ? "+" : "") + latest.macd_hist.toFixed(6) : "0.0";
-  if (telemMacdState) telemMacdState.textContent = latest.macd_hist > 0 ? "Bullish Exp" : "Bearish Exp";
+  if (telemMacdState) telemMacdState.textContent = latest.macd_hist > 0 ? "Rising momentum" : "Falling momentum";
 
   if (telemVolSpike) telemVolSpike.textContent = latest.vol_spike ? latest.vol_spike.toFixed(2) + "x" : "1.0x";
-  if (telemVolState) telemVolState.textContent = latest.vol_spike > 1.3 ? "Elevated Surge" : "Normal Flow";
-
-  if (telemSupport) telemSupport.textContent = formatPrice(latest.support);
-  if (telemResistance) telemResistance.textContent = formatPrice(latest.resistance);
+  if (telemVolState) telemVolState.textContent = latest.vol_spike > 1.3 ? "Above average" : "Normal";
 
   // Institutional ADX & Regime
   if (telemAdx) telemAdx.textContent = latest.adx !== undefined ? latest.adx.toFixed(1) : "--";
   if (telemRegimeState) {
-    telemRegimeState.textContent = latest.market_regime ? latest.market_regime.replace("_", " ") : "Regime";
-    telemRegimeState.style.color = latest.market_regime === "TRENDING" ? "var(--green-up)" : "var(--yellow-accent)";
+    telemRegimeState.textContent = latest.market_regime ? latest.market_regime.replace("_", " ").toLowerCase() : "Regime";
   }
 
   // TTM Squeeze
-  if (telemSqueeze) telemSqueeze.textContent = latest.squeeze_status ? latest.squeeze_status.replace("_", " ") : "Normal";
+  if (telemSqueeze) telemSqueeze.textContent = latest.squeeze_status ? latest.squeeze_status.replace("_", " ").toLowerCase() : "normal";
   if (telemSqueezeState) {
-    telemSqueezeState.textContent = latest.is_squeeze ? "COMPRESSED 🟡" : (latest.squeeze_status === "SQUEEZE_FIRED" ? "FIRED 🚀" : "Normal Vol");
-    telemSqueezeState.style.color = latest.is_squeeze ? "var(--yellow-accent)" : (latest.squeeze_status === "SQUEEZE_FIRED" ? "var(--green-up)" : "var(--text-muted)");
-  }
-
-  // Order Book Imbalance (OBI)
-  if (telemObi) {
-    const obiVal = latest.depth && latest.depth.imbalance_pct !== undefined ? latest.depth.imbalance_pct : 0;
-    telemObi.textContent = (obiVal > 0 ? "+" : "") + obiVal.toFixed(1) + "%";
-    telemObi.style.color = obiVal > 15 ? "var(--green-up)" : (obiVal < -15 ? "var(--red-down)" : "var(--text-main)");
-  }
-  if (telemObiState) {
-    telemObiState.textContent = latest.depth ? (latest.depth.status ? latest.depth.status.replace("_", " ") : "Ratio " + (latest.depth.bid_ask_ratio || 1.0)) : "Order Flow";
-  }
-
-  // 1H Macro Trend Confluence
-  if (telemHtf) {
-    telemHtf.textContent = latest.htf && (latest.htf.trend || latest.htf.htf_trend) ? (latest.htf.trend || latest.htf.htf_trend).replace("_", " ") : "--";
-    const htfTr = latest.htf && (latest.htf.trend || latest.htf.htf_trend);
-    if (htfTr) {
-      telemHtf.style.color = htfTr.includes("BULLISH") ? "var(--green-up)" : (htfTr.includes("BEARISH") ? "var(--red-down)" : "var(--text-main)");
-    }
-  }
-  if (telemHtfState) {
-    telemHtfState.textContent = latest.htf && latest.htf.rsi ? `1H RSI: ${latest.htf.rsi}` : "HTF Alignment";
+    telemSqueezeState.textContent = latest.is_squeeze ? "Compressed" : (latest.squeeze_status === "SQUEEZE_FIRED" ? "Released" : "Normal volatility");
   }
 
   // Top Chart HUD Confluence Strip
@@ -654,7 +582,7 @@ function updateTelemetry(latest) {
   if (hudObiVal && latest.depth) {
     const obi = latest.depth.imbalance_pct !== undefined ? latest.depth.imbalance_pct : 0;
     hudObiVal.textContent = "OBI: " + (obi > 0 ? "+" : "") + obi.toFixed(0) + "%";
-    hudObiVal.style.color = obi > 15 ? "var(--green-up)" : (obi < -15 ? "var(--red-down)" : "inherit");
+    hudObiVal.style.color = obi > 15 ? "var(--long)" : (obi < -15 ? "var(--short)" : "inherit");
   }
   if (hudFundingVal && latest.funding) {
     const fPct = latest.funding.funding_rate_pct !== undefined ? latest.funding.funding_rate_pct : 0;
@@ -705,7 +633,7 @@ function updateLivePriceDisplay(price, changePct) {
 // --------------------------------------------------------
 // Apply Signal to Dashboard & Chart
 // --------------------------------------------------------
-function applySignal(signal, latest, laya) {
+function applySignal(signal, _latest, laya) {
   if (!signal) return;
   currentSignal = signal;
 
@@ -717,28 +645,36 @@ function applySignal(signal, latest, laya) {
     playSignalChime(isLong);
   }
 
-  // Update Mobile Header Pill
+  const side = isLong ? "long" : isShort ? "short" : "neutral";
+  const verdict = isLong ? "Long" : isShort ? "Short" : "Wait";
+  const conf = Math.max(0, Math.min(100, Number(signal.confidence_pct) || 0));
+
+  // Mobile tab bar: dot in the verdict colour
   if (mobileTabSignalPill) {
-    mobileTabSignalPill.textContent = signal.action;
-    mobileTabSignalPill.style.background = isLong ? "var(--green-up)" : isShort ? "var(--red-down)" : "var(--bg-hover)";
-    mobileTabSignalPill.style.color = isLong ? "#000" : "#fff";
+    mobileTabSignalPill.dataset.side = side;
+    mobileTabSignalPill.setAttribute("aria-label", `Laya says ${verdict.toLowerCase()}`);
   }
 
-  // 1. Update Simple Mode UI
-  updateSimpleModeUI(signal, latest, laya);
+  // 1. Verdict word + confidence needle
+  signalCard.dataset.side = side;
+  signalBadge.className = "signal-badge " + side;
+  signalAction.textContent = verdict;
+  confidenceVal.textContent = conf + "%";
+  if (confidenceNeedle) confidenceNeedle.style.setProperty("--conf", conf);
 
-  // 2. Update Pro Signal Badge
-  signalBadge.className = "signal-badge " + (isLong ? "long" : isShort ? "short" : "neutral");
-  signalAction.textContent = signal.action;
-  confidenceVal.textContent = signal.confidence_pct + "%";
-
-  signalCard.className = "signal-card " + (isLong ? "long-glow" : isShort ? "short-glow" : "");
-
+  const signalType = signal.signal_type ? String(signal.signal_type).replace(/_/g, " ").toLowerCase() : "";
   signalSubtext.textContent = isLong
-    ? `Strong Bullish Setup (${signal.signal_type}) with favorable Risk/Reward.`
+    ? `Upward setup${signalType ? ` (${signalType})` : ""} with a defined stop.`
     : isShort
-    ? `High Conviction Bearish Setup (${signal.signal_type}) with invalidation anchor.`
-    : "Market in chop/consolidation. Waiting for cleaner structure.";
+    ? `Downward setup${signalType ? ` (${signalType})` : ""} with a defined stop.`
+    : "No clear edge. Wait for a setup.";
+
+  if (signalRiskBadge) {
+    const sq = Math.round((laya?.squeeze_risk || 0.1) * 100);
+    const level = sq > 60 ? "high" : sq > 30 ? "medium" : "low";
+    signalRiskBadge.dataset.level = level;
+    signalRiskBadge.textContent = level === "high" ? "Whipsaw risk high" : level === "medium" ? "Whipsaw risk moderate" : "Whipsaw risk low";
+  }
 
   // 3. Targets
   targetEntry.textContent = formatPrice(signal.entry_price);
@@ -754,7 +690,7 @@ function applySignal(signal, latest, laya) {
 
   // 50x Leverage & ROE Target Displays
   const lev = signal.leverage || 50;
-  if (targetEntrySub) targetEntrySub.textContent = `${lev}x Leverage`;
+  if (targetEntrySub) targetEntrySub.textContent = `${lev}x leverage`;
   if (targetLiq) {
     targetLiq.textContent = signal.liquidation_price ? formatPrice(signal.liquidation_price) : "--";
   }
@@ -763,9 +699,9 @@ function applySignal(signal, latest, laya) {
     const liqP = Number(signal.liquidation_price);
     if (curP > 0 && liqP > 0) {
       const d = (Math.abs(curP - liqP) / curP) * 100;
-      targetLiqDist.textContent = `Liq: ${d.toFixed(2)}% away`;
+      targetLiqDist.textContent = `${d.toFixed(2)}% away`;
     } else {
-      targetLiqDist.textContent = "Safe below SL";
+      targetLiqDist.textContent = "Beyond stop-loss";
     }
   }
   if (signal.roe_targets) {
@@ -774,10 +710,10 @@ function applySignal(signal, latest, laya) {
     if (targetTP1Roe) targetTP1Roe.textContent = `${signal.roe_targets.take_profit_1_roe} ROE`;
     if (targetTP2Roe) targetTP2Roe.textContent = `${signal.roe_targets.take_profit_2_roe} ROE`;
   } else {
-    if (targetSLRoe) targetSLRoe.textContent = "Max -40.0% ROE";
-    if (targetBERoe) targetBERoe.textContent = "Shield to Entry";
-    if (targetTP1Roe) targetTP1Roe.textContent = "+16% - +25% ROE";
-    if (targetTP2Roe) targetTP2Roe.textContent = "+28% - +35% ROE";
+    if (targetSLRoe) targetSLRoe.textContent = "--";
+    if (targetBERoe) targetBERoe.textContent = "--";
+    if (targetTP1Roe) targetTP1Roe.textContent = "--";
+    if (targetTP2Roe) targetTP2Roe.textContent = "--";
   }
 
   // Anti-Volatility-Drag Position Sizing
@@ -785,7 +721,7 @@ function applySignal(signal, latest, laya) {
   const targetSizingRuleEl = document.getElementById("targetSizingRule");
   if (targetRecMarginEl) {
     const recM = signal.recommended_margin_usd || 10.0;
-    targetRecMarginEl.textContent = `${formatUsd(recM)} Fixed`;
+    targetRecMarginEl.textContent = formatUsd(recM);
   }
   if (targetSizingRuleEl && signal.sizing_rule) {
     targetSizingRuleEl.textContent = signal.sizing_rule;
@@ -825,16 +761,16 @@ function applySignal(signal, latest, laya) {
     probStrongShort.textContent = ss + "%";
     barStrongShort.style.width = ss + "%";
 
-    latencyBadge.textContent = `⚡ ${laya.latency_ms || 25} ms`;
+    latencyBadge.textContent = `${laya.latency_ms || 25} ms`;
 
     // Squeeze Risk
     const sq = Math.round((laya.squeeze_risk || 0.1) * 100);
-    const sqRating = sq > 60 ? "High Whipsaw" : sq > 30 ? "Moderate" : "Low Risk";
+    const sqRating = sq > 60 ? "High" : sq > 30 ? "Moderate" : "Low";
     squeezeRiskVal.textContent = `${sqRating} (${sq}%)`;
-    squeezeRiskVal.style.color = sq > 60 ? "var(--red-down)" : sq > 30 ? "var(--yellow-accent)" : "var(--green-up)";
+    squeezeRiskVal.style.color = sq > 60 ? "var(--short)" : sq > 30 ? "var(--text)" : "var(--long)";
   }
 
-  // 6. Draw Horizontal Price Target Lines on Chart (Only in Pro Mode)
+  // 6. Draw Laya's entry / SL / TP lines on the chart (when "Targets" is on)
   updateChartPriceLines(signal);
 
   // 7. Add Clean Deduplicated Chart Marker
@@ -854,8 +790,6 @@ function applySignal(signal, latest, laya) {
 function updateChartPriceLines(signal) {
   clearPriceLines();
 
-  // In Simple Mode, keep the chart completely clean without lines
-  if (currentMode === "simple") return;
   if (!toggleTargetLines || !toggleTargetLines.checked) return;
   if (!signal || signal.action === "NEUTRAL") return;
 
@@ -864,7 +798,7 @@ function updateChartPriceLines(signal) {
     activePriceLines.push(
       candleSeries.createPriceLine({
         price: signal.entry_price,
-        color: "rgba(59, 130, 246, 0.75)",
+        color: palette.amber + "CC",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dotted,
         axisLabelVisible: true,
@@ -877,7 +811,7 @@ function updateChartPriceLines(signal) {
     activePriceLines.push(
       candleSeries.createPriceLine({
         price: signal.stop_loss,
-        color: "rgba(246, 70, 93, 0.75)",
+        color: palette.short + "BF",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
@@ -890,7 +824,7 @@ function updateChartPriceLines(signal) {
     activePriceLines.push(
       candleSeries.createPriceLine({
         price: signal.take_profit_1,
-        color: "rgba(14, 203, 129, 0.75)",
+        color: palette.long + "BF",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
@@ -955,7 +889,7 @@ function updateChartPositionLines(positions, suggestion) {
   const distPct = mark > 0 && liq > 0 ? (Math.abs(mark - liq) / mark) * 100 : 0;
 
   // 1. Position Entry Price Line (Solid, prominent)
-  const posColor = isLong ? "#10b981" : "#ef4444";
+  const posColor = isLong ? palette.long : palette.short;
   const entryTitle = `POS ${isLong ? "LONG" : "SHORT"} ${leverage ? leverage + "x" : ""} (${formatUsd(pnl, { signed: true })} / ${pnlSign}${pctAbs}%)`;
 
   try {
@@ -977,7 +911,7 @@ function updateChartPositionLines(positions, suggestion) {
     try {
       const liqLine = candleSeries.createPriceLine({
         price: liq,
-        color: "#f59e0b",
+        color: palette.short,
         lineWidth: 2,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
@@ -995,7 +929,7 @@ function updateChartPositionLines(positions, suggestion) {
     try {
       const tpLine = candleSeries.createPriceLine({
         price: effectiveTp,
-        color: "rgba(16, 185, 129, 0.85)",
+        color: palette.long + "D9",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
@@ -1010,7 +944,7 @@ function updateChartPositionLines(positions, suggestion) {
     try {
       const slLine = candleSeries.createPriceLine({
         price: effectiveSl,
-        color: "rgba(239, 68, 68, 0.85)",
+        color: palette.short + "D9",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true,
@@ -1045,176 +979,12 @@ function updateChartPositionLines(positions, suggestion) {
 }
 
 // --------------------------------------------------------
-// Simple Mode Logic & UI Updater
-// --------------------------------------------------------
-function updateSimpleModeUI(signal, latest, laya) {
-  const isLong = signal.action === "LONG";
-  const isShort = signal.action === "SHORT";
-
-  // 1. Hero Decision Card
-  simpleHeroCard.className = "simple-hero-card " + (isLong ? "buy-active" : isShort ? "sell-active" : "");
-  simpleHeroBadge.className = "simple-hero-badge " + (isLong ? "buy" : isShort ? "sell" : "neutral");
-
-  if (isLong) {
-    simpleHeroIcon.textContent = "🟢";
-    simpleHeroAction.textContent = "BUY NOW (LONG)";
-    simpleHeroSub.textContent = "Market is rising. AI detects upward momentum with favorable odds.";
-  } else if (isShort) {
-    simpleHeroIcon.textContent = "🔴";
-    simpleHeroAction.textContent = "SELL NOW (SHORT)";
-    simpleHeroSub.textContent = "Market is falling. AI detects downward pressure. Be cautious holding.";
-  } else {
-    simpleHeroIcon.textContent = "⚪";
-    simpleHeroAction.textContent = "WAIT & RELAX";
-    simpleHeroSub.textContent = "Market is moving sideways. Wait for a clear move before risking capital.";
-  }
-
-  // Squeeze Risk Badge in Simple Mode
-  if (simpleRiskBadge) {
-    const sq = Math.round((laya?.squeeze_risk || 0.1) * 100);
-    if (sq > 60) {
-      simpleRiskBadge.className = "risk-badge high";
-      simpleRiskBadge.textContent = "⚠️ High Whipsaw Risk";
-    } else if (sq > 30) {
-      simpleRiskBadge.className = "risk-badge medium";
-      simpleRiskBadge.textContent = "⚡ Moderate Risk";
-    } else {
-      simpleRiskBadge.className = "risk-badge low";
-      simpleRiskBadge.textContent = "🛡️ Safe Zone";
-    }
-  }
-
-  // 2. Win Chance Meter
-  const conf = Math.round(signal.confidence_pct || 50);
-  const confRating = conf >= 70 ? "High Win Chance" : conf >= 50 ? "Good Opportunity" : "Moderate Chance";
-  simpleConfidenceText.textContent = `${confRating} (${conf}%)`;
-  simpleMeterBar.style.width = `${Math.min(100, Math.max(15, conf))}%`;
-  simpleMeterBar.style.background = isLong
-    ? "linear-gradient(90deg, #3b82f6, #0ecb81)"
-    : isShort
-    ? "linear-gradient(90deg, #f97316, #f6465d)"
-    : "linear-gradient(90deg, #64748b, #94a3b8)";
-
-  // 3. 3-Step Plan
-  simpleEntryPrice.textContent = "$" + formatPrice(signal.entry_price);
-  simpleTakeProfit.textContent = "$" + formatPrice(signal.take_profit_1);
-  simpleStopLoss.textContent = "$" + formatPrice(signal.stop_loss);
-
-  const bePrice = signal.break_even || (signal.targets && signal.targets.break_even);
-  if (simpleBreakEven) {
-    simpleBreakEven.textContent = bePrice ? "$" + formatPrice(bePrice) : "--";
-  }
-
-  // Gain & Loss percentage calculations
-  const entry = Number(signal.entry_price);
-  const tp = Number(signal.take_profit_1);
-  const sl = Number(signal.stop_loss);
-  const be = Number(bePrice);
-
-  if (entry > 0 && tp > 0 && sl > 0) {
-    const leverage = signal.leverage || 50;
-    const gainPct = isLong ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
-    const lossPct = isLong ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
-    const gainRoe = (gainPct * leverage).toFixed(1);
-    const lossRoe = (lossPct * leverage).toFixed(1);
-
-    simpleTpDesc.textContent = `Lock in +${gainRoe}% ROE profit (+${gainPct.toFixed(2)}% price move)!`;
-    simpleSlDesc.textContent = `Safety stop caps loss at -${lossRoe}% ROE (-${lossPct.toFixed(2)}% price move, safe from liq)`;
-    if (simpleBeDesc && be > 0) {
-      const bePct = isLong ? ((be - entry) / entry) * 100 : ((entry - be) / entry) * 100;
-      const beRoe = (bePct * leverage).toFixed(1);
-      simpleBeDesc.textContent = `At +${beRoe}% ROE (+1.0R / $${formatPrice(be)}), move SL to Entry for a 100% Risk-Free trade!`;
-    }
-
-    // Visual Risk/Reward bar
-    if (rrGainLabel && rrRiskLabel && rrGainFill && rrRiskFill) {
-      rrGainLabel.textContent = `Target Win: +${gainRoe}% ROE`;
-      rrRiskLabel.textContent = `Safety SL: -${lossRoe}% ROE`;
-      const ratio = Number(gainPct) / (Number(gainPct) + Number(lossPct) || 1);
-      rrGainFill.style.width = `${Math.round(ratio * 100)}%`;
-      rrRiskFill.style.width = `${100 - Math.round(ratio * 100)}%`;
-    }
-
-    // Update Position Demo Calculator with 50x ROE
-    updateDemoCalculator(Number(gainRoe), Number(lossRoe));
-  }
-
-  // 4. Plain English Reasons
-  simpleReasonsList.innerHTML = "";
-  const reasons = [];
-  reasons.push(`🤖 <strong>Laya AI Recommendation:</strong> Calibrated 50x setup with <strong>${conf}%</strong> confidence.`);
-
-  if (latest) {
-    if (latest.rsi < 35) {
-      reasons.push("🏷️ <strong>Bargain Discount:</strong> Price reached an oversold floor, inviting buyers.");
-    } else if (latest.rsi > 65) {
-      reasons.push("🚀 <strong>Hot Momentum:</strong> Strong buying surge in progress.");
-    } else {
-      reasons.push("⚖️ <strong>Balanced Flow:</strong> Price action is stable without overextension.");
-    }
-
-    if (isLong) {
-      reasons.push("📈 <strong>Upward Tide:</strong> Buyers are dominant above moving averages.");
-    } else if (isShort) {
-      reasons.push("📉 <strong>Downward Tide:</strong> Selling pressure is dominant below key support.");
-    } else {
-      reasons.push("⏸️ <strong>Tight Range:</strong> Price is oscillating in consolidation.");
-    }
-
-    if (latest.vol_spike && latest.vol_spike > 1.2) {
-      reasons.push(`🔥 <strong>High Activity:</strong> Volume is ${latest.vol_spike}x above average.`);
-    }
-  }
-
-  reasons.forEach((r) => {
-    const li = document.createElement("li");
-    li.innerHTML = r;
-    simpleReasonsList.appendChild(li);
-  });
-}
-
-// --------------------------------------------------------
-// Demo Position Return Calculator (50x Leverage Margin)
-// --------------------------------------------------------
-function updateDemoCalculator(gainRoe, lossRoe) {
-  if (!calcWinVal || !calcLossVal) return;
-  const win = ((currentCalcAmount * Number(gainRoe)) / 100).toFixed(2);
-  const loss = ((currentCalcAmount * Number(lossRoe)) / 100).toFixed(2);
-  calcWinVal.textContent = `+$${win} (+${gainRoe}%)`;
-  calcLossVal.textContent = `-$${loss} (-${lossRoe}%)`;
-}
-
-if (calcPresetGroup) {
-  calcPresetGroup.addEventListener("click", (e) => {
-    const btn = e.target.closest(".calc-chip");
-    if (!btn) return;
-    calcPresetGroup.querySelectorAll(".calc-chip").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    currentCalcAmount = Number(btn.getAttribute("data-amount")) || 500;
-    if (currentSignal) {
-      const entry = Number(currentSignal.entry_price);
-      const tp = Number(currentSignal.take_profit_1);
-      const sl = Number(currentSignal.stop_loss);
-      const leverage = currentSignal.leverage || 50;
-      if (entry > 0 && tp > 0 && sl > 0) {
-        const isLong = currentSignal.action === "LONG";
-        const gainPct = isLong ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
-        const lossPct = isLong ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
-        const gainRoe = (gainPct * leverage).toFixed(1);
-        const lossRoe = (lossPct * leverage).toFixed(1);
-        updateDemoCalculator(Number(gainRoe), Number(lossRoe));
-      }
-    }
-  });
-}
-
-// --------------------------------------------------------
 // Copy Trade Plan to Clipboard (50x Futures Setup)
 // --------------------------------------------------------
 if (btnCopyTradePlan) {
   btnCopyTradePlan.addEventListener("click", () => {
     if (!currentSignal || currentSignal.action === "NEUTRAL") {
-      showToast("No active trade plan right now. Run analysis first.", "info");
+      showToast("No trade plan yet. Press Analyze first.", "info");
       return;
     }
     const sig = currentSignal;
@@ -1234,70 +1004,14 @@ Win Confidence: ${sig.confidence_pct}%
 AI Engine: Laya System-1 GPU (fine_tuned_laya_crypto)`;
 
     navigator.clipboard.writeText(text).then(
-      () => showToast("50x Trade Plan Copied to Clipboard! 📋", "success"),
-      () => showToast("Could not copy to clipboard", "info")
+      () => showToast("Trade plan copied.", "success"),
+      () => showToast("Could not copy. Allow clipboard access and try again.", "info")
     );
   });
 }
 
 // --------------------------------------------------------
-// Mode Switching (Simple vs Pro)
-// --------------------------------------------------------
-function setMode(mode) {
-  currentMode = mode;
-  localStorage.setItem("laya_mode", mode);
-
-  if (mode === "simple") {
-    btnSimpleMode.classList.add("active");
-    btnSimpleMode.setAttribute("aria-selected", "true");
-    btnProMode.classList.remove("active");
-    btnProMode.setAttribute("aria-selected", "false");
-
-    simpleModeContainer.style.display = "flex";
-    proModeContainer.style.display = "none";
-
-    // 100% clean chart for beginners: HIDE ALL INDICATORS AND TARGET LINES
-    ema9Series.applyOptions({ visible: false });
-    ema21Series.applyOptions({ visible: false });
-    ema50Series.applyOptions({ visible: false });
-    bbUpperSeries.applyOptions({ visible: false });
-    bbLowerSeries.applyOptions({ visible: false });
-    bbMiddleSeries.applyOptions({ visible: false });
-    clearPriceLines();
-
-    if (toggleEMA) toggleEMA.checked = false;
-    if (toggleBB) toggleBB.checked = false;
-  } else {
-    btnProMode.classList.add("active");
-    btnProMode.setAttribute("aria-selected", "true");
-    btnSimpleMode.classList.remove("active");
-    btnSimpleMode.setAttribute("aria-selected", "false");
-
-    proModeContainer.style.display = "flex";
-    simpleModeContainer.style.display = "none";
-
-    // In Pro Mode: Only show subtle EMA 9 and 21 by default (keep BB and EMA50 clean/off unless checked)
-    ema9Series.applyOptions({ visible: true });
-    ema21Series.applyOptions({ visible: true });
-    ema50Series.applyOptions({ visible: false });
-    bbUpperSeries.applyOptions({ visible: toggleBB?.checked || false });
-    bbLowerSeries.applyOptions({ visible: toggleBB?.checked || false });
-    bbMiddleSeries.applyOptions({ visible: toggleBB?.checked || false });
-
-    if (toggleEMA) toggleEMA.checked = true;
-
-    // Draw clean target lines in Pro mode
-    if (currentSignal) {
-      updateChartPriceLines(currentSignal);
-    }
-  }
-}
-
-btnSimpleMode.addEventListener("click", () => setMode("simple"));
-btnProMode.addEventListener("click", () => setMode("pro"));
-
-// --------------------------------------------------------
-// Mobile View Tabs (< 900px)
+// Mobile tab bar (< 768px): Chart / Laya / Position / History
 // --------------------------------------------------------
 mobileTabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1347,7 +1061,7 @@ function connectWebSocket() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    wsStatusText.textContent = "Live Feed Active";
+    wsStatusText.textContent = "Live";
     statusDot.className = "status-dot online pulsing";
     // Claim the shared stream for this page's symbol/timeframe on every connect.
     claimStream("connect");
@@ -1387,7 +1101,7 @@ function connectWebSocket() {
               volumeSeries.update({
                 time: c.time,
                 value: c.volume,
-                color: c.close >= c.open ? "rgba(14, 203, 129, 0.2)" : "rgba(246, 70, 93, 0.2)",
+                color: volumeColor(c.close >= c.open),
               });
 
               lastCandleBarTime = Math.max(lastCandleBarTime, c.time);
@@ -1419,7 +1133,7 @@ function connectWebSocket() {
   };
 
   ws.onclose = () => {
-    wsStatusText.textContent = "Reconnecting...";
+    wsStatusText.textContent = "Reconnecting…";
     statusDot.className = "status-dot";
     setTimeout(connectWebSocket, 2000);
   };
@@ -1433,13 +1147,15 @@ function connectWebSocket() {
 // API Actions
 // --------------------------------------------------------
 let analyzeInFlight = false;
+// Icons were swapped to <svg> before this module ran, so this markup restores as-is.
+const ANALYZE_BTN_HTML = analyzeBtn.innerHTML;
 
 async function triggerAnalyze() {
   if (analyzeInFlight) return;
   analyzeInFlight = true;
   analyzeBtn.disabled = true;
   analyzeBtn.setAttribute("aria-busy", "true");
-  analyzeBtn.innerHTML = `<span>Analyzing...</span>`;
+  analyzeBtn.innerHTML = `<span>Analyzing…</span>`;
 
   const requestedSymbol = currentSymbol;
   const requestedInterval = currentInterval;
@@ -1456,18 +1172,18 @@ async function triggerAnalyze() {
 
     applySignal(data.signal, data.latest, data.laya);
     if (data.latest) updateTelemetry(data.latest);
-    showToast(`Laya Evaluated: ${data.signal.action} (${data.signal.confidence_pct}%)`, "success");
+    const verdict = { LONG: "long", SHORT: "short" }[data.signal.action] || "wait";
+    showToast(`Analysis updated: ${verdict}, ${data.signal.confidence_pct}%`, "success");
   } catch (err) {
     if (requestedSymbol === currentSymbol && requestedInterval === currentInterval) {
       console.error("Analysis failed:", err);
-      showToast("Analysis request failed. Please check connection.", "error");
+      showToast("Analysis failed. Check the server is running, then press Analyze again.", "error");
     }
   } finally {
     analyzeInFlight = false;
     analyzeBtn.disabled = false;
     analyzeBtn.removeAttribute("aria-busy");
-    analyzeBtn.innerHTML = `<i data-lucide="sparkles"></i> <span>Analyze Market</span>`;
-    lucide.createIcons();
+    analyzeBtn.innerHTML = ANALYZE_BTN_HTML;
   }
 }
 
@@ -1498,7 +1214,7 @@ function renderHistoryTable() {
   if (filtered.length === 0) {
     historyTableBody.innerHTML = `
       <tr class="empty-row">
-        <td colspan="10">No signals found matching filter. Click "Analyze Market" to evaluate.</td>
+        <td colspan="10">No signals match this filter yet. Press Analyze to check the market.</td>
       </tr>
     `;
   } else {
@@ -1524,7 +1240,7 @@ function renderHistoryTable() {
   }
 
   const count = rawSignalHistory.length;
-  if (historyCount) historyCount.textContent = `${count} Signals`;
+  if (historyCount) historyCount.textContent = `${count} signal${count === 1 ? "" : "s"}`;
   if (mobileTabHistoryCount) mobileTabHistoryCount.textContent = count;
 }
 
@@ -1575,7 +1291,7 @@ if (btnClearHistory) {
     chartMarkers = [];
     candleSeries?.setMarkers([]);
     renderHistoryTable();
-    showToast("History log and chart markers cleared.", "info");
+    showToast("Signal history and chart markers cleared.", "info");
   });
 }
 
@@ -1583,7 +1299,7 @@ if (btnExportHistory) {
   btnExportHistory.addEventListener("click", (e) => {
     e.stopPropagation();
     if (rawSignalHistory.length === 0) {
-      showToast("No history to export.", "info");
+      showToast("No signals to export yet.", "info");
       return;
     }
     const headers = ["Time", "Symbol", "Interval", "Action", "Entry", "SL", "TP1", "TP2", "Confidence", "Latency"];
@@ -1607,7 +1323,7 @@ if (btnExportHistory) {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    showToast("Exported signals to CSV!", "success");
+    showToast("Signals exported as CSV.", "success");
   });
 }
 
@@ -1693,7 +1409,7 @@ toggleTargetLines?.addEventListener("change", () => {
 btnFitChart?.addEventListener("click", () => {
   if (chart) {
     chart.timeScale().fitContent();
-    showToast("Chart Auto-Fitted", "info");
+    showToast("Chart fitted to data.", "info");
   }
 });
 
@@ -1722,9 +1438,11 @@ document.addEventListener("fullscreenchange", () => {
 btnAudioToggle?.addEventListener("click", () => {
   const enabled = toggleAudioEnabled();
   btnAudioToggle.classList.toggle("active", enabled);
-  audioIcon?.setAttribute("data-lucide", enabled ? "bell" : "bell-off");
+  btnAudioToggle.setAttribute("aria-pressed", String(enabled));
+  const label = btnAudioToggle.querySelector(".audio-label");
+  if (label) label.textContent = enabled ? "Sound alerts on" : "Sound alerts off";
+  document.getElementById("audioIcon")?.setAttribute("data-lucide", enabled ? "bell" : "bell-off");
   lucide.createIcons();
-  showToast(enabled ? "Audio alerts enabled 🔔" : "Audio alerts muted 🔕", "info");
 });
 
 // Keyboard Shortcuts
@@ -1738,9 +1456,6 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
     e.preventDefault();
     triggerAnalyze();
-  } else if (e.key === "s" || e.key === "S") {
-    setMode(currentMode === "simple" ? "pro" : "simple");
-    showToast(`Switched to ${currentMode.toUpperCase()} Mode`, "info");
   } else if (e.key === "f" || e.key === "F") {
     btnFullscreenChart?.click();
   } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
@@ -1748,6 +1463,20 @@ document.addEventListener("keydown", (e) => {
     if (tfButtons[idx]) tfButtons[idx].click();
   }
 });
+
+// Sidebar <details data-persist="key"> remember open/closed per viewer (a convenience only)
+function restoreDetailsState() {
+  document.querySelectorAll("details[data-persist]").forEach((d) => {
+    const key = `laya_details_${d.dataset.persist}`;
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved !== null) d.open = saved === "1";
+    } catch (e) {}
+    d.addEventListener("toggle", () => {
+      try { localStorage.setItem(key, d.open ? "1" : "0"); } catch (e) {}
+    });
+  });
+}
 
 // Auto-analyze interval timer
 function setupAutoAnalyze() {
@@ -1802,7 +1531,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     getSymbol: () => currentSymbol,
     fetchToobitPositions,
   });
-  setMode(currentMode);
+  restoreDetailsState();
   lucide.createIcons();
   setTimeout(triggerAnalyze, 800);
 

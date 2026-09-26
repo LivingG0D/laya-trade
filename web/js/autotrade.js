@@ -13,7 +13,7 @@ let deps = {
   fetchToobitPositions: () => {}
 };
 
-// Values shown on several cards at once (simple card, pro card, modal) carry data-at="<key>"
+// Values shown in both the sidebar block and the modal carry data-at="<key>"
 const atAll = (key) => document.querySelectorAll(`[data-at="${key}"]`);
 
 // DOM Elements — Top Nav
@@ -21,17 +21,12 @@ const btnAutoTradeModal = document.getElementById("btnAutoTradeModal");
 const navAutoTradeDot = document.getElementById("navAutoTradeDot");
 const navAutoTradePill = document.getElementById("navAutoTradePill");
 
-// DOM Elements — Simple Mode Card
-const simpleAtStatusDot = document.getElementById("simpleAtStatusDot");
-const simpleAtStatusText = document.getElementById("simpleAtStatusText");
-const simpleAtRiskVal = document.getElementById("simpleAtRiskVal");
-
-// DOM Elements — Pro Mode Card
+// DOM Elements — Sidebar auto-trader block
 const proAtModeBadge = document.getElementById("proAtModeBadge");
 const proAtStatus = document.getElementById("proAtStatus");
+const proAtStatusMsg = document.getElementById("proAtStatusMsg");
 const proAtSizing = document.getElementById("proAtSizing");
 const proAtCircuit = document.getElementById("proAtCircuit");
-const proAtLogSnippet = document.getElementById("proAtLogSnippet");
 
 // DOM Elements — Full Modal
 const autoTradeModal = document.getElementById("autoTradeModal");
@@ -245,19 +240,19 @@ async function toggleAutoTrade(forceState = null) {
       if (targetState) {
         showToast(
           autoTradeState.settings?.shadow_mode === false
-            ? "🟢 Live Auto-Trading ARMED — real orders enabled."
-            : "🟢 Auto-Trading ARMED in SHADOW mode (no orders).",
+            ? "Auto-trader on. Real orders will be sent."
+            : "Auto-trader on in shadow mode. No orders will be sent.",
           autoTradeState.settings?.shadow_mode === false ? "bear" : "bull"
         );
         playSignalChime("STRONG_LONG");
       } else {
-        showToast("⚪ Auto-Trading Disabled. Standing by.", "neutral");
+        showToast("Auto-trader off.", "neutral");
       }
     } else {
-      showToast(data.message || "Failed to toggle AutoTrader", "error");
+      showToast(data.message || "Could not switch the auto-trader. Try again.", "error");
     }
   } catch (e) {
-    showToast(`Error toggling AutoTrader: ${e.message}`, "error");
+    showToast(`Could not switch the auto-trader: ${e.message}`, "error");
   }
 }
 
@@ -306,17 +301,17 @@ async function saveSettings(e) {
       autoTradeState = data.status;
       renderAutoTradeState();
       if (!newSettings.shadow_mode) {
-        showToast("Settings saved. SHADOW MODE IS OFF — real orders can be sent.", "warn", 7000);
+        showToast("Settings saved. Shadow mode is off, so real orders can be sent.", "warn", 7000);
       } else if (autoTradeState.enabled) {
-        showToast("Strategy settings saved & active!", "bull");
+        showToast("Settings saved and in use.", "bull");
       } else {
-        showToast("Settings saved! Note: Auto-Trader is still OFF — flip Master Switch to turn ON.", "warn", 6000);
+        showToast("Settings saved. The auto-trader is still off; switch it on to start.", "warn", 6000);
       }
     } else {
-      showToast("Failed to save settings", "error");
+      showToast("Could not save settings. Try again.", "error");
     }
   } catch (e) {
-    showToast(`Error saving settings: ${e.message}`, "error");
+    showToast(`Could not save settings: ${e.message}`, "error");
   }
 }
 
@@ -337,15 +332,15 @@ async function saveSafetySettings(e) {
     if (data.success) {
       autoTradeState = data.status;
       renderAutoTradeState();
-      showToast("Circuit breaker safety limits updated!", "bull");
+      showToast("Loss limits saved.", "bull");
     }
   } catch (e) {
-    showToast(`Error updating circuit breakers: ${e.message}`, "error");
+    showToast(`Could not save loss limits: ${e.message}`, "error");
   }
 }
 
 async function executeEmergencyStop() {
-  const confirmed = confirm("🚨 EMERGENCY KILL SWITCH:\n\nThis will immediately HALT auto-trading, cancel all open orders, and market flash-close all positions.\n\nAre you sure?");
+  const confirmed = confirm("Kill switch\n\nThis stops the auto-trader, cancels all open orders and closes every position at market price.\n\nContinue?");
   if (!confirmed) return;
 
   try {
@@ -354,13 +349,13 @@ async function executeEmergencyStop() {
     if (data.success) {
       autoTradeState = data.status;
       renderAutoTradeState();
-      showToast("🚨 EMERGENCY KILL SWITCH TRIGGERED! Positions closed.", "bear");
+      showToast("Kill switch used. Auto-trader stopped and positions closed.", "bear");
       playSignalChime("STRONG_SHORT");
       if (deps.fetchToobitPositions) deps.fetchToobitPositions();
       if (deps.fetchToobitStatus) deps.fetchToobitStatus();
     }
   } catch (e) {
-    showToast(`Emergency stop failed: ${e.message}`, "error");
+    showToast(`Kill switch failed: ${e.message}. Close positions on Toobit directly.`, "error");
   }
 }
 
@@ -370,7 +365,7 @@ async function clearLogs() {
     if (res.ok) {
       autoTradeState.logs = [];
       renderLogs();
-      showToast("Audit logs cleared", "neutral");
+      showToast("Log cleared.", "neutral");
     }
   } catch (e) {
     console.warn("Could not clear logs:", e);
@@ -462,7 +457,7 @@ function renderDeskPositions() {
     empty.appendChild(el("i", null, ""));
     empty.querySelector("i")?.setAttribute("data-lucide", "inbox");
     empty.appendChild(el("strong", null, "No open positions"));
-    empty.appendChild(el("span", null, `The desk is scanning for entries. It will hold at most ${maxPositions} position${maxPositions === 1 ? "" : "s"} at a time.`));
+    empty.appendChild(el("span", null, `Scanning for entries. At most ${maxPositions} position${maxPositions === 1 ? "" : "s"} at a time.`));
     atDeskPositions.appendChild(empty);
     return;
   }
@@ -563,7 +558,7 @@ function renderDeskSignals() {
   if (!symbols.length) {
     const empty = el("div", "at-empty");
     empty.appendChild(el("strong", null, "No symbols configured"));
-    empty.appendChild(el("span", null, "Select at least one symbol in Risk & Strategy Controls."));
+    empty.appendChild(el("span", null, "Pick at least one symbol under Strategy."));
     atDeskSignals.appendChild(empty);
     return;
   }
@@ -651,11 +646,11 @@ function renderRiskBanner() {
   atRiskBanner.dataset.state = state;
 
   if (atRiskTag) {
-    atRiskTag.textContent = state === "live" ? "REAL CAPITAL" : isShadow ? "PAPER" : "OFF";
+    atRiskTag.textContent = state === "live" ? "Real money" : isShadow ? "Paper" : "Off";
   }
   if (atRiskTitle) {
     atRiskTitle.textContent =
-      state === "live" ? "LIVE TRADING ACTIVE" : state === "shadow" ? "SHADOW MODE" : "AUTO-TRADER OFF";
+      state === "live" ? "Live trading on" : state === "shadow" ? "Shadow mode" : "Auto-trader off";
   }
   if (atRiskDetail) {
     atRiskDetail.textContent =
@@ -663,7 +658,7 @@ function renderRiskBanner() {
         ? `Real orders are being sent to ${isLive ? "Toobit Futures" : "the exchange"} at up to ${settings.leverage || "?"}x.`
         : state === "shadow"
           ? "Signals are evaluated and logged, but no orders are sent to the exchange."
-          : "The supervisor loop is stopped. No analysis or orders are running.";
+          : "Nothing is being analysed or traded.";
   }
 }
 
@@ -758,14 +753,15 @@ export function renderAutoTradeState() {
     navAutoTradeDot.className = `autotrade-status-dot ${isEnabled ? "active" : ""}`;
   }
   if (navAutoTradePill) {
-    navAutoTradePill.textContent = isEnabled ? "ON" : "OFF";
+    navAutoTradePill.textContent = isEnabled ? "On" : "Off";
     navAutoTradePill.className = `autotrade-pill ${isEnabled ? "on" : "off"}`;
   }
 
-  // 2. Values repeated across simple card, pro card and modal
+  // 2. Values repeated in the sidebar block and the modal
   atAll("toggle").forEach((btn) => {
     btn.classList.toggle("active", isEnabled);
-    btn.querySelector(".toggle-label").textContent = isEnabled ? "ON" : "OFF";
+    btn.setAttribute("aria-pressed", String(isEnabled));
+    btn.querySelector(".toggle-label").textContent = isEnabled ? "On" : "Off";
   });
   atAll("daily-pnl").forEach((node) => {
     node.textContent = formatUsd(dailyPnl, { signed: true });
@@ -774,36 +770,27 @@ export function renderAutoTradeState() {
   });
   atAll("winrate").forEach((node) => { node.textContent = winRateLabel; });
 
-  // 3. Simple Mode Card Update
-  if (simpleAtStatusDot) {
-    simpleAtStatusDot.className = `status-pulse-dot ${isEnabled ? (status === "IN_POSITION" ? "busy" : "active") : ""}`;
+  // 3. Sidebar auto-trader block
+  if (proAtStatusMsg) {
+    proAtStatusMsg.textContent = autoTradeState.status_message || "Standing by";
   }
-  if (simpleAtStatusText) {
-    simpleAtStatusText.textContent = autoTradeState.status_message || "Standby";
-  }
-  if (simpleAtRiskVal) {
-    const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : formatUsd(settings.fixed_margin_usd ?? 0);
-    simpleAtRiskVal.textContent = `${settings.leverage ?? "?"}x • ${sizingStr} Margin`;
-  }
-
-  // 4. Pro Mode Card Update
   if (proAtModeBadge) {
-    proAtModeBadge.textContent = mode;
+    proAtModeBadge.textContent = mode === "LIVE" ? "Live" : "Demo";
     proAtModeBadge.className = `at-mode-badge ${mode.toLowerCase()}`;
   }
   if (proAtStatus) {
-    proAtStatus.textContent = status;
+    proAtStatus.textContent = status.replace(/_/g, " ").toLowerCase();
     proAtStatus.className = `val status-${status.toLowerCase()}`;
   }
   if (proAtSizing) {
     const sizingStr = settings.sizing_mode === "pct_equity" ? `${settings.equity_risk_pct}% Eq` : formatUsd(settings.fixed_margin_usd ?? 0);
-    proAtSizing.textContent = `${settings.leverage ?? "?"}x • ${sizingStr}`;
+    proAtSizing.textContent = `${settings.leverage ?? "?"}x, ${sizingStr} margin`;
   }
   if (proAtCircuit) {
     const maxLoss = settings.max_daily_loss_usd || 5.0;
     const consec = stats.consecutive_losses || 0;
     const maxConsec = settings.max_consecutive_losses || 3;
-    proAtCircuit.textContent = `${consec}/${maxConsec} loss (${formatUsd(dailyPnl, { signed: true })} / ${formatUsd(-maxLoss)})`;
+    proAtCircuit.textContent = `${consec} of ${maxConsec} losses, limit ${formatUsd(-maxLoss)}`;
   }
 
   // 5. Modal Status Bar
@@ -811,10 +798,10 @@ export function renderAutoTradeState() {
     modalAtStatusPill.className = `val-pill status-${status.toLowerCase()}`;
   }
   if (modalAtStatusText) {
-    modalAtStatusText.textContent = status;
+    modalAtStatusText.textContent = status.replace(/_/g, " ").toLowerCase();
   }
   if (modalAtModeTag) {
-    modalAtModeTag.textContent = settings.shadow_mode === false ? `${mode} • REAL` : `${mode} • SHADOW`;
+    modalAtModeTag.textContent = `${mode === "LIVE" ? "Live" : "Demo"}, ${settings.shadow_mode === false ? "real orders" : "shadow"}`;
     modalAtModeTag.className = `val-tag ${mode.toLowerCase()}`;
   }
   if (modalAtPositionsVal) {
@@ -887,25 +874,14 @@ export function renderAutoTradeState() {
     safetyConsecLosses.textContent = `${stats.consecutive_losses || 0} / ${settings.max_consecutive_losses || 3}`;
   }
 
-  // 7. Render Logs & Log Snippet
+  // 7. Render the audit log
   renderLogs();
 }
 
 function renderLogs() {
   const logs = Array.isArray(autoTradeState.logs) ? autoTradeState.logs : [];
 
-  // Pro card snippet: built with textContent so log payloads can never inject markup.
-  if (proAtLogSnippet) {
-    proAtLogSnippet.replaceChildren();
-    const top = logs[0];
-    const item = el("div", `snippet-item ${top?.level || "info"}`);
-    item.appendChild(el("span", "snippet-time", top?.time || "--:--:--"));
-    item.appendChild(el("span", "snippet-cat", `[${top?.category || "SYSTEM"}]`));
-    item.appendChild(el("span", "snippet-msg", top?.message || "Auto-trading standing by..."));
-    proAtLogSnippet.appendChild(item);
-  }
-
-  // Full modal terminal
+  // Modal terminal, built with textContent so log payloads can never inject markup.
   if (!atTerminalBox) return;
 
   if (logs.length === 0) {
@@ -913,7 +889,7 @@ function renderLogs() {
     const line = el("div", "log-line info");
     line.appendChild(el("span", "log-time", "--:--:--"));
     line.appendChild(el("span", "log-badge system", "SYSTEM"));
-    line.appendChild(el("span", "log-msg", "Audit terminal ready. Awaiting events..."));
+    line.appendChild(el("span", "log-msg", "No events yet."));
     atTerminalBox.appendChild(line);
     return;
   }

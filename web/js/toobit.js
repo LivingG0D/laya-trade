@@ -40,20 +40,12 @@ const btnActivateDemoMode = document.getElementById("btnActivateDemoMode");
 const toobitConnectError = document.getElementById("toobitConnectError");
 const toobitConnectErrorText = document.getElementById("toobitConnectErrorText");
 
-// Simple Mode Position Elements
-const simplePositionCard = document.getElementById("simplePositionCard");
-const btnSimpleFlashClose = document.getElementById("btnSimpleFlashClose");
-const simpleSugBadge = document.getElementById("simpleSugBadge");
-const simpleSugHeadline = document.getElementById("simpleSugHeadline");
-const simpleSugText = document.getElementById("simpleSugText");
-const btnSimpleSimLong = document.getElementById("btnSimpleSimLong");
-const btnSimpleSimShort = document.getElementById("btnSimpleSimShort");
-
-// Pro Mode Position Elements
+// Sidebar position card
 const proPositionCard = document.getElementById("proPositionCard");
 const proPosModeBadge = document.getElementById("proPosModeBadge");
 const btnProFlashClose = document.getElementById("btnProFlashClose");
 const proSugBadge = document.getElementById("proSugBadge");
+const proSugHeadline = document.getElementById("proSugHeadline");
 const proAlignmentPill = document.getElementById("proAlignmentPill");
 const proSugSl = document.getElementById("proSugSl");
 const proSugTp = document.getElementById("proSugTp");
@@ -163,16 +155,16 @@ async function fetchToobitStatus() {
     if (modalStatusDot && modalStatusText && modalAvailableBal) {
       modalStatusDot.className = `status-indicator-dot ${data.mode}`;
       if (data.mode === "live") {
-        modalStatusText.textContent = "Live Toobit API Connected";
-        if (modalStatusSub) modalStatusSub.textContent = "Real futures funds active";
+        modalStatusText.textContent = "Live account connected";
+        if (modalStatusSub) modalStatusSub.textContent = "Orders use real futures funds";
         modalAvailableBal.textContent = `${formatUsd(data.balance?.availableBalance || 0)} USDT`;
       } else if (data.mode === "demo") {
-        modalStatusText.textContent = "Simulated Demo Mode Active";
-        if (modalStatusSub) modalStatusSub.textContent = "Trading with virtual $5,000 USDT";
+        modalStatusText.textContent = "Demo account";
+        if (modalStatusSub) modalStatusSub.textContent = "Trading with $5,000 virtual USDT";
         modalAvailableBal.textContent = `${formatUsd(data.balance?.availableBalance || 5000)} USDT`;
       } else {
-        modalStatusText.textContent = "Not Connected";
-        if (modalStatusSub) modalStatusSub.textContent = "Enter API keys or use Demo Mode";
+        modalStatusText.textContent = "Not connected";
+        if (modalStatusSub) modalStatusSub.textContent = "Add API keys or turn on the demo account";
         modalAvailableBal.textContent = "$0.00 USDT";
       }
     }
@@ -251,7 +243,7 @@ export function handlePositionTick(price) {
   }
 }
 
-// Fill one position card (Simple or Pro) from a Toobit position, or show its empty state
+// Fill the position card from a Toobit position, or show its empty state
 function fillPositionCard(card, pos) {
   if (!card) return;
   const field = (name) => card.querySelector(`[data-pos="${name}"]`);
@@ -373,44 +365,28 @@ function fillPositionCard(card, pos) {
   }
 }
 
-// Render Positions in Simple & Pro Mode
+// Render the sidebar position card and Laya's advice for it
 function renderToobitPositions(positions, suggestion) {
   const activePos = positions && positions.length > 0 ? positions[0] : null;
 
-  // --- SIMPLE MODE RENDERING ---
-  if (simplePositionCard) {
-    fillPositionCard(simplePositionCard, activePos);
-
-    // Simple Mode AI Suggestion
-    if (suggestion) {
-      if (simpleSugBadge) {
-        simpleSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
-        simpleSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
-      }
-      if (simpleSugHeadline) simpleSugHeadline.textContent = suggestion.headline || "Evaluating Market...";
-      if (simpleSugText) simpleSugText.textContent = suggestion.suggestion || "Stand by for high-probability confluence setup.";
-    }
-  }
-
-  // --- PRO MODE RENDERING ---
   if (proPositionCard) {
     fillPositionCard(proPositionCard, activePos);
 
-    // Pro Mode AI Suggestion
     if (suggestion) {
       if (proSugBadge) {
-        proSugBadge.textContent = suggestion.badgeText || "WAIT ⚪";
+        proSugBadge.textContent = suggestion.badgeText || "Wait";
         proSugBadge.className = `ai-sug-badge ${suggestion.badgeClass || "badge-neutral"}`;
       }
+      if (proSugHeadline) proSugHeadline.textContent = suggestion.headline || "Evaluating the market";
       if (proAlignmentPill) {
         if (suggestion.alignment === "ALIGNED") {
-          proAlignmentPill.textContent = "Trend Aligned";
+          proAlignmentPill.textContent = "With the trend";
           proAlignmentPill.className = "alignment-pill aligned";
         } else if (suggestion.alignment === "OPPOSED") {
-          proAlignmentPill.textContent = "Trend Opposed / Risk";
+          proAlignmentPill.textContent = "Against the trend";
           proAlignmentPill.className = "alignment-pill opposed";
         } else {
-          proAlignmentPill.textContent = "Neutral / Watch";
+          proAlignmentPill.textContent = "No clear trend";
           proAlignmentPill.className = "alignment-pill neutral";
         }
       }
@@ -421,7 +397,7 @@ function renderToobitPositions(positions, suggestion) {
         proSugTp.textContent = suggestion.recommendedTp > 0 ? `$${suggestion.recommendedTp.toFixed(4)}` : "--";
       }
       if (proSugText) {
-        proSugText.textContent = suggestion.suggestion || "Monitoring live order book and tick flow...";
+        proSugText.textContent = suggestion.suggestion || "Watching the order book and price flow.";
       }
     }
   }
@@ -437,12 +413,15 @@ function renderToobitPositions(positions, suggestion) {
   }
 }
 
-// Flash Close Execution
+// Close the open position at market (Toobit flashClose), after the user confirms
 async function executeFlashClose() {
   try {
     const activePos = activeToobitPositions && activeToobitPositions.length > 0 ? activeToobitPositions[0] : null;
     const symbolToClose = activePos ? (activePos.rawSymbol || activePos.symbol || activePos.displaySymbol) : deps.getSymbol();
-    showToast(`⚡ Sending Flash Close market order for ${symbolToClose}...`, "info");
+    const side = activePos ? String(activePos.side || "").toUpperCase() : "";
+    const label = activePos ? `${side} ${activePos.displaySymbol || symbolToClose}` : symbolToClose;
+    if (!confirm(`Close ${label} at market price now?`)) return;
+    showToast(`Closing ${label}…`, "info");
 
     const res = await fetch("/api/toobit/close", {
       method: "POST",
@@ -452,18 +431,18 @@ async function executeFlashClose() {
     const data = await res.json();
 
     if (data.success) {
-      showToast(data.message || `Position ${symbolToClose} successfully Flash Closed!`, "bull");
+      showToast(data.message || `Closed ${label}.`, "bull");
       playSignalChime(true);
       deps.clearPositionLines();
       if (chartPositionBadge) chartPositionBadge.classList.add("hide");
     } else {
-      showToast(data.message || data.error || "Flash close failed", "error");
+      showToast(data.message || data.error || `Could not close ${label}. Check the exchange connection and try again.`, "error");
     }
 
     await fetchToobitPositions();
     await fetchToobitStatus();
   } catch (e) {
-    showToast(`Error executing flash close: ${e.message}`, "error");
+    showToast(`Could not close the position: ${e.message}`, "error");
   }
 }
 
@@ -483,12 +462,12 @@ async function simulateDemoTrade(side) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Simulated ${side} 50x position opened for ${deps.getSymbol()}!`, "bull");
+      showToast(`Simulated ${side.toLowerCase()} opened on ${deps.getSymbol()} at 50x.`, "bull");
       playSignalChime(side === "LONG");
     }
     await fetchToobitPositions();
   } catch (e) {
-    showToast(`Failed to simulate position: ${e.message}`, "error");
+    showToast(`Could not simulate a position: ${e.message}`, "error");
   }
 }
 
@@ -509,16 +488,15 @@ async function saveToobitCredentials(e) {
   const apiSecret = toobitApiSecret?.value.trim();
 
   if (!apiKey || !apiSecret) {
-    showToobitConnectError("Please enter both Toobit API Key and Secret Key.");
-    showToast("Please enter both API Key and Secret Key.", "error");
+    showToobitConnectError("Enter both the API key and the secret key.");
     return;
   }
 
   hideToobitConnectError();
-  showToast("Validating API credentials with Toobit...", "info");
+  showToast("Checking the keys with Toobit…", "info");
   if (btnSaveToobitKeys) {
     btnSaveToobitKeys.disabled = true;
-    btnSaveToobitKeys.innerHTML = `<span>Validating...</span>`;
+    btnSaveToobitKeys.innerHTML = `<span>Checking…</span>`;
   }
 
   try {
@@ -528,23 +506,23 @@ async function saveToobitCredentials(e) {
       localStorage.setItem("toobit_api_key", apiKey);
       localStorage.setItem("toobit_api_secret", apiSecret);
       hideToobitConnectError();
-      showToast("Toobit Futures API Connected Successfully!", "bull");
+      showToast("Toobit account connected.", "bull");
       closeToobitModal();
       await fetchToobitStatus();
       await fetchToobitPositions();
     } else {
-      const errorMsg = data.message || data.error || data.detail || "Failed to validate Toobit API keys.";
+      const errorMsg = data.message || data.error || data.detail || "Toobit rejected the key. Check it is correct and has futures trading permission.";
       showToobitConnectError(errorMsg);
-      showToast("Authentication Failed — see details in dialog", "error", 6000);
+      showToast("Toobit rejected the key. Details are in the dialog.", "error", 6000);
     }
   } catch (err) {
-    const errorMsg = `Connection error: ${err.message}`;
+    const errorMsg = `Could not reach Toobit: ${err.message}. Check your connection and try again.`;
     showToobitConnectError(errorMsg);
     showToast(errorMsg, "error", 6000);
   } finally {
     if (btnSaveToobitKeys) {
       btnSaveToobitKeys.disabled = false;
-      btnSaveToobitKeys.innerHTML = `<i data-lucide="check-circle"></i><span>Connect & Validate API</span>`;
+      btnSaveToobitKeys.innerHTML = `<i data-lucide="check-circle"></i><span>Connect</span>`;
       lucide.createIcons();
     }
   }
@@ -558,13 +536,13 @@ async function disconnectToobit() {
     const res = await fetch("/api/toobit/disconnect", { method: "POST" });
     const data = await res.json();
     hideToobitConnectError();
-    showToast("Disconnected from Toobit.", "info");
+    showToast("Toobit account disconnected.", "info");
     if (toobitApiKey) toobitApiKey.value = "";
     if (toobitApiSecret) toobitApiSecret.value = "";
     await fetchToobitStatus();
     await fetchToobitPositions();
   } catch (e) {
-    showToast(`Disconnect error: ${e.message}`, "error");
+    showToast(`Could not disconnect: ${e.message}`, "error");
   }
 }
 
@@ -573,12 +551,12 @@ async function activateDemoMode() {
   try {
     await postToobitConnect({ isDemo: true });
     hideToobitConnectError();
-    showToast("Demo Simulation Mode Activated ($5,000 USDT)!", "bull");
+    showToast("Demo account on, with $5,000 virtual USDT.", "bull");
     closeToobitModal();
     await fetchToobitStatus();
     await fetchToobitPositions();
   } catch (e) {
-    showToast(`Error activating demo mode: ${e.message}`, "error");
+    showToast(`Could not turn on the demo account: ${e.message}`, "error");
   }
 }
 
@@ -599,8 +577,7 @@ export function initToobitManager(injectedDeps = {}) {
   btnDisconnectToobit?.addEventListener("click", disconnectToobit);
   btnActivateDemoMode?.addEventListener("click", activateDemoMode);
 
-  // Flash Close Listeners
-  btnSimpleFlashClose?.addEventListener("click", executeFlashClose);
+  // Close position (sidebar card + chart HUD)
   btnProFlashClose?.addEventListener("click", executeFlashClose);
   btnHudFlashClose?.addEventListener("click", executeFlashClose);
 
@@ -610,8 +587,6 @@ export function initToobitManager(injectedDeps = {}) {
   });
 
   // Simulation Listeners
-  btnSimpleSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
-  btnSimpleSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
   btnProSimLong?.addEventListener("click", () => simulateDemoTrade("LONG"));
   btnProSimShort?.addEventListener("click", () => simulateDemoTrade("SHORT"));
 
