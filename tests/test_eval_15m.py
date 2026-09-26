@@ -53,7 +53,17 @@ def test_signals_from_sides_use_atr_bracket():
 
 
 def test_random_sides_seeded_with_rate():
-    first = random_sides(10000, rate=0.02, seed=1)
-    assert np.array_equal(first, random_sides(10000, rate=0.02, seed=1))
+    first = random_sides(10000, rate=0.02, seed=(1, 0, 0))
+    assert np.array_equal(first, random_sides(10000, rate=0.02, seed=(1, 0, 0)))
+    assert not np.array_equal(first, random_sides(10000, rate=0.02, seed=(1, 1, 0)))  # other symbol
     assert 150 < np.count_nonzero(first) < 250
     assert set(np.unique(first)) == {-1, 0, 1}
+
+
+def test_random_sides_only_enter_on_eligible_bars():
+    eligible = np.zeros(10000, dtype=bool)
+    eligible[::10] = True
+    sides = random_sides(10000, rate=0.02, seed=(0, 0, 0), eligible=eligible)
+    assert not sides[~eligible].any()
+    # rate applies to all bars, so entries concentrate on the eligible tenth
+    assert 150 < np.count_nonzero(sides) < 250

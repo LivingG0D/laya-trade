@@ -40,6 +40,7 @@ def barrier_labels(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
     short_tp = _first_hit(future_low <= (entry * (1 - tp))[:, None])
     short_sl = _first_hit(future_high >= (entry * (1 + sl))[:, None])
 
-    long_win[:m] = (long_tp < long_sl).astype(float)
-    short_win[:m] = (short_tp < short_sl).astype(float)
+    defined = np.isfinite(tp) & np.isfinite(sl)  # e.g. ATR still warming up
+    long_win[:m] = np.where(defined, (long_tp < long_sl).astype(float), np.nan)
+    short_win[:m] = np.where(defined, (short_tp < short_sl).astype(float), np.nan)
     return long_win, short_win

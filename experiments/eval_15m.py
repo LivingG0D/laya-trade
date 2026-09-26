@@ -21,7 +21,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -89,9 +89,15 @@ def ev_sides(p_long: np.ndarray, p_short: np.ndarray, cost_r: np.ndarray, margin
     return np.where(np.maximum(ev_long, ev_short) >= margin, best, 0)
 
 
-def random_sides(n: int, rate: float, seed: int) -> np.ndarray:
+def random_sides(n: int, rate: float, seed, eligible: Optional[np.ndarray] = None) -> np.ndarray:
+    """Random entries at ``rate`` of all bars, placed only on ``eligible`` bars (the bars the
+    strategy itself could trade, so the random cost profile matches). ``seed`` may be a tuple
+    such as (seed, symbol index, period start) so symbols and windows draw independently."""
     rng = np.random.default_rng(seed)
-    enter = rng.random(n) < rate
+    if eligible is None:
+        eligible = np.ones(n, dtype=bool)
+    share = eligible.mean() if n else 0.0
+    enter = eligible & (rng.random(n) < (min(1.0, rate / share) if share > 0 else 0.0))
     return np.where(enter, rng.choice([1, -1], size=n), 0)
 
 
@@ -133,28 +139,32 @@ def round_trip_cost_r(trades: List[Dict[str, Any]], costs: CostModel) -> float:
 
 def evaluate_period(sides_by_symbol: Dict[str, np.ndarray], candles_by_symbol: Dict[str, pd.DataFrame],
                     atr_by_symbol: Dict[str, np.ndarray], bracket: Tuple[float, float],
-                    period: Tuple[int, int], costs: CostModel, seeds: int) -> Dict[str, Any]:
+                    period: Tuple[int, int], costs: CostModel, seeds: int,
+                    eligible_by_symbol: Optional[Dict[str, np.ndarray]] = None) -> Dict[str, Any]:
     lo, hi = period
     model_trades: List[Dict[str, Any]] = []
     random_trades: List[Dict[str, Any]] = []
-    for symbol, candles in candles_by_symbol.items():
+    for sym_idx, (symbol, candles) in enumerate(candles_by_symbol.items()):
         sel = ((candles["time"] >= lo) & (candles["time"] < hi)).to_numpy()
         if sel.sum() < 2:
             continue
         window = candles[sel].reset_index(drop=True)
         closes, atr = window["close"].to_numpy(float), atr_by_symbol[symbol][sel]
+        eligible = eligible_by_symbol[symbol][sel] if eligible_by_symbol else None
         trades = _evaluate(window, signals_from_sides(closes, atr, sides_by_symbol[symbol][sel], *bracket,
                                                       HOLD_SECONDS), costs)
         model_trades += trades
         rate = max(len(trades), 1) / len(window)
         for _ in range(2):  # match the random entry rate to the model's trade count
-            probe = _evaluate(window, signals_from_sides(closes, atr, random_sides(len(window), rate, 10_000),
-                                                         *bracket, HOLD_SECONDS), costs)
+            probe = _evaluate(window, signals_from_sides(
+                closes, atr, random_sides(len(window), rate, (10_000, sym_idx, lo), eligible),
+                *bracket, HOLD_SECONDS), costs)
             if probe:
                 rate = min(1.0, rate * max(len(trades), 1) / len(probe))
         for seed in range(seeds):
-            random_trades += _evaluate(window, signals_from_sides(closes, atr, random_sides(len(window), rate, seed),
-                                                                  *bracket, HOLD_SECONDS), costs)
+            random_trades += _evaluate(window, signals_from_sides(
+                closes, atr, random_sides(len(window), rate, (seed, sym_idx, lo), eligible),
+                *bracket, HOLD_SECONDS), costs)
     rand = summarize_trades(random_trades)
     rand["trade_count"] = rand["trade_count"] / max(seeds, 1)
     model = summarize_trades(model_trades)
@@ -223,8 +233,10 @@ def main() -> int:
         idx = np.flatnonzero(train_mask(times, window[0], LABEL_SECONDS) & labelled)
         model = SignalModel(max_iter=args.max_iter).fit(X[idx], data["y_long"].to_numpy()[idx],
                                                         data["y_short"].to_numpy()[idx])
-        pl_train, ps_train = model.predict(X[idx])
-        threshold = float(np.quantile(pl_train + ps_train, 0.8))  # top 20% of training volatility scores
+        # Top 20% of volatility scores on the calibration slice, which the trees never saw.
+        calib = idx[int(len(idx) * (1 - model.calib_fraction)):]
+        pl_cal, ps_cal = model.predict(X[calib])
+        threshold = float(np.quantile(pl_cal + ps_cal, 0.8))
         test = (times >= window[0]) & (times < window[1])
         p_long, p_short = model.predict(X[test])
         data.loc[test, "p_long"], data.loc[test, "p_short"] = p_long, p_short
@@ -234,6 +246,7 @@ def main() -> int:
 
     # Per-symbol side arrays aligned with each symbol's candles.
     sides: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in BRACKETS}
+    eligible: Dict[str, Dict[str, np.ndarray]] = {name: {} for name in BRACKETS}
     atr_by_symbol = {}
     for symbol, feats in feats_by_symbol.items():
         preds = data[data["symbol"] == symbol].set_index("time").reindex(feats["time"])
@@ -244,10 +257,13 @@ def main() -> int:
         p_short = preds["p_short"].to_numpy(float)
         has_pred = ~np.isnan(p_long)
         sides["A_pullback"][symbol] = pullback_sides(feats)
+        eligible["A_pullback"][symbol] = np.isfinite(atr_pct)
         cost_r = taker_rt / np.where(atr_pct > 0, atr_pct, np.nan)
         sides["C_gbm"][symbol] = np.where(has_pred, ev_sides(np.nan_to_num(p_long), np.nan_to_num(p_short),
                                                              np.nan_to_num(cost_r, nan=np.inf)), 0)
+        eligible["C_gbm"][symbol] = has_pred & np.isfinite(cost_r)
         vol_ok = has_pred & (np.nan_to_num(p_long + p_short) >= preds["vol_threshold"].to_numpy(float))
+        eligible["B_breakout"][symbol] = vol_ok
         sides["B_breakout"][symbol] = np.where(vol_ok, breakout_sides(candles["high"].to_numpy(float),
                                                                       candles["low"].to_numpy(float),
                                                                       candles["close"].to_numpy(float)), 0)
@@ -263,15 +279,16 @@ def main() -> int:
         for cost_name, costs in COSTS.items():
             block = {
                 "windows": [evaluate_period(sides[name], candles_by_symbol, atr_by_symbol, bracket, w, costs,
-                                            args.seeds) for w in windows],
+                                            args.seeds, eligible[name]) for w in windows],
                 "walk_forward": evaluate_period(sides[name], candles_by_symbol, atr_by_symbol, bracket,
-                                                walk_forward, costs, args.seeds),
+                                                walk_forward, costs, args.seeds, eligible[name]),
                 "holdout": evaluate_period(sides[name], candles_by_symbol, atr_by_symbol, bracket, holdout,
-                                           costs, args.seeds),
+                                           costs, args.seeds, eligible[name]),
             }
             block["pass_checks"] = pass_checks(block["windows"], block["walk_forward"], block["holdout"],
                                                block["walk_forward"]["model"]["round_trip_cost_r"])
-            block["passed"] = all(block["pass_checks"].values())
+            # Taker costs decide; the maker-entry scenario is reported for information only.
+            block["passed"] = all(block["pass_checks"].values()) if cost_name == "taker" else None
             report["strategies"][f"{name}/{cost_name}"] = block
             print(f"  evaluated {name} / {cost_name}", file=sys.stderr)
 
@@ -286,7 +303,8 @@ def main() -> int:
     for key, block in report["strategies"].items():
         pos = sum(1 for w in block["windows"] if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
         print(f"{key}  (cost {block['walk_forward']['model']['round_trip_cost_r']:.3f}R, "
-              f"windows +{pos}/{len(block['windows'])}) -> {'PASS' if block['passed'] else 'FAIL'}")
+              f"windows +{pos}/{len(block['windows'])}) -> "
+              f"{'info' if block['passed'] is None else 'PASS' if block['passed'] else 'FAIL'}")
         for period in ("walk_forward", "holdout"):
             print(line(f"  {period} model", block[period]["model"]))
             print(line(f"  {period} random", block[period]["random"]))

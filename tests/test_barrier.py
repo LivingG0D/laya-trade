@@ -57,3 +57,10 @@ def test_per_bar_targets_scale_each_signal():
     sl = np.array([0.006, 0.006, 0.006, 0.006, 0.006])
     long_win, _ = barrier_labels(o, h, l, tp=tp, sl=sl, horizon=3)
     assert long_win[0] == 1.0 and long_win[1] == 0.0
+
+
+def test_undefined_per_bar_target_leaves_label_nan():
+    o, h, l = bars([(100, 100, 100), (100, 101.5, 99.9), (100, 100, 100), (100, 100, 100)])
+    tp = np.array([np.nan, 0.012, 0.012, 0.012])
+    long_win, short_win = barrier_labels(o, h, l, tp=tp, sl=0.006, horizon=3)
+    assert np.isnan(long_win[0]) and np.isnan(short_win[0])

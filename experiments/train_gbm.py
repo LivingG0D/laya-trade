@@ -113,8 +113,8 @@ def barrier_signals(closes: np.ndarray, p_long: np.ndarray, p_short: np.ndarray,
     return out
 
 
-def random_barrier_signals(closes: np.ndarray, rate: float, seed: int) -> List[Dict[str, Any]]:
-    rng = random.Random(seed)
+def random_barrier_signals(closes: np.ndarray, rate: float, seed) -> List[Dict[str, Any]]:
+    rng = random.Random(str(seed))  # seed may be a tuple: (seed, symbol, period start)
     return [_barrier_signal(float(c), rng.choice((1, -1)), 0.5) if rng.random() < rate else {} for c in closes]
 
 
@@ -212,11 +212,11 @@ def evaluate_period(data: pd.DataFrame, candles_by_symbol: Dict[str, pd.DataFram
         # Random entries at the same trade count: rescale the entry rate against one probe seed.
         rate = max(len(trades), 1) / len(window)
         for _ in range(2):
-            probe = _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, 10_000), costs)
+            probe = _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, (10_000, symbol, lo)), costs)
             if probe["trade_count"]:
                 rate = min(1.0, rate * max(len(trades), 1) / probe["trade_count"])
         for seed in range(seeds):
-            random_trades += _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, seed),
+            random_trades += _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, (seed, symbol, lo)),
                                        costs)["trades"]
     rand = summarize_trades(random_trades)
     rand["trade_count"] = rand["trade_count"] / max(seeds, 1)

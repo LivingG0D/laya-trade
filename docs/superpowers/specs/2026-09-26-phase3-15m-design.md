@@ -46,7 +46,7 @@ context set (15m base; 1h, 4h, 1d context with prefixes h1, h4, d1).
 ## Evaluation
 
 Same walk-forward as Phase 2 (120 days train, 30-day windows, 60-day holdout,
-24-hour label purge for C/B), same pass checks: holdout expectancy > 0 on at
+17-bar (label horizon + entry bar) purge for C/B), same pass checks: holdout expectancy > 0 on at
 least 30 trades, at least 60% of windows positive, and beating random entries
 (same bracket, matched trade count) by more than the full round-trip cost in
 R. Each trade records its initial stop distance so that cost is exact per
