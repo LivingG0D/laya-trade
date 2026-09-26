@@ -251,18 +251,25 @@ async def main() -> int:
             def to_signals(ds):
                 return [generator.generate_signal(s, d) for s, d in zip(states, ds)]
 
-            directional_rate = 0.0
+            directional_rate, target_trades = 0.0, 0
             for name, ds in decisions.items():
                 signals = to_signals(ds)
+                row = evaluate(candles, signals, strategy_cfg, costs, window_bars)
                 if name == engines[0]:
                     directional_rate = tradeable_rate(signals, args.min_confidence)
-                rows.append({"symbol": symbol, "strategy": name,
-                             **evaluate(candles, signals, strategy_cfg, costs, window_bars)})
+                    target_trades = row["trade_count"]
+                rows.append({"symbol": symbol, "strategy": name, **row})
 
-            # SignalGenerator filters drop some random entries; rescale once so the
-            # random baseline's post-filter rate matches the strategy's tradeable rate.
-            probe = tradeable_rate(to_signals(random_decisions(len(states), directional_rate, 10_000)), 0.0)
-            random_rate = min(1.0, directional_rate ** 2 / probe) if probe else directional_rate
+            # Strategy signals cluster on consecutive bars and filters drop some random
+            # entries, so matching signal rate does not match trade count. Rescale the
+            # random entry rate twice against a probe seed to match the strategy's trades.
+            random_rate = directional_rate
+            for _ in range(2):
+                probe = evaluate(candles, to_signals(random_decisions(len(states), random_rate, 10_000)),
+                                 baseline_cfg, costs, window_bars)["trade_count"]
+                if not probe or not target_trades:
+                    break
+                random_rate = min(1.0, random_rate * target_trades / probe)
             rows.append({"symbol": symbol, "strategy": "flat",
                          **evaluate(candles, [{}] * len(candles), baseline_cfg, costs, window_bars)})
             seeds = [evaluate(candles, to_signals(random_decisions(len(states), random_rate, seed)),
@@ -279,7 +286,7 @@ async def main() -> int:
     out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
                                     "rows": rows}, indent=2, default=str))
     print_table(rows)
-    print(f"\nrandom = entries at the first engine's tradeable signal rate, same bracket, mean of {args.seeds} seeds")
+    print(f"\nrandom = entries matched to the first engine's trade count, same bracket, mean of {args.seeds} seeds")
     print("Known gaps: " + " ".join(KNOWN_GAPS))
     print(f"Saved {out_path}")
     return 0
