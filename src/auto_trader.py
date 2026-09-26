@@ -7,6 +7,7 @@ opposing signal reversal exits, and strict portfolio circuit breakers.
 
 import asyncio
 import json
+import math
 import logging
 import time
 from pathlib import Path
@@ -972,7 +973,7 @@ class AutoTrader:
         raw_quantity = notional_value / contract_unit_value
         step_text = f"{step_size:.8f}".rstrip("0")
         decimals = len(step_text.split(".")[1]) if "." in step_text else 0
-        quantity = round((raw_quantity // step_size) * step_size, decimals)
+        quantity = round(math.floor(raw_quantity / step_size + 1e-9) * step_size, decimals)  # epsilon: 1.0 // 0.001 == 999
         if quantity < min_qty:
             minimum_margin = (min_qty * contract_unit_value) / leverage
             if minimum_margin > available_margin * 0.40:

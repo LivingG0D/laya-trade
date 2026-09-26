@@ -34,7 +34,7 @@ def test_risk_pct_sizing_loses_the_configured_share_at_the_stop(tmp_path, monkey
     asyncio.run(trader._execute_candidate(candidate(entry=100.0, stop=99.0)))
 
     # 1% of $100 equity at a 1% stop -> $100 notional -> 1.0 contract of $100
-    assert client.create_order.await_args.kwargs["quantity"] == pytest.approx(1.0, abs=0.001)  # floor to 0.001 step
+    assert client.create_order.await_args.kwargs["quantity"] == pytest.approx(1.0)
 
 
 def test_time_stop_closes_positions_held_past_their_limit(tmp_path, monkeypatch):
