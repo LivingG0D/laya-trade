@@ -285,3 +285,87 @@ def test_short_stop_gapped_through_fills_at_open():
     result = evaluate_signal_sequence(candles, signals, EvaluationConfig(), FREE)
 
     assert result["trades"][0]["exit_price"] == 106
+
+
+def test_breakeven_after_tp1_ignores_price_wicks():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 103, 99, 102),  # wick, no TP1
+        candle(3, 102, 102, 99.9, 100),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(breakeven_after_tp1=True, breakeven_offset_pct=0.0012), FREE
+    )
+
+    assert result["trades"][0]["exit_reason"] == "END_OF_DATA"
+
+
+def test_breakeven_after_tp1_covers_costs():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 111, 99, 108),  # TP1 fills
+        candle(3, 108, 108, 99.9, 100),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(breakeven_after_tp1=True, breakeven_offset_pct=0.0012), FREE
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "BREAKEVEN"
+    assert trade["exit_price"] == pytest.approx(100.12)
+
+
+def test_time_stop_closes_at_bar_close_after_max_hold():
+    candles = [
+        candle(0, 100, 101, 99, 100),
+        candle(300, 100, 101, 99, 100.5),
+        candle(600, 100.5, 101, 99, 100.8),  # 600 s held at this close
+        candle(900, 100.8, 101, 99, 100),
+    ]
+    held = dict(signal(stop=95, tp1=110, tp2=0), max_hold_seconds=600)
+    signals = [held, {}, {}, {}]
+
+    result = evaluate_signal_sequence(candles, signals, EvaluationConfig(), FREE)
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "TIME"
+    assert trade["exit_price"] == 100.8
+
+
+def test_barrier_profile_uses_model_label_bracket():
+    state = {
+        "price": 100.0, "symbol": "BTCUSDT.P", "interval": "5m", "atr": 0.3, "atr_pct": 0.3,
+        "rsi": 55.0, "adx": 30.0, "trend_state": "BULLISH", "htf": {"trend": "BULLISH"},
+    }
+    decision = {"position": "STRONG_LONG", "directional_conviction": 0.8}
+
+    sig = SignalGenerator(exit_profile="barrier").generate_signal(dict(state), decision)
+
+    assert sig["stop_loss"] == pytest.approx(99.4)
+    assert sig["take_profit_1"] == pytest.approx(101.2)
+    assert sig["take_profit_2"] == 0
+    assert sig["max_hold_seconds"] == 7200
+
+    short = SignalGenerator(exit_profile="barrier").generate_signal(
+        dict(state, trend_state="BEARISH", htf={"trend": "BEARISH"}),
+        {"position": "STRONG_SHORT", "directional_conviction": 0.8},
+    )
+    assert short["stop_loss"] == pytest.approx(100.6)
+    assert short["take_profit_1"] == pytest.approx(98.8)
+
+
+def test_cost_filter_rejects_trades_where_costs_eat_the_risk():
+    state = {
+        "price": 100.0, "symbol": "BTCUSDT.P", "interval": "5m", "atr": 0.1, "atr_pct": 0.1, "support": 90.0,
+        "rsi": 55.0, "adx": 30.0, "trend_state": "BULLISH", "htf": {"trend": "BULLISH"},
+    }
+    decision = {"position": "STRONG_LONG", "directional_conviction": 0.8}
+
+    # Legacy stop clamps to 0.5% here -> 0.12% costs are 24% of risk.
+    assert SignalGenerator(max_cost_share=0.20).generate_signal(dict(state), decision)["action"] == "NEUTRAL"
+    assert SignalGenerator(max_cost_share=0.30).generate_signal(dict(state), decision)["action"] == "LONG"
+    assert SignalGenerator().generate_signal(dict(state), decision)["action"] == "LONG"

@@ -96,3 +96,11 @@ LEVERAGE_MIN_SL_PCT = 0.0035  # 0.35% minimum buffer (optimal for 5m scalping)
 DEFAULT_POSITION_MARGIN_USD = 10.00   # Fixed base margin for small accounts ($10 per trade)
 DEFAULT_KELLY_FRACTION_PCT = 0.20     # Quarter-Kelly maximum equity allocation (max 20% of account balance)
 
+
+# Barrier exit profile: the event the fine-tuned model was trained to predict
+BARRIER_TP_PCT = 0.012
+BARRIER_SL_PCT = 0.006
+BARRIER_MAX_HOLD_SECONDS = 7200
+# Round-trip trading cost (4 bps fee + 2 bps slippage per side), used for the
+# break-even offset and the cost filter
+ROUND_TRIP_COST_PCT = 0.0012

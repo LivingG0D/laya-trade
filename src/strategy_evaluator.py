@@ -42,6 +42,7 @@ class EvaluationConfig:
     # fraction in favour (or TP1 fills), later bars use entry +/- offset as stop.
     breakeven_trigger_pct: float = 0.0
     breakeven_offset_pct: float = 0.0005
+    breakeven_after_tp1: bool = False  # TP1 fill alone moves the stop (implied when a price trigger is set)
     # Close at the next open when an opposite signal reaches this confidence.
     opposing_exit_confidence: Optional[float] = None
 
@@ -199,6 +200,14 @@ def _move_to_breakeven(position: Dict[str, Any], offset_pct: float) -> None:
     position["be_moved"] = True
 
 
+def _hold_expired(position: Mapping[str, Any], candle: Mapping[str, Any]) -> bool:
+    """True once the bar closing now reaches the signal's maximum holding time."""
+    max_hold = position.get("max_hold_seconds")
+    if not max_hold or position.get("bar_seconds") is None:
+        return False
+    return float(candle["time"]) + position["bar_seconds"] - position["entry_open_time"] >= max_hold
+
+
 def _process_position(
     position: Dict[str, Any],
     candle: Mapping[str, Any],
@@ -218,6 +227,10 @@ def _process_position(
     exit_event = _trigger_exit(position, candle)
     trade: Optional[Dict[str, Any]] = None
     breakeven_on = config.breakeven_trigger_pct > 0
+    if exit_event is None and _hold_expired(position, candle):
+        position["exit_time"] = candle.get("time")
+        equity, trade = _finish_trade(position, close, "TIME", bar_index, slippage_rate, fee_rate, equity)
+        return equity, None, trade
     if exit_event is None:
         if breakeven_on and not position["be_moved"]:
             favourable = float(candle["high"]) if position["side"] == 1 else float(candle["low"])
@@ -241,7 +254,7 @@ def _process_position(
             equity,
         )
         position["tp1_hit"] = True
-        if breakeven_on and not position["be_moved"]:
+        if (breakeven_on or config.breakeven_after_tp1) and not position["be_moved"]:
             _move_to_breakeven(position, config.breakeven_offset_pct)
         return equity, position, trade
 
@@ -329,6 +342,7 @@ def evaluate_signal_sequence(
     slippage_rate = costs.slippage_bps / 10000.0
     funding_rate = costs.funding_bps_per_bar / 10000.0
     equity = config.initial_equity
+    bar_seconds = float(candles[1]["time"]) - float(candles[0]["time"])
     peak_equity = equity
     max_drawdown = 0.0
     position: Optional[Dict[str, Any]] = None
@@ -382,6 +396,9 @@ def evaluate_signal_sequence(
                 "tp2": tp2,
                 "tp1_hit": False,
                 "be_moved": False,
+                "max_hold_seconds": _as_float(signal.get("max_hold_seconds")),
+                "entry_open_time": float(candle["time"]),
+                "bar_seconds": bar_seconds,
                 "remaining_qty": quantity,
                 "realized_gross": 0.0,
                 "entry_fee": entry_fee,

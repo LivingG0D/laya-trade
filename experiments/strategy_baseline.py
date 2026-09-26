@@ -202,11 +202,22 @@ async def main() -> int:
     parser.add_argument("--leverage", type=int, default=50)
     parser.add_argument("--window-days", type=float, default=14)
     parser.add_argument("--seeds", type=int, default=5)
+    parser.add_argument("--breakeven", choices=("legacy", "tp1_fees", "off"), default="legacy",
+                        help="legacy: 9%% ROE or TP1 -> entry+0.05%%; tp1_fees: TP1 only -> entry+costs")
+    parser.add_argument("--exit-profile", choices=("legacy", "barrier"), default="legacy")
+    parser.add_argument("--max-cost-share", type=float, default=None,
+                        help="reject trades whose round-trip costs exceed this share of the risk")
     args = parser.parse_args()
 
     engines = [e for e in args.engines.split(",") if e]
     costs = CostModel(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
-    live_exits = dict(breakeven_trigger_pct=0.09 / args.leverage, opposing_exit_confidence=70.0,
+    round_trip = 2 * (args.fee_bps + args.slippage_bps) / 10000.0
+    breakeven = {
+        "legacy": dict(breakeven_trigger_pct=0.09 / args.leverage),
+        "tp1_fees": dict(breakeven_after_tp1=True, breakeven_offset_pct=round_trip),
+        "off": {},
+    }[args.breakeven]
+    live_exits = dict(**breakeven, opposing_exit_confidence=70.0,
                       max_leverage=float(args.leverage), risk_per_trade=0.01)
     strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, **live_exits)
     baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, **live_exits)
@@ -246,7 +257,8 @@ async def main() -> int:
                 if "live" in engines:
                     decisions["live"] = [engine._blend(m, f) for m, f in zip(model, fallback)]
 
-            generator = SignalGenerator(leverage=args.leverage)
+            generator = SignalGenerator(leverage=args.leverage, exit_profile=args.exit_profile,
+                                        max_cost_share=args.max_cost_share)
 
             def to_signals(ds):
                 return [generator.generate_signal(s, d) for s, d in zip(states, ds)]

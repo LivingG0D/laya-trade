@@ -11,6 +11,10 @@ from .config import (
     LEVERAGE_MIN_SL_PCT,
     DEFAULT_POSITION_MARGIN_USD,
     DEFAULT_KELLY_FRACTION_PCT,
+    BARRIER_TP_PCT,
+    BARRIER_SL_PCT,
+    BARRIER_MAX_HOLD_SECONDS,
+    ROUND_TRIP_COST_PCT,
 )
 
 class SignalGenerator:
@@ -21,13 +25,38 @@ class SignalGenerator:
         tp2_rr: float = DEFAULT_TP2_RR,
         be_rr: float = DEFAULT_BE_RR,
         leverage: int = DEFAULT_LEVERAGE,
+        exit_profile: str = "legacy",
+        max_cost_share: Optional[float] = None,
     ):
         self.atr_multiplier = atr_multiplier
         self.tp1_rr = tp1_rr
         self.tp2_rr = tp2_rr
         self.be_rr = be_rr
         self.leverage = leverage
+        # "legacy": ATR stop, TP1/TP2 in R. "barrier": +1.2% / -0.6% / 2h, the model's label.
+        self.exit_profile = exit_profile
+        # Reject trades whose round-trip costs exceed this share of the risk (None = off).
+        self.max_cost_share = max_cost_share
         self.signal_history: List[Dict[str, Any]] = []
+
+    def _plan_stop(self, cur_price: float, atr: float, atr_mult: float, level: float, is_long: bool) -> float:
+        """Stop price for the configured exit profile."""
+        s = 1 if is_long else -1
+        if self.exit_profile == "barrier":
+            return cur_price * (1.0 - s * BARRIER_SL_PCT)
+
+        # SL strictly bounded within the configured leverage envelope
+        max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
+        min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
+        raw_sl_dist = max(atr * atr_mult, cur_price * 0.005)
+        sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
+
+        # Anchor the stop just beyond nearby structure (support for longs, resistance for shorts)
+        if 0 < s * (cur_price - level) <= max_sl_dist:
+            cand_sl = level - s * (atr * 0.15)
+            bounds = (cur_price - s * min_sl_dist, cur_price - s * max_sl_dist)
+            return min(bounds[0], max(bounds[1], cand_sl)) if is_long else max(bounds[0], min(bounds[1], cand_sl))
+        return cur_price - s * sl_dist
 
     def generate_signal(
         self,
@@ -127,6 +156,14 @@ class SignalGenerator:
         elif (is_long or is_short) and market_regime == "CHOP_RANGE" and not is_squeeze and dir_conviction < 0.530:
             filter_reason = f"Trade filtered: Low ADX range chop requires stronger conviction (>= 53.0%, got {round(dir_conviction * 100, 1)}%)."
 
+        if not filter_reason and (is_long or is_short) and self.max_cost_share is not None and cur_price > 0:
+            stop = self._plan_stop(cur_price, atr, effective_atr_mult, support if is_long else resistance, is_long)
+            risk_pct = abs(cur_price - stop) / cur_price
+            cost_share = ROUND_TRIP_COST_PCT / risk_pct if risk_pct > 0 else float("inf")
+            if cost_share > self.max_cost_share:
+                filter_reason = (f"Trade rejected: round-trip costs are {cost_share * 100:.0f}% of the risk "
+                                 f"(limit {self.max_cost_share * 100:.0f}%).")
+
         if filter_reason:
             is_long = False
             is_short = False
@@ -150,31 +187,19 @@ class SignalGenerator:
             liq_dist_pct = 0.90 / effective_leverage
             liq_price = cur_price * (1.0 - s * liq_dist_pct)
 
-            # SL strictly bounded within the configured leverage envelope
-            max_sl_dist = cur_price * LEVERAGE_MAX_SL_PCT
-            min_sl_dist = cur_price * LEVERAGE_MIN_SL_PCT
-            raw_sl_dist = max(atr * effective_atr_mult, cur_price * 0.005)
-            sl_dist = max(min_sl_dist, min(raw_sl_dist, max_sl_dist))
-
-            # Anchor the stop just beyond nearby structure (support for longs, resistance for shorts)
-            level = support if is_long else resistance
-            if 0 < s * (cur_price - level) <= max_sl_dist:
-                cand_sl = level - s * (atr * 0.15)
-                bounds = (cur_price - s * min_sl_dist, cur_price - s * max_sl_dist)
-                stop_loss = min(bounds[0], max(bounds[1], cand_sl)) if is_long else max(bounds[0], min(bounds[1], cand_sl))
-            else:
-                stop_loss = cur_price - s * sl_dist
-
+            stop_loss = self._plan_stop(cur_price, atr, effective_atr_mult, support if is_long else resistance, is_long)
             risk = s * (cur_price - stop_loss)
             be_price = cur_price + s * (risk * self.be_rr) # +0.75R Break-Even
             tp1 = cur_price + s * (risk * self.tp1_rr) # +1.2R (Take 50% profit)
             tp2 = cur_price + s * (risk * self.tp2_rr) # +2.2R (Runner target)
+            if self.exit_profile == "barrier":
+                tp1, tp2 = cur_price * (1.0 + s * BARRIER_TP_PCT), 0.0
 
             # Return on Equity (ROE) under the configured leverage
             sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
             be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
             tp1_roe = round(+(s * (tp1 - cur_price) / cur_price) * effective_leverage * 100, 1)
-            tp2_roe = round(+(s * (tp2 - cur_price) / cur_price) * effective_leverage * 100, 1)
+            tp2_roe = round(+(s * (tp2 - cur_price) / cur_price) * effective_leverage * 100, 1) if tp2 else 0.0
 
             reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} ({'-' if is_long else '+'}{round(liq_dist_pct*100, 2)}%).")
             reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe {'above' if is_long else 'below'} liquidation.")
@@ -244,6 +269,7 @@ class SignalGenerator:
                 "liquidation": fmt(liq_price),
             },
             "risk_reward_ratio": round(self.tp1_rr, 1),
+            "max_hold_seconds": BARRIER_MAX_HOLD_SECONDS if self.exit_profile == "barrier" and action != "NEUTRAL" else None,
             "recommended_margin_usd": DEFAULT_POSITION_MARGIN_USD,
             "sizing_rule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
             "confidence_pct": round(dir_conviction * 100, 1),
