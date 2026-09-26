@@ -18,6 +18,7 @@ from .config import (
     SUPPORTED_SYMBOLS,
     SUPPORTED_TIMEFRAMES,
 )
+from .indicators import compute_all_indicators
 from .market_data import to_toobit_symbol
 
 logger = logging.getLogger("auto_trader")
@@ -52,6 +53,41 @@ def _is_fresh_timestamp(timestamp: Any, timeframe: str) -> bool:
         return False
     age = time.time() - candle_time
     return -60 <= age <= _timeframe_seconds(timeframe) * 2 + 30
+
+
+def timeframe_snapshot(raw_klines: List[Dict[str, Any]], symbol: str, timeframe: str, leverage: int) -> Dict[str, Any]:
+    """Latest indicator telemetry for one timeframe, as the auto-trader decides on it."""
+    calculated = compute_all_indicators(raw_klines)
+    latest = dict(calculated["latest"])
+    latest["symbol"] = symbol
+    latest["interval"] = timeframe
+    latest["time"] = calculated.get("series", [{}])[-1].get("time", raw_klines[-1].get("time", 0))
+    latest["leverage"] = int(leverage)
+    return latest
+
+
+def merge_timeframes(latest_by_timeframe: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Entry-timeframe state enriched with higher-timeframe context (shared with the backtest)."""
+    entry_timeframe = "5m" if "5m" in latest_by_timeframe else list(latest_by_timeframe)[-1]
+    state = dict(latest_by_timeframe[entry_timeframe])
+    higher = latest_by_timeframe.get("1h") or latest_by_timeframe.get("15m")
+    if higher:
+        state["htf"] = {
+            "trend": higher.get("trend_state", "NEUTRAL"),
+            "interval": higher.get("interval"),
+            "rsi": higher.get("rsi"),
+            "adx": higher.get("adx"),
+        }
+    state["multi_timeframe"] = {
+        timeframe: {
+            "time": snapshot.get("time"),
+            "trend": snapshot.get("trend_state"),
+            "rsi": snapshot.get("rsi"),
+            "adx": snapshot.get("adx"),
+        }
+        for timeframe, snapshot in latest_by_timeframe.items()
+    }
+    return state
 
 
 class AutoTrader:
@@ -600,8 +636,6 @@ class AutoTrader:
 
     async def _fetch_timeframe_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """Fetch, validate, and calculate one closed-candle timeframe."""
-        from .indicators import compute_all_indicators
-
         async with self._fetch_semaphore:
             raw_klines = await self.market_service.fetch_klines(
                 symbol=symbol,
@@ -610,12 +644,7 @@ class AutoTrader:
             )
         if not raw_klines:
             raise RuntimeError(f"No {timeframe} candles returned for {symbol}")
-        calculated = compute_all_indicators(raw_klines)
-        latest = dict(calculated["latest"])
-        latest["symbol"] = symbol
-        latest["interval"] = timeframe
-        latest["time"] = calculated.get("series", [{}])[-1].get("time", raw_klines[-1].get("time", 0))
-        latest["leverage"] = int(self.settings["leverage"])
+        latest = timeframe_snapshot(raw_klines, symbol, timeframe, self.settings["leverage"])
         if not latest.get("is_closed", True):
             raise RuntimeError(f"Latest {timeframe} candle for {symbol} is not closed")
         if not _is_fresh_timestamp(latest.get("time"), timeframe):
@@ -640,25 +669,7 @@ class AutoTrader:
                     raise snapshot
                 latest_by_timeframe[timeframe] = snapshot
 
-            entry_timeframe = "5m" if "5m" in latest_by_timeframe else timeframes[-1]
-            state = dict(latest_by_timeframe[entry_timeframe])
-            higher = latest_by_timeframe.get("1h") or latest_by_timeframe.get("15m")
-            if higher:
-                state["htf"] = {
-                    "trend": higher.get("trend_state", "NEUTRAL"),
-                    "interval": higher.get("interval"),
-                    "rsi": higher.get("rsi"),
-                    "adx": higher.get("adx"),
-                }
-            state["multi_timeframe"] = {
-                timeframe: {
-                    "time": snapshot.get("time"),
-                    "trend": snapshot.get("trend_state"),
-                    "rsi": snapshot.get("rsi"),
-                    "adx": snapshot.get("adx"),
-                }
-                for timeframe, snapshot in latest_by_timeframe.items()
-            }
+            state = merge_timeframes(latest_by_timeframe)
 
             async with self._decision_semaphore:
                 decision = await self.laya_engine.decide(state)
