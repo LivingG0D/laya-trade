@@ -108,3 +108,16 @@ def test_ema_cross_decisions_fire_only_on_crosses():
     ]
     positions = [d["position"] for d in ema_cross_decisions(states)]
     assert positions == ["NEUTRAL_HOLD", "STRONG_LONG", "NEUTRAL_HOLD", "STRONG_SHORT", "NEUTRAL_HOLD"]
+
+
+def test_tradeable_rate_counts_only_signals_that_pass_the_confidence_gate():
+    from experiments.strategy_baseline import tradeable_rate
+
+    signals = [
+        {"action": "LONG", "confidence_pct": 70.0},
+        {"action": "SHORT", "confidence_pct": 60.0},  # below gate, never trades
+        {"action": "NEUTRAL", "confidence_pct": 90.0},
+        {"action": "LONG", "confidence_pct": 65.0},
+    ]
+    assert tradeable_rate(signals, 65.0) == 0.5
+    assert tradeable_rate([], 65.0) == 0.0

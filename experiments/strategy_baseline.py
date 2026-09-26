@@ -81,6 +81,13 @@ def random_decisions(count: int, rate: float, seed: int) -> List[Dict[str, Any]]
     return out
 
 
+def tradeable_rate(signals: Sequence[Mapping[str, Any]], min_confidence: float) -> float:
+    """Share of bars whose signal is directional and passes the confidence gate."""
+    hits = sum(1 for s in signals if s.get("action") in ("LONG", "SHORT")
+               and float(s.get("confidence_pct", 0.0)) >= min_confidence)
+    return hits / len(signals) if signals else 0.0
+
+
 def ema_cross_decisions(states: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """Long when EMA9 crosses above EMA21, short when it crosses below."""
     out: List[Dict[str, Any]] = []
@@ -248,13 +255,17 @@ async def main() -> int:
             for name, ds in decisions.items():
                 signals = to_signals(ds)
                 if name == engines[0]:
-                    directional_rate = sum(s["action"] != "NEUTRAL" for s in signals) / max(1, len(signals))
+                    directional_rate = tradeable_rate(signals, args.min_confidence)
                 rows.append({"symbol": symbol, "strategy": name,
                              **evaluate(candles, signals, strategy_cfg, costs, window_bars)})
 
+            # SignalGenerator filters drop some random entries; rescale once so the
+            # random baseline's post-filter rate matches the strategy's tradeable rate.
+            probe = tradeable_rate(to_signals(random_decisions(len(states), directional_rate, 10_000)), 0.0)
+            random_rate = min(1.0, directional_rate ** 2 / probe) if probe else directional_rate
             rows.append({"symbol": symbol, "strategy": "flat",
                          **evaluate(candles, [{}] * len(candles), baseline_cfg, costs, window_bars)})
-            seeds = [evaluate(candles, to_signals(random_decisions(len(states), directional_rate, seed)),
+            seeds = [evaluate(candles, to_signals(random_decisions(len(states), random_rate, seed)),
                               baseline_cfg, costs, window_bars) for seed in range(args.seeds)]
             rows.append({"symbol": symbol, "strategy": "random", "directional_rate": directional_rate,
                          **average_rows(seeds)})
@@ -268,7 +279,7 @@ async def main() -> int:
     out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
                                     "rows": rows}, indent=2, default=str))
     print_table(rows)
-    print(f"\nrandom = entries at the first engine's signal rate, same bracket, mean of {args.seeds} seeds")
+    print(f"\nrandom = entries at the first engine's tradeable signal rate, same bracket, mean of {args.seeds} seeds")
     print("Known gaps: " + " ".join(KNOWN_GAPS))
     print(f"Saved {out_path}")
     return 0

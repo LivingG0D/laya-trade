@@ -147,20 +147,21 @@ def _trigger_exit(position: Mapping[str, Any], candle: Mapping[str, Any]) -> Opt
     side = position["side"]
     high = float(candle["high"])
     low = float(candle["low"])
+    open_price = float(candle["open"])
     stop = position["stop"]
     tp1 = position["tp1"]
     tp2 = position["tp2"]
 
     if side == 1:
         if low <= stop:
-            return "STOP", stop
+            return "STOP", min(stop, open_price)  # a gap through the stop fills at the open
         if not position["tp1_hit"] and high >= tp1 > 0:
             return "TP1", tp1
         if position["tp1_hit"] and high >= tp2 > 0:
             return "TP2", tp2
     else:
         if high >= stop:
-            return "STOP", stop
+            return "STOP", max(stop, open_price)
         if not position["tp1_hit"] and low <= tp1 > 0:
             return "TP1", tp1
         if position["tp1_hit"] and low <= tp2 > 0:

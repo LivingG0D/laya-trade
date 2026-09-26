@@ -254,3 +254,34 @@ def test_trades_report_cost_as_share_of_risk():
     # risk 5 per unit; fees 0.1% on entry 100 and exits 110/120 -> 0.1 + 0.055 + 0.06 per unit
     assert trade["cost_r"] == pytest.approx((0.1 + 0.055 + 0.06) / 5)
     assert result["avg_cost_r"] == pytest.approx(trade["cost_r"])
+
+
+def test_stop_gapped_through_fills_at_open_not_stop():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 100.3, 99.8, 99.9),  # wick arms break-even at 100.05
+        candle(3, 99.7, 99.9, 99.5, 99.6),  # opens below the new stop
+    ]
+    signals = [signal(stop=98, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.0018), FREE
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "BREAKEVEN"
+    assert trade["exit_price"] == 99.7
+    assert trade["net_pnl"] < 0
+
+
+def test_short_stop_gapped_through_fills_at_open():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 101, 99, 100),
+        candle(3, 106, 107, 105, 106),  # opens above the 105 stop
+    ]
+    signals = [signal("SHORT", 105, 90, 85), {}, {}]
+
+    result = evaluate_signal_sequence(candles, signals, EvaluationConfig(), FREE)
+
+    assert result["trades"][0]["exit_price"] == 106
