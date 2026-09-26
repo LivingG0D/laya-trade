@@ -102,3 +102,24 @@ def test_load_history_falls_back_to_cache_when_network_fails(tmp_path):
 
     cached = asyncio.run(run(T0 + 3100 * STEP, httpx.MockTransport(down)))
     assert cached[-1]["time"] == first[-1]["time"]
+
+
+def test_fetch_range_retries_rate_limits(tmp_path):
+    requests = []
+    good = fake_binance(requests)
+    calls = {"n": 0}
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, json={"code": -1003})
+        return good(request)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(flaky)) as client:
+            return await fetch_range(client, "BTCUSDT.P", "5m", T0 + 3900 * STEP, T0 + BARS * STEP,
+                                     retry_delay=0)
+
+    candles = asyncio.run(run())
+    assert calls["n"] == 2
+    assert candles[-1]["time"] == T0 + (BARS - 1) * STEP
