@@ -150,3 +150,107 @@ def test_evaluator_rejects_mismatched_signal_length():
             [candle(1, 100, 101, 99, 100), candle(2, 100, 101, 99, 100)],
             [signal()],
         )
+
+
+FREE = CostModel(fee_bps=0, slippage_bps=0, funding_bps_per_bar=0)
+
+
+def test_breakeven_trigger_moves_stop_to_entry_for_later_bars():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 103, 99, 102),  # +3% high crosses the 2% trigger
+        candle(3, 102, 102, 99.9, 100),  # dips below entry, far above the 95 stop
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.02), FREE
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "STOP"
+    assert trade["exit_price"] == pytest.approx(100 * 1.0005)
+
+
+def test_breakeven_off_by_default():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 103, 99, 102),
+        candle(3, 102, 102, 99.9, 100),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(candles, signals, EvaluationConfig(), FREE)
+
+    assert result["trades"][0]["exit_reason"] == "END_OF_DATA"
+
+
+def test_tp1_fill_moves_stop_to_breakeven():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 111, 99, 108),  # TP1 fills, trigger far away
+        candle(3, 108, 108, 99.9, 100),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.5), FREE
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "STOP"
+    assert trade["exit_price"] == pytest.approx(100 * 1.0005)
+    assert trade["net_pnl"] > 0  # half booked at TP1
+
+
+def test_opposing_signal_exits_at_next_open():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 102, 99, 101),
+        candle(3, 101, 102, 100, 101),
+        candle(4, 101, 102, 100, 101),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, signal("SHORT", 106, 90, 85, 80), {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(opposing_exit_confidence=70), FREE
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "OPPOSING"
+    assert trade["exit_price"] == 101
+    assert result["trade_count"] == 1
+
+
+def test_weak_opposing_signal_does_not_exit():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 102, 99, 101),
+        candle(3, 101, 102, 100, 101),
+        candle(4, 101, 102, 100, 101),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, signal("SHORT", 106, 90, 85, 60), {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(opposing_exit_confidence=70), FREE
+    )
+
+    assert result["trades"][0]["exit_reason"] == "END_OF_DATA"
+
+
+def test_trades_report_cost_as_share_of_risk():
+    candles = [
+        candle(1, 100, 101, 99, 100),
+        candle(2, 100, 111, 99, 108),
+        candle(3, 108, 121, 107, 120),
+    ]
+    signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
+
+    result = evaluate_signal_sequence(
+        candles, signals, EvaluationConfig(), CostModel(fee_bps=10, slippage_bps=0)
+    )
+
+    trade = result["trades"][0]
+    # risk 5 per unit; fees 0.1% on entry 100 and exits 110/120 -> 0.1 + 0.055 + 0.06 per unit
+    assert trade["cost_r"] == pytest.approx((0.1 + 0.055 + 0.06) / 5)
+    assert result["avg_cost_r"] == pytest.approx(trade["cost_r"])

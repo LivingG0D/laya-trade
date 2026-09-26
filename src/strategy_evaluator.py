@@ -38,6 +38,12 @@ class EvaluationConfig:
     max_leverage: float = 10.0
     min_confidence_pct: float = 55.0
     allow_short: bool = True
+    # Live-exit mirrors, off by default. Break-even: once price moves this
+    # fraction in favour (or TP1 fills), later bars use entry +/- offset as stop.
+    breakeven_trigger_pct: float = 0.0
+    breakeven_offset_pct: float = 0.0005
+    # Close at the next open when an opposite signal reaches this confidence.
+    opposing_exit_confidence: Optional[float] = None
 
     def __post_init__(self) -> None:
         if not isfinite(self.initial_equity) or self.initial_equity <= 0:
@@ -48,6 +54,8 @@ class EvaluationConfig:
             raise ValueError("max_leverage must be positive")
         if not isfinite(self.min_confidence_pct) or not 0 <= self.min_confidence_pct <= 100:
             raise ValueError("min_confidence_pct must be in [0, 100]")
+        if not all(isfinite(v) and v >= 0 for v in (self.breakeven_trigger_pct, self.breakeven_offset_pct)):
+            raise ValueError("break-even settings must be finite and non-negative")
 
 
 def walk_forward_windows(
@@ -185,6 +193,11 @@ def _close_quantity(
     return equity + gross - exit_fee
 
 
+def _move_to_breakeven(position: Dict[str, Any], offset_pct: float) -> None:
+    position["stop"] = position["entry"] * (1.0 + position["side"] * offset_pct)
+    position["be_moved"] = True
+
+
 def _process_position(
     position: Dict[str, Any],
     candle: Mapping[str, Any],
@@ -193,6 +206,7 @@ def _process_position(
     slippage_rate: float,
     fee_rate: float,
     funding_rate: float,
+    config: EvaluationConfig,
 ) -> tuple[float, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Apply funding and any conservative intrabar exit to an open position."""
     close = float(candle["close"])
@@ -202,7 +216,13 @@ def _process_position(
 
     exit_event = _trigger_exit(position, candle)
     trade: Optional[Dict[str, Any]] = None
+    breakeven_on = config.breakeven_trigger_pct > 0
     if exit_event is None:
+        if breakeven_on and not position["be_moved"]:
+            favourable = float(candle["high"]) if position["side"] == 1 else float(candle["low"])
+            move = position["side"] * (favourable - position["entry"]) / position["entry"]
+            if move >= config.breakeven_trigger_pct:
+                _move_to_breakeven(position, config.breakeven_offset_pct)
         return equity, position, trade
 
     reason, trigger = exit_event
@@ -218,6 +238,8 @@ def _process_position(
             equity,
         )
         position["tp1_hit"] = True
+        if breakeven_on and not position["be_moved"]:
+            _move_to_breakeven(position, config.breakeven_offset_pct)
         return equity, position, trade
 
     position["exit_time"] = candle.get("time")
@@ -254,7 +276,8 @@ def _finish_trade(
             equity,
         )
 
-    net_pnl = position["realized_gross"] - position["entry_fee"] - position["exit_fees"] - position["funding"]
+    costs = position["entry_fee"] + position["exit_fees"] + position["funding"]
+    net_pnl = position["realized_gross"] - costs
     trade = {
         "side": "LONG" if position["side"] == 1 else "SHORT",
         "entry_time": position["entry_time"],
@@ -266,8 +289,16 @@ def _finish_trade(
         "net_pnl": net_pnl,
         "r_multiple": net_pnl / position["risk_budget"] if position["risk_budget"] else 0.0,
         "risk_budget": position["risk_budget"],
+        "cost_r": costs / position["risk_budget"] if position["risk_budget"] else 0.0,
     }
     return equity, trade
+
+
+def _is_opposing(position: Mapping[str, Any], signal: Mapping[str, Any], config: EvaluationConfig) -> bool:
+    if config.opposing_exit_confidence is None or not signal:
+        return False
+    side = _signal_side(signal)
+    return side == -position["side"] and _signal_confidence(signal) >= config.opposing_exit_confidence
 
 
 def evaluate_signal_sequence(
@@ -347,6 +378,7 @@ def evaluate_signal_sequence(
                 "tp1": tp1,
                 "tp2": tp2,
                 "tp1_hit": False,
+                "be_moved": False,
                 "remaining_qty": quantity,
                 "realized_gross": 0.0,
                 "entry_fee": entry_fee,
@@ -354,6 +386,18 @@ def evaluate_signal_sequence(
                 "funding": 0.0,
                 "risk_budget": risk_budget,
             }
+
+        elif _is_opposing(position, signals[index - 1], config):
+            position["exit_time"] = candle.get("time")
+            equity, trade = _finish_trade(
+                position, float(candle["open"]), "OPPOSING", index, slippage_rate, fee_rate, equity,
+            )
+            trades.append(trade)
+            position = None
+            marked_equity = equity
+            peak_equity = max(peak_equity, marked_equity)
+            max_drawdown = max(max_drawdown, (peak_equity - marked_equity) / max(peak_equity, 1e-12) * 100.0)
+            continue
 
         equity, position, trade = _process_position(
             position,
@@ -363,6 +407,7 @@ def evaluate_signal_sequence(
             slippage_rate,
             fee_rate,
             funding_rate,
+            config,
         )
         if trade is not None:
             trades.append(trade)
@@ -400,6 +445,7 @@ def evaluate_signal_sequence(
         "trade_count": len(trades),
         "win_rate_pct": len(wins) / len(trades) * 100.0 if trades else 0.0,
         "expectancy_r": sum(trade["r_multiple"] for trade in trades) / len(trades) if trades else 0.0,
+        "avg_cost_r": sum(trade["cost_r"] for trade in trades) / len(trades) if trades else 0.0,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
         "max_drawdown_pct": max_drawdown,
         "skipped_low_confidence": skipped_low_confidence,
