@@ -74,7 +74,12 @@ async def load_history(
 
     cached: List[Dict[str, Any]] = json.loads(path.read_text()) if path.exists() else []
     if cached and cached[0]["time"] <= start + step:
-        tail = await fetch_range(client, symbol, interval, cached[-1]["time"] + step, now)
+        try:
+            tail = await fetch_range(client, symbol, interval, cached[-1]["time"] + step, now)
+        except httpx.HTTPError as exc:
+            # Offline or rate limited: the cache still covers the window, minus the newest bars.
+            print(f"history: using cache for {symbol} {interval} ({exc!r})", file=sys.stderr)
+            tail = []
         by_time = {c["time"]: c for c in cached + tail}
         candles = [by_time[t] for t in sorted(by_time)]
     else:

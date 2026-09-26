@@ -86,3 +86,19 @@ def test_load_history_reuses_cache_and_fetches_only_the_tail(tmp_path):
     assert first[-1]["time"] == T0 + 2999 * STEP
     times = [c["time"] for c in second]
     assert all(b - a == STEP for a, b in zip(times, times[1:]))
+
+
+def test_load_history_falls_back_to_cache_when_network_fails(tmp_path):
+    requests = []
+
+    async def run(now, transport):
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await load_history(client, "BTCUSDT.P", "5m", 5, tmp_path, now=now)
+
+    first = asyncio.run(run(T0 + 3000 * STEP, httpx.MockTransport(fake_binance(requests))))
+
+    def down(request):
+        raise httpx.ConnectError("offline")
+
+    cached = asyncio.run(run(T0 + 3100 * STEP, httpx.MockTransport(down)))
+    assert cached[-1]["time"] == first[-1]["time"]
