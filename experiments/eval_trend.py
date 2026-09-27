@@ -118,6 +118,8 @@ async def load_funding(client, symbol: str, start_ms: int) -> Tuple[np.ndarray, 
     """Full funding history (seconds, rate), cached; pages forward by startTime."""
     path = CACHE / f"{symbol.upper().replace('.', '_')}_funding.json"
     rows: List[dict] = json.loads(path.read_text()) if path.exists() else []
+    if rows and int(rows[0]["fundingTime"]) > start_ms + 86400_000:
+        rows = []  # cache starts later than asked (or the symbol listed later): refetch it all
     cursor = int(rows[-1]["fundingTime"]) + 1 if rows else start_ms
     while True:
         batch = await _get(client, "/fapi/v1/fundingRate",
