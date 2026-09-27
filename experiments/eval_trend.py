@@ -17,7 +17,6 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -201,7 +200,6 @@ def main() -> int:
     raw = asyncio.run(load_all())
     report: Dict[str, Any] = {"args": vars(args), "strategies": {}, "buy_and_hold": {}}
     variants = [("1d", False), ("4h", False), ("1d", True)]
-    lines = []
     for tf, long_only in variants:
         data = {}
         for symbol in symbols:
