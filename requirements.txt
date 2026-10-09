@@ -5,3 +5,12 @@ websockets>=12.0
 numpy>=1.26.0
 huggingface_hub>=0.25.0
 pydantic>=2.8.0
+python-dotenv>=1.0.0
+# Research scripts and the gradient-boosting signal
+pandas>=2.2.0
+scikit-learn>=1.5.0
+joblib>=1.4.0
+# Tests
+pytest>=8.0.0
+# Optional, only for the Laya model runtimes (src/laya_engine.py imports them lazily):
+# onnxruntime, transformers, torch and the laya package
