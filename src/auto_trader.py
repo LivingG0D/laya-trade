@@ -567,7 +567,7 @@ class AutoTrader:
                 errors.append("position missing symbol")
                 continue
             try:
-                result = await self.exchange.flash_close(symbol)
+                result = await self.close_trade(symbol, reason="emergency stop")
                 if result and result.get("success"):
                     closed_count += 1
                 else:
@@ -891,10 +891,7 @@ class AutoTrader:
             table = self._edge_table(display_symbol)
             gate = table.allows if table is not None else (lambda _signal: False)
         if opposing_exit(policy, side_sign, analysis, gate):
-            result = await self.exchange.flash_close(symbol)
-            if result.get("success"):
-                self._handle_trade_closed(position, reason=f"opposing {analysis.get('action')}")
-            return
+            await self.close_trade(symbol, reason=f"opposing {analysis.get('action')}")
 
     async def _execute_candidate(self, candidate: Dict[str, Any]) -> None:
         """Validate, size, and dispatch one ranked candidate under the portfolio lock."""
@@ -999,12 +996,10 @@ class AutoTrader:
         for trade in expired:
             symbol = trade.get("exchange_symbol") or trade.get("symbol")
             try:
-                result = await self.exchange.flash_close(symbol)
+                result = await self.close_trade(symbol, reason="time stop")
             except Exception as exc:
                 result = {"success": False, "message": str(exc)}
-            if result and result.get("success"):
-                self._handle_trade_closed(trade, reason="time stop")
-            elif not trade.get("time_stop_failed"):
+            if not (result and result.get("success")) and not trade.get("time_stop_failed"):
                 trade["time_stop_failed"] = True  # log once, retry every tick
                 self.add_log("danger", "TIME_STOP",
                              f"Time stop close failed for {trade.get('symbol')}: "
@@ -1122,6 +1117,20 @@ class AutoTrader:
             return
         await self._execute_candidate(candidate)
 
+    async def close_trade(self, symbol: str, reason: str) -> Dict[str, Any]:
+        """Market-close a position and book it when the auto-trader manages it.
+
+        The one exit path for time stops, opposing signals, emergency stops and
+        manual closes; bracket fills on the exchange are booked by ``tick``.
+        """
+        result = await self.exchange.flash_close(symbol)
+        trade = self.get_active_trade(symbol)
+        if result and result.get("success") and trade is not None:
+            # The venue's realized PnL when it reports one, else the last mark snapshot.
+            reported = {"realizedPnl": result["realizedPnl"]} if "realizedPnl" in result else {}
+            self._handle_trade_closed({**trade, **reported}, reason=reason)
+        return result
+
     @staticmethod
     def _resolve_realized_pnl(payload: Dict[str, Any]) -> tuple[Optional[float], str]:
         """Best-available PnL for a closed trade.
@@ -1177,8 +1186,9 @@ class AutoTrader:
 
         cooldown = int(self.settings["cooldown_seconds"])
         self.stats["cooldown_until"] = time.time() + cooldown
-        self.status = "COOLDOWN"
-        self.status_message = f"Cooldown active ({cooldown}s remaining). Guarding against volatility whipsaws."
+        if self.status != "HALTED":  # a close while halted (time or emergency stop) keeps the halt visible
+            self.status = "COOLDOWN"
+            self.status_message = f"Cooldown active ({cooldown}s remaining). Guarding against volatility whipsaws."
         self._remove_active_trade(sym)
         self._symbol_cooldowns[_position_key(sym)] = time.time() + int(self.settings["cooldown_seconds"])
         self._save_state()

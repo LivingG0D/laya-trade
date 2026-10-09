@@ -442,12 +442,9 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
 
 @app.post("/api/toobit/close")
 async def close_toobit_position(req: ToobitCloseRequest):
-    """Execute flashClose order on Toobit."""
+    """Market-close a position; a trade the auto-trader manages is booked toward its loss limits."""
     try:
-        res = await exchange.flash_close(req.symbol)
-        if res.get("success"):
-            auto_trader._remove_active_trade(req.symbol)
-        return res
+        return await auto_trader.close_trade(req.symbol, reason="manual close")
     except Exception as e:
         logger.error(f"Error closing position {req.symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
