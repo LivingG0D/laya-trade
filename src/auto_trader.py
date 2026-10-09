@@ -7,7 +7,6 @@ opposing signal reversal exits, and strict portfolio circuit breakers.
 
 import asyncio
 import json
-import math
 import logging
 import time
 from pathlib import Path
@@ -22,6 +21,7 @@ from .config import (
 )
 from .indicators import compute_all_indicators
 from .edge_gate import EdgeTable, load_tables
+from .exchange import quantity_to_step
 from .market_data import to_toobit_symbol
 from .trade_management import ExitPolicy, breakeven_stop, fallback_bracket, opposing_exit, time_stop_due
 from .trade_plan import TradePlan
@@ -104,13 +104,13 @@ class AutoTrader:
 
     def __init__(
         self,
-        toobit_client,
+        exchange,
         market_service,
         laya_engine,
         signal_generator,
         ws_manager=None
     ):
-        self.toobit_client = toobit_client
+        self.exchange = exchange  # live Toobit or the simulated exchange (src/exchange.py)
         self.market_service = market_service
         self.laya_engine = laya_engine
         self.signal_generator = signal_generator
@@ -364,12 +364,12 @@ class AutoTrader:
     def _mode_mismatch_reason(self) -> Optional[str]:
         """Return a safety reason when configured and exchange modes differ."""
         expected_demo = self.settings.get("mode") == "demo"
-        client_is_demo = bool(getattr(self.toobit_client, "is_demo", False))
+        client_is_demo = bool(self.exchange.is_demo)
         if expected_demo != client_is_demo:
             expected_mode = "DEMO" if expected_demo else "LIVE"
             actual_mode = "DEMO" if client_is_demo else "LIVE"
             return f"Configured {expected_mode} mode does not match the connected {actual_mode} client."
-        if not expected_demo and not getattr(self.toobit_client, "api_key", ""):
+        if not expected_demo and not self.exchange.api_key:
             return "Live mode requires a connected Toobit API key."
         return None
 
@@ -549,7 +549,7 @@ class AutoTrader:
         errors: List[str] = []
         for symbol in sorted(set(symbols)):
             try:
-                result = await self.toobit_client.cancel_all_orders(symbol)
+                result = await self.exchange.cancel_all_orders(symbol)
                 if not result or not result.get("success"):
                     message = (result or {}).get("message", "cancellation was not confirmed")
                     errors.append(f"{symbol}: {message}")
@@ -567,7 +567,7 @@ class AutoTrader:
                 errors.append("position missing symbol")
                 continue
             try:
-                result = await self.toobit_client.flash_close(symbol)
+                result = await self.exchange.flash_close(symbol)
                 if result and result.get("success"):
                     closed_count += 1
                 else:
@@ -594,7 +594,7 @@ class AutoTrader:
             errors: List[str] = []
             open_positions: List[Dict[str, Any]] = []
             try:
-                open_positions = await self.toobit_client.get_positions(symbol=None)
+                open_positions = await self.exchange.get_positions(symbol=None)
             except Exception as exc:
                 errors.append(f"position query: {exc}")
 
@@ -614,7 +614,7 @@ class AutoTrader:
             errors.extend(close_result["errors"])
 
             try:
-                remaining_positions = await self.toobit_client.get_positions(symbol=None)
+                remaining_positions = await self.exchange.get_positions(symbol=None)
             except Exception as exc:
                 remaining_positions = []
                 errors.append(f"final position verification: {exc}")
@@ -853,7 +853,7 @@ class AutoTrader:
                 fallback_stop, fallback_tp1, _ = fallback_bracket(side_sign, entry_price, policy.leverage)
                 stop_loss, take_profit = stop_loss or fallback_stop, take_profit or fallback_tp1
                 try:
-                    result = await self.toobit_client.set_position_tpsl(
+                    result = await self.exchange.set_position_tpsl(
                         symbol=symbol,
                         side=side,
                         stop_loss=stop_loss,
@@ -873,7 +873,7 @@ class AutoTrader:
             new_stop = breakeven_stop(policy, side_sign, entry_price, take_profit, mark_price)
             if new_stop is not None:
                 try:
-                    result = await self.toobit_client.set_position_tpsl(
+                    result = await self.exchange.set_position_tpsl(
                         symbol=symbol,
                         side=side,
                         stop_loss=new_stop,
@@ -891,20 +891,10 @@ class AutoTrader:
             table = self._edge_table(display_symbol)
             gate = table.allows if table is not None else (lambda _signal: False)
         if opposing_exit(policy, side_sign, analysis, gate):
-            result = await self.toobit_client.flash_close(symbol)
+            result = await self.exchange.flash_close(symbol)
             if result.get("success"):
                 self._handle_trade_closed(position, reason=f"opposing {analysis.get('action')}")
             return
-
-        if self.settings.get("mode") == "demo":
-            stop_loss = float(position.get("stopLoss", trade.get("stop_loss", 0.0)))
-            take_profit = float(position.get("takeProfit2", trade.get("take_profit_2", 0.0)))
-            hit = (side == "LONG" and ((stop_loss > 0 and mark_price <= stop_loss) or (take_profit > 0 and mark_price >= take_profit)))
-            hit = hit or (side == "SHORT" and ((stop_loss > 0 and mark_price >= stop_loss) or (take_profit > 0 and mark_price <= take_profit)))
-            if hit:
-                result = await self.toobit_client.flash_close(symbol)
-                if result.get("success"):
-                    self._handle_trade_closed(position, reason="demo SL/TP")
 
     async def _execute_candidate(self, candidate: Dict[str, Any]) -> None:
         """Validate, size, and dispatch one ranked candidate under the portfolio lock."""
@@ -921,7 +911,7 @@ class AutoTrader:
             self.add_log("warning", "ORDER", f"Skipping {symbol}: signal is missing a valid SL or TP1.")
             return
 
-        balance = await self.toobit_client.get_balance()
+        balance = await self.exchange.get_balance()
         available_margin = float(balance.get("availableBalance", 0.0))
         total_equity = float(balance.get("totalEquity", balance.get("totalBalance", 0.0)))
         if available_margin < 0.50:
@@ -939,17 +929,14 @@ class AutoTrader:
             target_margin = max(0.50, float(self.settings["fixed_margin_usd"]))
         target_margin = min(target_margin, available_margin * 0.20)
         notional_value = target_margin * leverage
-        rules = await self.toobit_client.get_symbol_rules(symbol)
+        rules = await self.exchange.get_symbol_rules(symbol)
         multiplier = float(rules.get("multiplier", 1.0))
         step_size = max(float(rules.get("step_size", 0.001)), 1e-8)
         min_qty = float(rules.get("min_qty", 0.001))
         contract_unit_value = entry_price * multiplier
         if contract_unit_value <= 0 or notional_value <= 0:
             return
-        raw_quantity = notional_value / contract_unit_value
-        step_text = f"{step_size:.8f}".rstrip("0")
-        decimals = len(step_text.split(".")[1]) if "." in step_text else 0
-        quantity = round(math.floor(raw_quantity / step_size + 1e-9) * step_size, decimals)  # epsilon: 1.0 // 0.001 == 999
+        quantity = quantity_to_step(notional_value / contract_unit_value, step_size)
         if quantity < min_qty:
             minimum_margin = (min_qty * contract_unit_value) / leverage
             if minimum_margin > available_margin * 0.40:
@@ -959,7 +946,7 @@ class AutoTrader:
         final_margin = (quantity * contract_unit_value) / leverage
 
         async with self._lock:
-            result = await self.toobit_client.create_order(
+            result = await self.exchange.create_order(
                 symbol=symbol,
                 side=order_side,
                 order_type="MARKET",
@@ -1012,7 +999,7 @@ class AutoTrader:
         for trade in expired:
             symbol = trade.get("exchange_symbol") or trade.get("symbol")
             try:
-                result = await self.toobit_client.flash_close(symbol)
+                result = await self.exchange.flash_close(symbol)
             except Exception as exc:
                 result = {"success": False, "message": str(exc)}
             if result and result.get("success"):
@@ -1076,7 +1063,7 @@ class AutoTrader:
         # 5. Fetch Open Positions across account
         open_positions = []
         try:
-            open_positions = await self.toobit_client.get_positions(symbol=None)
+            open_positions = await self.exchange.get_positions(symbol=None)
         except Exception as e:
             logger.warning(f"AutoTrader could not query positions: {e}")
             return

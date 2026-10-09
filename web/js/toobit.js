@@ -455,7 +455,6 @@ async function simulateDemoTrade(side) {
       body: JSON.stringify({
         symbol: deps.getSymbol(),
         side: side,
-        quantity: 100000,
         entryPrice: deps.getFallbackPrice() || null,
         leverage: 50
       })
@@ -464,8 +463,10 @@ async function simulateDemoTrade(side) {
     if (data.success) {
       showToast(`Simulated ${side.toLowerCase()} opened on ${deps.getSymbol()} at 50x.`, "bull");
       playSignalChime(side === "LONG");
+    } else {
+      showToast(data.message || "Could not simulate a position.", "error");
     }
-    // Simulating switches the server to demo; refresh the Live/Demo labels to match
+    // Simulating while disconnected switches the server to demo; refresh the Live/Demo labels to match
     await fetchToobitStatus();
     await fetchToobitPositions();
   } catch (e) {

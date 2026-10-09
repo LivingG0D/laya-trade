@@ -46,7 +46,7 @@ def make_trader(tmp_path, monkeypatch):
         flash_close=AsyncMock(return_value={"success": True}),
     )
     trader = AutoTrader(
-        toobit_client=client,
+        exchange=client,
         market_service=FakeMarketService(),
         laya_engine=SimpleNamespace(decide=AsyncMock(return_value={})),
         signal_generator=SimpleNamespace(generate_signal=lambda *a, **k: {}),
