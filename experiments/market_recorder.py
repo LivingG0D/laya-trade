@@ -98,7 +98,8 @@ async def fetch_series(client: httpx.AsyncClient, path: str, symbol: str, start_
     out: Dict[int, dict] = {}
     cursor = end_ms
     while cursor >= start_ms:
-        batch = await get_json(client, BINANCE_FUTURES_REST_URL + path, {"symbol": symbol, "period": "15m", "limit": limit, "endTime": cursor})
+        batch = await get_json(client, BINANCE_FUTURES_REST_URL + path,
+                               {"symbol": symbol, "period": "15m", "limit": limit, "endTime": cursor})
         if not batch:
             break
         for point in batch:
@@ -118,8 +119,8 @@ async def backfill(client: httpx.AsyncClient, symbol: str, days: float = 29.5) -
     end_ms = int(time.time() * 1000)
     start_ms = end_ms - int(days * 86400 * 1000)
     series = {name: await fetch_series(client, path, sym, start_ms, end_ms) for name, (path, _) in SERIES.items()}
-    funding = await get_json(client, BINANCE_FUTURES_REST_URL + "/fapi/v1/fundingRate", {"symbol": sym, "startTime": start_ms - 86400_000,
-                                                          "endTime": end_ms, "limit": 1000})
+    funding = await get_json(client, BINANCE_FUTURES_REST_URL + "/fapi/v1/fundingRate",
+                             {"symbol": sym, "startTime": start_ms - 86400_000, "endTime": end_ms, "limit": 1000})
     return merge_series(symbol, series, funding)
 
 

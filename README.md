@@ -30,23 +30,28 @@ Default asset: **`BTCUSDT.P`** (Toobit contract `BTC-SWAP-USDT`, with instant sw
 ```
 laya-trade/
 ├── src/
-│   ├── __init__.py
-│   ├── config.py              # Configuration & exchange endpoints
+│   ├── config.py              # Configuration, exchange endpoints, cost and risk defaults
 │   ├── market_data.py         # Toobit & Binance Futures REST / WebSocket client
+│   ├── market_snapshot.py     # Closed-candle decision state (auto-trader, dashboard, backtest)
 │   ├── indicators.py          # Vectorized technical indicator suite (EMA, RSI, MACD, BB, ATR)
-│   ├── laya_engine.py         # Laya GGUF model manager and decision runner
-│   ├── toobit_client.py       # Toobit HMAC SHA-256 API client & AI position advisor
-│   ├── signal_generator.py    # Trade plan synthesis (Entry, SL, TP, RRR)
+│   ├── laya_engine.py         # Laya model runtimes (ONNX / native / fallback) and decisions
+│   ├── signal_generator.py    # Decision -> signal: trade plan plus display fields
+│   ├── trade_plan.py          # The trade plan every signal carries, and its one parser
+│   ├── trade_management.py    # Exit rules for open positions, shared by live, demo and backtest
+│   ├── exchange.py            # The exchange seam (interface + quantity rounding)
+│   ├── toobit_client.py       # Live adapter: Toobit HMAC SHA-256 signed API
+│   ├── simulated_exchange.py  # Demo adapter: virtual account marked to live prices
+│   ├── auto_trader.py         # Autonomous trading supervisor and circuit breakers
+│   ├── position_advice.py     # Plain-language suggestions for the position card
+│   ├── strategy_evaluator.py  # Backtest evaluator and cost model
+│   ├── edge_gate.py           # Outcome-based trade gate (edge tables)
 │   └── app.py                 # FastAPI backend, Toobit REST routes & WebSockets
+├── experiments/               # Research scripts; harness.py is their shared evaluation
 ├── web/                       # Modern Dark-Themed WebUI
-│   ├── index.html             # Trading dashboard layout & Toobit modal
-│   ├── style.css              # Responsive dark-theme styling
-│   └── app.js                 # TradingView chart, position sync & AI suggestions
-├── tests/
-│   └── test_toobit.py         # Unit tests for ToobitClient & AI suggestion engine
+├── tests/                     # pytest suite (run: python -m pytest)
 ├── main.py                    # Application launcher
 ├── requirements.txt           # Python dependencies
-└── .gitignore                 # Excludes models, binaries, and local secrets
+└── GLOSSARY.md                # Domain terms used across the code
 ```
 
 ---
