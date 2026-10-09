@@ -529,5 +529,35 @@ def test_position_advice_accepts_current_uppercase_decision_schema():
     assert "80% bullish" in active_result["suggestion"]
 
 
+def test_flash_close_market_fallback_reports_success():
+    """When flashClose fails, the reduce-only market close must not demand entry protection."""
+    from unittest.mock import AsyncMock
+
+    client = ToobitClient("test-key", "test-secret", is_demo=False)
+    client._last_positions = [{"symbol": "BTC-SWAP-USDT", "side": "LONG"}]
+    client.get_positions = AsyncMock(return_value=[{"symbol": "BTC-SWAP-USDT", "side": "LONG", "quantity": 0.01}])
+    calls = []
+
+    async def fake_send(method, endpoint, params=None, **_kwargs):
+        calls.append((endpoint, dict(params or {})))
+        if endpoint.endswith("/flashClose"):
+            raise RuntimeError("flash close unavailable")
+        return {"orderId": "close-order"}
+
+    client._send_signed_request = fake_send
+
+    async def scenario():
+        result = await client.flash_close("BTCUSDT.P")
+        await client.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result["success"] is True
+    assert calls[-1][0] == "/api/v1/futures/order"
+    assert calls[-1][1]["side"] == "SELL_CLOSE"
+    assert not any(endpoint.endswith("trading-stop") for endpoint, _ in calls)
+
+
 if __name__ == "__main__":
     asyncio.run(run_tests())

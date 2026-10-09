@@ -1007,11 +1007,11 @@ class ToobitClient:
             toobit_side = "BUY_OPEN"
         elif side_norm in ("BUY_CLOSE",):
             order_side = "BUY"
-            pos_side = "LONG"
+            pos_side = "SHORT"  # buying closes a short
             toobit_side = "BUY_CLOSE"
         elif side_norm in ("SELL_CLOSE",):
             order_side = "SELL"
-            pos_side = "SHORT"
+            pos_side = "LONG"
             toobit_side = "SELL_CLOSE"
         else:
             order_side = "SELL"
@@ -1097,6 +1097,11 @@ class ToobitClient:
                     res = await self._send_signed_request("POST", "/api/v1/futures/order", params)
                 else:
                     raise e
+
+            if "CLOSE" in toobit_side:
+                # A close reduces an existing position: there is nothing new to protect.
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "side": order_side,
+                        "quantity": quantity, "data": res}
 
             # 3. Attach and verify protective orders before reporting success
             protection = await self._attach_entry_protection(
