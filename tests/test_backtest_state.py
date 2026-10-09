@@ -66,12 +66,13 @@ def test_engine_split_reproduces_live_decision():
     engine._agent = FakeAgent()
     live = asyncio.run(engine.decide(dict(LIVE_STATE)))
 
-    model = engine._agent_decisions([dict(LIVE_STATE)])[0]
-    blended = engine._blend(model, engine._fallback_decision(dict(LIVE_STATE), 0.0))
+    assert engine.runtime == "agent"
+    model = engine.agent_decisions([dict(LIVE_STATE)])[0]
+    blended = engine.blend(model, engine.fallback_decision(dict(LIVE_STATE), 0.0))
 
     for key in ("position", "long_prob", "short_prob", "hold_prob", "directional_conviction"):
         assert blended[key] == live[key]
-    assert engine._agent.texts[0] == engine._agent.texts[1] == engine._agent_summary(LIVE_STATE)
+    assert engine._agent.texts[0] == engine._agent.texts[1] == engine.agent_summary(LIVE_STATE)
 
 
 def test_closed_window_excludes_candles_not_closed_at_bar_close():
@@ -146,3 +147,20 @@ def test_dashboard_and_auto_trader_decide_on_the_same_state(tmp_path, monkeypatc
         for row in state["multi_timeframe"].values():
             row.pop("time")
     assert dashboard == engine.states[0]
+
+
+def test_batch_path_matches_single_decisions_and_reuses_the_cache():
+    from src.laya_engine import LayaEngine
+
+    def without_latency(decisions):
+        return [{k: v for k, v in d.items() if k != "latency_ms"} for d in decisions]
+
+    engine = LayaEngine(device="cpu")
+    engine._agent = FakeAgent()
+    states = [dict(LIVE_STATE), dict(LIVE_STATE, price=101.0, rsi=40.0)]
+    cache = {}
+    batch = without_latency(asyncio.run(engine.decide_batch(states, agent_cache=cache)))
+    assert len(cache) == 2 and len(engine._agent.texts) == 2
+    assert without_latency(asyncio.run(engine.decide_batch(states, agent_cache=cache))) == batch
+    assert len(engine._agent.texts) == 2  # second run: all cache hits
+    assert without_latency([asyncio.run(engine.decide(state)) for state in states]) == batch

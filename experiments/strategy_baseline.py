@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import random
@@ -56,6 +55,7 @@ KNOWN_GAPS = [
     "Sizing is fixed-risk; live uses fixed margin. Compare results in R.",
     "No order-book or funding context (the live auto-trader does not fetch them either).",
     "Batched model inference can differ from single calls in the last decimals.",
+    "Decision latency is not simulated: live decides a few seconds after the bar closes.",
 ]
 
 
@@ -128,19 +128,17 @@ def build_states(history: Dict[str, List[Dict[str, Any]]], symbol: str, start: i
     return candles, states
 
 
-def model_decisions(engine, states: List[Dict[str, Any]], cache_path: Path) -> List[Dict[str, Any]]:
-    """Model-only decisions, cached by the hash of the exact text the model sees."""
+def warm_agent_cache(engine, states: List[Dict[str, Any]], cache_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Native-model decisions for every state, cached on disk by the hash of the exact text the model sees."""
     cache: Dict[str, Dict[str, Any]] = json.loads(cache_path.read_text()) if cache_path.exists() else {}
-    keys = [hashlib.sha256(engine._agent_summary(s).encode()).hexdigest() for s in states]
-    missing = [i for i, k in enumerate(keys) if k not in cache]
     chunk = 512
-    for n in range(0, len(missing), chunk):
-        idx = missing[n:n + chunk]
-        for i, decision in zip(idx, engine._agent_decisions([states[i] for i in idx])):
-            cache[keys[i]] = decision
-        print(f"    model {min(n + chunk, len(missing))}/{len(missing)}", file=sys.stderr)
-        cache_path.write_text(json.dumps(cache))
-    return [cache[k] for k in keys]
+    for n in range(0, len(states), chunk):
+        before = len(cache)
+        engine.agent_decisions(states[n:n + chunk], cache)
+        if len(cache) > before:
+            print(f"    model {min(n + chunk, len(states))}/{len(states)}", file=sys.stderr)
+            cache_path.write_text(json.dumps(cache))
+    return cache
 
 
 def evaluate(candles, signals, config: EvaluationConfig, costs: CostModel, window_bars: int) -> Dict[str, Any]:
@@ -227,8 +225,9 @@ async def main() -> int:
 
     engine = LayaEngine()
     if {"live", "model"} & set(engines):
-        if not await engine.start_server() or engine._agent is None:
-            print("Native Laya model did not load; running fallback only.", file=sys.stderr)
+        await engine.start_server()
+        if engine.runtime == "fallback":
+            print("No Laya model loaded; running fallback only.", file=sys.stderr)
             engines = [e for e in engines if e == "fallback"]
 
     now = time.time()
@@ -244,18 +243,21 @@ async def main() -> int:
             candles, states = build_states(history, symbol, start, args.leverage)
             print(f"{symbol}: {len(states)} bars", file=sys.stderr)
 
-            fallback = [engine._fallback_decision(s, 0.0) for s in states]
             decisions: Dict[str, List[Dict[str, Any]]] = {}
             if "fallback" in engines:
-                decisions["fallback"] = fallback
+                decisions["fallback"] = [engine.fallback_decision(s, 0.0) for s in states]
             if {"live", "model"} & set(engines):
-                cache = SCRATCH / "backtest_cache" / f"{engine.model_filename}_{symbol.replace('.', '_')}.json"
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                model = model_decisions(engine, states, cache)
-                if "model" in engines:
-                    decisions["model"] = model
+                cache: Dict[str, Dict[str, Any]] = {}
+                if engine.runtime == "agent":
+                    cache_path = SCRATCH / "backtest_cache" / f"{engine.model_filename}_{symbol.replace('.', '_')}.json"
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache = warm_agent_cache(engine, states, cache_path)
+                # The live row runs the engine's public path, exactly what the auto-trader calls.
+                live = await engine.decide_batch(states, agent_cache=cache)
+                if "model" in engines:  # model only: no blend (the ONNX runtime never blends)
+                    decisions["model"] = engine.agent_decisions(states, cache) if engine.runtime == "agent" else live
                 if "live" in engines:
-                    decisions["live"] = [engine._blend(m, f) for m, f in zip(model, fallback)]
+                    decisions["live"] = live
 
             generator = SignalGenerator(leverage=args.leverage, exit_profile=args.exit_profile,
                                         max_cost_share=args.max_cost_share)
