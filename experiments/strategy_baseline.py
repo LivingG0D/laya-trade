@@ -24,6 +24,7 @@ import os
 import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from statistics import mean
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -35,8 +36,9 @@ import httpx  # noqa: E402
 from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
 from src.auto_trader import merge_timeframes, timeframe_snapshot  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
-from src.edge_gate import EdgeTable, gate_walk_forward, signal_outcomes  # noqa: E402
+from src.edge_gate import EdgeTable, gate_walk_forward, save_tables, signal_outcomes  # noqa: E402
 from src.signal_generator import SignalGenerator  # noqa: E402
+from src.trade_management import ExitPolicy  # noqa: E402
 from src.strategy_evaluator import (  # noqa: E402
     CostModel,
     EvaluationConfig,
@@ -215,22 +217,17 @@ async def main() -> int:
 
     engines = [e for e in args.engines.split(",") if e]
     costs = CostModel(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
-    round_trip = 2 * (args.fee_bps + args.slippage_bps) / 10000.0
-    breakeven = {
-        "legacy": dict(breakeven_trigger_pct=0.09 / args.leverage),
-        "tp1_fees": dict(breakeven_after_tp1=True, breakeven_offset_pct=round_trip),
-        "off": {},
-    }[args.breakeven]
-    live_exits = dict(**breakeven, opposing_exit_confidence=70.0,
-                      max_leverage=float(args.leverage), risk_per_trade=0.01)
-    strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, **live_exits)
-    baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, **live_exits)
+    # The auto-trader's exit rules, built from the settings keys it reads.
+    exits = ExitPolicy.from_settings({"breakeven_mode": args.breakeven, "leverage": args.leverage})
+    sizing = dict(max_leverage=float(args.leverage), risk_per_trade=0.01)
+    strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, exits=exits, **sizing)
+    baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=exits, **sizing)
     # Outcome labels: each signal alone, no confidence gate, no opposing exit.
-    outcome_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": None})
+    outcome_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=replace(exits, opposing_min_confidence=None), **sizing)
     # Gated signals already passed the outcome gate: any opposite gated signal closes the trade.
-    gated_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": 0.0})
+    gated_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=replace(exits, opposing_min_confidence=0.0), **sizing)
     horizon_bars = 288  # one day of 5m bars caps an outcome label
-    edge_tables: Dict[str, Dict[str, Any]] = {}
+    edge_tables: Dict[str, Dict[str, EdgeTable]] = {}
     window_bars = int(args.window_days * 86400 / INTERVAL_SECONDS[ENTRY_TF])
 
     from src.laya_engine import LayaEngine
@@ -286,8 +283,7 @@ async def main() -> int:
                     gated = gate_walk_forward(signals, outcomes, window_bars, horizon_bars, args.gate_min_samples)
                     rows.append({"symbol": symbol, "strategy": f"{name}+gate",
                                  **evaluate(candles, gated, gated_cfg, costs, window_bars)})
-                    table = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
-                    edge_tables.setdefault(name, {})[symbol] = {"min_samples": table.min_samples, "stats": table.stats}
+                    edge_tables.setdefault(name, {})[symbol] = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
 
             # Strategy signals cluster on consecutive bars and filters drop some random
             # entries, so matching signal rate does not match trade count. Rescale the
@@ -319,7 +315,7 @@ async def main() -> int:
         table_dir.mkdir(parents=True, exist_ok=True)
         for name, per_symbol in edge_tables.items():
             path = table_dir / f"{name}_{args.exit_profile}_{args.breakeven}.json"
-            path.write_text(json.dumps(per_symbol, indent=2))
+            save_tables(path, per_symbol)
             print(f"Edge table (fit on all {args.days:g} days): {path}")
     print_table(rows)
     print(f"\nrandom = entries matched to the first engine's trade count, same bracket, mean of {args.seeds} seeds")

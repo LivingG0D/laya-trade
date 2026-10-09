@@ -86,7 +86,6 @@ APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 # Risk & Strategy Defaults
 DEFAULT_LEVERAGE = 50
 DEFAULT_ATR_SL_MULTIPLIER = 1.6
-DEFAULT_BE_RR = 0.45          # Fast Break-Even trigger at +0.45R (+9% to +12% ROE)
 DEFAULT_TP1_RR = 0.80         # Primary Scalp Take-Profit at +0.80R (+16% to +20% ROE)
 DEFAULT_TP2_RR = 1.40         # Secondary Runner Target at +1.40R (+28% to +35% ROE)
 LEVERAGE_MAX_SL_PCT = 0.0080  # 0.80% maximum price move

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Dict, Any, List, Optional
 import time
 
@@ -5,7 +6,6 @@ from .config import (
     DEFAULT_ATR_SL_MULTIPLIER,
     DEFAULT_TP1_RR,
     DEFAULT_TP2_RR,
-    DEFAULT_BE_RR,
     DEFAULT_LEVERAGE,
     LEVERAGE_MAX_SL_PCT,
     LEVERAGE_MIN_SL_PCT,
@@ -16,6 +16,8 @@ from .config import (
     BARRIER_MAX_HOLD_SECONDS,
     ROUND_TRIP_COST_PCT,
 )
+from .trade_management import ExitPolicy, breakeven_trigger_price
+from .trade_plan import TradePlan
 
 class SignalGenerator:
     def __init__(
@@ -23,7 +25,6 @@ class SignalGenerator:
         atr_multiplier: float = DEFAULT_ATR_SL_MULTIPLIER,
         tp1_rr: float = DEFAULT_TP1_RR,
         tp2_rr: float = DEFAULT_TP2_RR,
-        be_rr: float = DEFAULT_BE_RR,
         leverage: int = DEFAULT_LEVERAGE,
         exit_profile: str = "legacy",
         max_cost_share: Optional[float] = None,
@@ -31,12 +32,13 @@ class SignalGenerator:
         self.atr_multiplier = atr_multiplier
         self.tp1_rr = tp1_rr
         self.tp2_rr = tp2_rr
-        self.be_rr = be_rr
         self.leverage = leverage
         # "legacy": ATR stop, TP1/TP2 in R. "barrier": +1.2% / -0.6% / 2h, the model's label.
         self.exit_profile = exit_profile
         # Reject trades whose round-trip costs exceed this share of the risk (None = off).
         self.max_cost_share = max_cost_share
+        # The exit rules trades run under; the auto-trader replaces this with its settings.
+        self.exit_policy = ExitPolicy.from_settings({"leverage": leverage})
         self.signal_history: List[Dict[str, Any]] = []
 
     def _plan_stop(self, cur_price: float, atr: float, atr_mult: float, level: float, is_long: bool) -> float:
@@ -189,23 +191,34 @@ class SignalGenerator:
 
             stop_loss = self._plan_stop(cur_price, atr, effective_atr_mult, support if is_long else resistance, is_long)
             risk = s * (cur_price - stop_loss)
-            be_price = cur_price + s * (risk * self.be_rr) # +0.75R Break-Even
             tp1 = cur_price + s * (risk * self.tp1_rr) # +1.2R (Take 50% profit)
             tp2 = cur_price + s * (risk * self.tp2_rr) # +2.2R (Runner target)
             if self.exit_profile == "barrier":
                 tp1, tp2 = cur_price * (1.0 + s * BARRIER_TP_PCT), 0.0
+            # Where the trade-management rules move the stop to break-even (0 when they never do)
+            exits = replace(self.exit_policy, leverage=effective_leverage)
+            be_price = breakeven_trigger_price(exits, s, cur_price, tp1) or 0.0
 
             # Return on Equity (ROE) under the configured leverage
             sl_roe = round(-(risk / cur_price) * effective_leverage * 100, 1)
-            be_roe = round(+(risk * self.be_rr / cur_price) * effective_leverage * 100, 1)
+            be_roe = round((s * (be_price - cur_price) / cur_price) * effective_leverage * 100, 1) if be_price else 0.0
             tp1_roe = round(+(s * (tp1 - cur_price) / cur_price) * effective_leverage * 100, 1)
             tp2_roe = round(+(s * (tp2 - cur_price) / cur_price) * effective_leverage * 100, 1) if tp2 else 0.0
+            plan = TradePlan(
+                side=s, entry=fmt(cur_price), stop=fmt(stop_loss), tp1=fmt(tp1), tp2=fmt(tp2),
+                confidence_pct=round(dir_conviction * 100, 1),
+                max_hold_seconds=BARRIER_MAX_HOLD_SECONDS if self.exit_profile == "barrier" else None,
+            )
 
             reasons.append(f"⚡ {effective_leverage:g}x Leverage Spec: Margin = ${1000 / effective_leverage:.2f} per $1,000 | Est. Liquidation: ${fmt(liq_price)} ({'-' if is_long else '+'}{round(liq_dist_pct*100, 2)}%).")
             reasons.append(f"🛡️ Structural Invalidation: SL at ${fmt(stop_loss)} ({sl_roe}% ROE) protects capital safe {'above' if is_long else 'below'} liquidation.")
             reasons.append(f"🎯 Take Profit 1 (+{self.tp1_rr}R): Reach ${fmt(tp1)} for +{tp1_roe}% ROE (Scale out 50% profit).")
             reasons.append(f"🚀 Take Profit 2 (+{self.tp2_rr}R): Runner target at ${fmt(tp2)} for +{tp2_roe}% ROE.")
-            reasons.append(f"🔒 Break-Even Trigger (+{self.be_rr}R): At ${fmt(be_price)} (+{be_roe}% ROE), move SL to entry to reduce risk; fees and slippage still apply.")
+            if be_price:
+                reasons.append(f"🔒 Break-Even Trigger: At ${fmt(be_price)} (+{be_roe}% ROE) the stop moves to "
+                               f"entry +{exits.breakeven_offset * 100:.2f}% to reduce risk.")
+            else:
+                reasons.append("🔒 Break-Even: off (the stop stays where it is).")
             reasons.append(f"🛡️ Anti-Volatility-Drag Guard: Use Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity) to avoid compounding variance drag on {effective_leverage}x.")
             if is_squeeze:
                 reasons.append("🔥 High-Probability TTM Squeeze Active: Volatility compression pending explosive expansion.")
@@ -227,6 +240,7 @@ class SignalGenerator:
             liq_price = cur_price
             risk = 0.0
             sl_roe = be_roe = tp1_roe = tp2_roe = 0.0
+            plan = None
 
             if filter_reason:
                 reasons.append(f"Quality Filter: {filter_reason}")
@@ -244,7 +258,6 @@ class SignalGenerator:
             "timestamp": int(time.time()),
             "symbol": symbol,
             "interval": interval,
-            "action": action,
             "direction": direction,
             "signal_type": pos,
             "leverage": effective_leverage,
@@ -255,24 +268,16 @@ class SignalGenerator:
                 "take_profit_1_roe": f"+{tp1_roe}%" if action != "NEUTRAL" else "0.0%",
                 "take_profit_2_roe": f"+{tp2_roe}%" if action != "NEUTRAL" else "0.0%",
             },
-            "entry_price": fmt(cur_price),
-            "stop_loss": fmt(stop_loss),
             "break_even": fmt(be_price),
-            "take_profit_1": fmt(tp1),
-            "take_profit_2": fmt(tp2),
-            "targets": {
-                "entry": fmt(cur_price),
-                "stop_loss": fmt(stop_loss),
-                "break_even": fmt(be_price),
-                "take_profit_1": fmt(tp1),
-                "take_profit_2": fmt(tp2),
-                "liquidation": fmt(liq_price),
-            },
-            "risk_reward_ratio": round(self.tp1_rr, 1),
-            "max_hold_seconds": BARRIER_MAX_HOLD_SECONDS if self.exit_profile == "barrier" and action != "NEUTRAL" else None,
+            # Directional signals carry their trade plan; neutral ones only display prices.
+            **(plan.to_signal() if plan else {
+                "action": action, "entry_price": fmt(cur_price), "stop_loss": fmt(stop_loss),
+                "take_profit_1": fmt(tp1), "take_profit_2": fmt(tp2),
+                "confidence_pct": round(dir_conviction * 100, 1), "max_hold_seconds": None,
+            }),
+            "risk_reward_ratio": round(abs(tp1 - cur_price) / risk, 1) if risk else 0.0,
             "recommended_margin_usd": DEFAULT_POSITION_MARGIN_USD,
             "sizing_rule": f"Fixed ${DEFAULT_POSITION_MARGIN_USD:.2f} Margin (Quarter-Kelly max {int(DEFAULT_KELLY_FRACTION_PCT*100)}%)",
-            "confidence_pct": round(dir_conviction * 100, 1),
             "confidence_score": laya_decision.get("confidence_score", 2),
             "squeeze_risk": laya_decision.get("squeeze_risk", 0.0),
             "time_horizon": laya_decision.get("time_horizon", "SCALP"),
