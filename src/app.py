@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Set, Optional
 
@@ -553,11 +554,17 @@ async def clear_autotrade_logs():
     """Clear AutoTrader audit log history."""
     return auto_trader.clear_logs()
 
+# Perpetual symbols in display ("BTCUSDT.P", "BTCUSDT") or Toobit ("BTC-SWAP-USDT") form.
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{1,20}(USDT(\.P)?|-SWAP-USDT)$")
+
+
 @app.post("/api/switch")
 async def switch_stream(symbol: str = Query(...), interval: str = Query(DEFAULT_TIMEFRAME)):
-    sym = symbol.upper()
-    if sym not in SUPPORTED_SYMBOLS:
-        SUPPORTED_SYMBOLS.append(sym)
+    # Streaming any symbol is fine; SUPPORTED_SYMBOLS stays fixed because it is the
+    # auto-trader's allow-list, which a chart switch must never widen.
+    sym = symbol.upper().strip()
+    if not _SYMBOL_PATTERN.match(sym) or interval not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported symbol or interval")
     await market_service.start_streaming(sym, interval)
     return {
         "status": "success",
