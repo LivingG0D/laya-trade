@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import json
 import os
-import random
 import sys
 import time
 from dataclasses import replace
@@ -31,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx  # noqa: E402
 
-from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
+from experiments.harness import PROBE_SEED, REPORT_DIR, load_candles, matched_rate, random_sides  # noqa: E402
+from experiments.history import INTERVAL_SECONDS  # noqa: E402
 from src.market_snapshot import WINDOW, closed_window, merge_timeframes, timeframe_snapshot  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
 from src.edge_gate import EdgeTable, gate_walk_forward, save_tables, signal_outcomes  # noqa: E402
@@ -51,7 +51,7 @@ SCRATCH = BASE_DIR / "scratch"
 HOLD = {"position": "NEUTRAL_HOLD"}
 KNOWN_GAPS = [
     "Binance futures prices stand in for Toobit.",
-    "Funding costs are 0.",
+    "Funding costs are 0 (experiments/eval_trend.py charges real funding events).",
     "Sizing is fixed-risk; live uses fixed margin. Compare results in R.",
     "No order-book or funding context (the live auto-trader does not fetch them either).",
     "Batched model inference can differ from single calls in the last decimals.",
@@ -65,14 +65,8 @@ def _decision(position: str) -> Dict[str, Any]:
 
 def random_decisions(count: int, rate: float, seed: int) -> List[Dict[str, Any]]:
     """Enter at ``rate`` of bars in a random direction; everything else holds."""
-    rng = random.Random(seed)
-    out = []
-    for _ in range(count):
-        if rng.random() < rate:
-            out.append(_decision("STRONG_LONG" if rng.random() < 0.5 else "STRONG_SHORT"))
-        else:
-            out.append(HOLD)
-    return out
+    return [_decision("STRONG_LONG" if side > 0 else "STRONG_SHORT") if side else HOLD
+            for side in random_sides(count, rate, seed)]
 
 
 def tradeable_rate(signals: Sequence[Mapping[str, Any]], min_confidence: float) -> float:
@@ -236,10 +230,8 @@ async def main() -> int:
     async with httpx.AsyncClient(timeout=30.0) as client:
         for symbol in [s.strip() for s in args.symbols.split(",") if s.strip()]:
             print(f"{symbol}: loading history", file=sys.stderr)
-            history = {
-                tf: await load_history(client, symbol, tf, args.days + WARMUP_DAYS, SCRATCH / "history", now=now)
-                for tf in (ENTRY_TF, *CONTEXT_TFS)
-            }
+            history = (await load_candles(client, [symbol], (ENTRY_TF, *CONTEXT_TFS), args.days + WARMUP_DAYS,
+                                          now, pause=0.0))[symbol]
             candles, states = build_states(history, symbol, start, args.leverage)
             print(f"{symbol}: {len(states)} bars", file=sys.stderr)
 
@@ -281,15 +273,10 @@ async def main() -> int:
                     edge_tables.setdefault(name, {})[symbol] = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
 
             # Strategy signals cluster on consecutive bars and filters drop some random
-            # entries, so matching signal rate does not match trade count. Rescale the
-            # random entry rate twice against a probe seed to match the strategy's trades.
-            random_rate = directional_rate
-            for _ in range(2):
-                probe = evaluate(candles, to_signals(random_decisions(len(states), random_rate, 10_000)),
-                                 baseline_cfg, costs, window_bars)["trade_count"]
-                if not probe or not target_trades:
-                    break
-                random_rate = min(1.0, random_rate * target_trades / probe)
+            # entries, so matching signal rate does not match trade count.
+            random_rate = matched_rate(target_trades, directional_rate, lambda rate: evaluate(
+                candles, to_signals(random_decisions(len(states), rate, PROBE_SEED)),
+                baseline_cfg, costs, window_bars)["trade_count"])
             rows.append({"symbol": symbol, "strategy": "flat",
                          **evaluate(candles, [{}] * len(candles), baseline_cfg, costs, window_bars)})
             seeds = [evaluate(candles, to_signals(random_decisions(len(states), random_rate, seed)),
@@ -300,9 +287,8 @@ async def main() -> int:
                          **evaluate(candles, to_signals(ema_cross_decisions(states)), baseline_cfg, costs, window_bars)})
 
     await engine.close()
-    out_dir = SCRATCH / "backtests"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = REPORT_DIR / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
     out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
                                     "rows": rows}, indent=2, default=str))
     if edge_tables:

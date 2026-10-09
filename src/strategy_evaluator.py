@@ -1,14 +1,16 @@
 """Deterministic cost-aware evaluation for strategy experiments.
 
 The evaluator intentionally uses the previous candle's signal and the next
-candle's open for entry. It is a research baseline, not a live execution
-engine: callers must provide realistic candles and signal targets.
+candle's open for entry. Open positions are managed by src/trade_management.py,
+the rules the live auto-trader runs; callers must provide realistic candles and
+signals (read through src/trade_plan.py).
 """
 
 from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
+from .config import SLIPPAGE_BPS, TAKER_FEE_BPS
 from .indicators import validate_klines
 from .trade_management import ExitPolicy, breakeven_stop, opposing_exit, time_stop_due, trigger_exit
 from .trade_plan import TradePlan
@@ -18,8 +20,8 @@ from .trade_plan import TradePlan
 class CostModel:
     """Per-side trading costs expressed in basis points."""
 
-    fee_bps: float = 4.0
-    slippage_bps: float = 2.0
+    fee_bps: float = TAKER_FEE_BPS
+    slippage_bps: float = SLIPPAGE_BPS
     funding_bps_per_bar: float = 0.0
     # Entry-side overrides, e.g. a maker (limit) entry with a lower fee and no slippage.
     entry_fee_bps: Optional[float] = None
@@ -33,6 +35,13 @@ class CostModel:
             *(v for v in (self.entry_fee_bps, self.entry_slippage_bps) if v is not None),
         )):
             raise ValueError("Cost model values must be finite and non-negative")
+
+    @property
+    def round_trip(self) -> float:
+        """Entry plus exit fees and slippage, as a fraction of price."""
+        entry_fee = self.fee_bps if self.entry_fee_bps is None else self.entry_fee_bps
+        entry_slippage = self.slippage_bps if self.entry_slippage_bps is None else self.entry_slippage_bps
+        return (entry_fee + entry_slippage + self.fee_bps + self.slippage_bps) / 10000.0
 
 
 @dataclass(frozen=True)

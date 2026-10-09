@@ -2,13 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from experiments.eval_15m import (
-    breakout_sides,
-    ev_sides,
-    pullback_sides,
-    random_sides,
-    signals_from_sides,
-)
+from experiments.eval_15m import breakout_sides, ev_sides, pullback_sides, signals_from_sides
+from experiments.harness import random_sides
 
 
 def test_pullback_needs_trend_and_rsi_recross():
