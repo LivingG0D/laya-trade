@@ -46,7 +46,7 @@ def make_trader(tmp_path, monkeypatch):
         flash_close=AsyncMock(return_value={"success": True}),
     )
     trader = AutoTrader(
-        toobit_client=client,
+        exchange=client,
         market_service=FakeMarketService(),
         laya_engine=SimpleNamespace(decide=AsyncMock(return_value={})),
         signal_generator=SimpleNamespace(generate_signal=lambda *a, **k: {}),
@@ -169,3 +169,44 @@ def test_vanished_exchange_position_is_booked(tmp_path, monkeypatch):
     assert trader.stats["losing_trades"] == 1
     assert abs(trader.stats["daily_realized_pnl"] + 0.33) < 1e-9
     assert trader.get_active_trade("BTCUSDT.P") is None
+
+
+MANAGED = {"symbol": "BTCUSDT.P", "exchange_symbol": "BTC-SWAP-USDT", "side": "LONG",
+           "last_unrealized_pnl": 0.4, "max_hold_seconds": 60}
+
+
+def test_manual_close_is_booked_toward_the_loss_limits(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    trader._set_active_trade(dict(MANAGED, open_time=time.time()))
+    client.flash_close = AsyncMock(return_value={"success": True, "realizedPnl": -0.8})
+
+    result = asyncio.run(trader.close_trade("BTC-SWAP-USDT", reason="manual close"))
+
+    assert result["success"]
+    assert trader.stats["losing_trades"] == 1 and trader.stats["daily_realized_pnl"] == -0.8
+    assert trader.get_active_trade("BTCUSDT.P") is None
+
+
+def test_time_stop_books_the_venue_result_not_the_stale_mark(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    trader._set_active_trade(dict(MANAGED, open_time=time.time() - 120))  # stale snapshot says +0.4
+    client.flash_close = AsyncMock(return_value={"success": True, "realizedPnl": -0.25})
+
+    asyncio.run(trader._enforce_time_stops())
+
+    assert trader.stats["daily_realized_pnl"] == -0.25 and trader.stats["losing_trades"] == 1
+
+
+def test_closing_an_unmanaged_position_books_nothing(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    asyncio.run(trader.close_trade("ETHUSDT.P", reason="manual close"))
+    client.flash_close.assert_awaited_once_with("ETHUSDT.P")
+    assert trader.stats["closed_trades"] == 0 and trader.stats["unclassified_trades"] == 0
+
+
+def test_a_close_while_halted_keeps_the_halt(tmp_path, monkeypatch):
+    trader, _ = make_trader(tmp_path, monkeypatch)
+    trader.status = "HALTED"
+    trader._set_active_trade(dict(MANAGED, open_time=time.time() - 120))
+    asyncio.run(trader.tick())  # time stops run while halted
+    assert trader.status == "HALTED" and trader.get_active_trade("BTCUSDT.P") is None

@@ -1,20 +1,20 @@
 import os
 import json
 import time
+import hashlib
 import logging
 import asyncio
 import warnings
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional, Sequence
 
 import threading
 import numpy as np
-import onnxruntime as ort
-from transformers import AutoTokenizer
-from laya.common import build_sequence
-from huggingface_hub import hf_hub_download
 
 from .config import MODELS_DIR, HF_REPO_ID, DEFAULT_MODEL_FILE
+
+# The model runtimes (onnxruntime, transformers, laya, torch) are imported where
+# they are used, so the app and the backtest run on the fallback engine without them.
 
 logger = logging.getLogger("laya_engine")
 
@@ -38,7 +38,7 @@ class LayaEngine:
                 self.device = "cpu"
 
         # Model runtimes
-        self._ort_session: Optional[ort.InferenceSession] = None
+        self._ort_session: Optional[Any] = None  # onnxruntime.InferenceSession
         self._tokenizer: Optional[Any] = None
         self._temp: float = 0.7470113039016724
         self._max_len: int = 512
@@ -60,6 +60,13 @@ class LayaEngine:
             }
         }
         self._option_keys = ["LONG", "SHORT", "NO_TRADE"]
+
+    @property
+    def runtime(self) -> str:
+        """The path ``decide`` takes: "onnx", "agent" (native model blended 50/50 with the fallback) or "fallback"."""
+        if self._ort_session is not None:
+            return "onnx"
+        return "agent" if self._agent is not None else "fallback"
 
     @property
     def is_ready(self) -> bool:
@@ -84,6 +91,8 @@ class LayaEngine:
             return self.model_path
 
         logger.info(f"Downloading {self.model_filename} from {self.repo_id}...")
+        from huggingface_hub import hf_hub_download
+
         try:
             downloaded = hf_hub_download(
                 repo_id=self.repo_id,
@@ -112,6 +121,9 @@ class LayaEngine:
 
                 if onnx_file is not None:
                     try:
+                        import onnxruntime as ort
+                        from transformers import AutoTokenizer
+
                         logger.info(f"Loading Static INT8 Quantized Laya model from {onnx_file}...")
                         tok_path = self.model_path / "tokenizer" if (self.model_path / "tokenizer").exists() else self.model_path
                         self._tokenizer = await asyncio.to_thread(AutoTokenizer.from_pretrained, str(tok_path))
@@ -232,10 +244,16 @@ class LayaEngine:
     def _run_ort_inference_locked(self, market_state: Dict[str, Any]) -> Dict[str, Any]:
         t_start = time.perf_counter()
 
+        from laya.common import build_sequence
+
         # Format input state matching the training/validation data schema
         trend_state = str(market_state.get("trend_state", "NEUTRAL")).upper()
         htf = market_state.get("htf") or {}
         htf_trend = htf.get("trend", "NEUTRAL")
+        # Per-timeframe values from the market snapshot where the state has them.
+        mtf = market_state.get("multi_timeframe") or {}
+        rsi_15m = (mtf.get("15m") or {}).get("rsi")
+        trend_4h = (mtf.get("4h") or {}).get("trend") or htf_trend
 
         supertrend_dir = "BULLISH" if "BULL" in trend_state else ("BEARISH" if "BEAR" in trend_state else "NEUTRAL")
         confluence_count = 3 if "BULL" in trend_state else (2 if "BEAR" in trend_state else 1)
@@ -249,13 +267,13 @@ class LayaEngine:
             "datetime": market_state.get("datetime") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000)),
             "timestamp": ts_ms,
             "close": float(market_state.get("price", 0.0)),
-            "rsi_15m": float(market_state.get("rsi", 50.0)),
+            "rsi_15m": float(rsi_15m if rsi_15m is not None else market_state.get("rsi", 50.0)),
             "supertrend_15m": supertrend_dir,
             "supertrend_dist_pct": round(float(market_state.get("atr_pct", 0.5)), 2),
             "htf_trends": {
-                "30m": htf_trend,
+                "30m": htf_trend,  # no 30m in the state: the 1h trend stands in
                 "1h": htf_trend,
-                "4h": htf_trend
+                "4h": trend_4h
             },
             "confluence_bull_count": confluence_count,
             "micro_1m_rsi": float(market_state.get("rsi", 50.0)),
@@ -386,33 +404,38 @@ class LayaEngine:
         }
 
     async def decide(self, market_state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute System-1 decision evaluation on the given market state.
-        Prioritizes Static INT8 Quantized ONNX model.
+        """System-1 decision for one market state (see ``decide_batch``)."""
+        return (await self.decide_batch([market_state]))[0]
+
+    async def decide_batch(self, market_states: Sequence[Dict[str, Any]],
+                           agent_cache: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        """Live decisions for many states, down the ``runtime`` path with fallthrough on failure.
+
+        The backtest calls this, so it replays the engine the auto-trader runs.
+        ``agent_cache`` is passed to ``agent_decisions``.
         """
         start_time = time.perf_counter()
 
         # 1. Primary: Static Quantized INT8 ONNX Model (Off-thread non-blocking)
         if self._ort_session is not None:
             try:
-                res = await asyncio.to_thread(self._run_ort_inference, market_state)
-                return res
+                return [await asyncio.to_thread(self._run_ort_inference, state) for state in market_states]
             except Exception as e:
                 logger.warning(f"INT8 ONNX model inference failed: {e}. Checking secondary runtimes.")
 
         # 2. Secondary: PyTorch native fine-tuned agent, blended with the rule-based scorer
         if self._agent is not None:
             try:
-                agent_res = (await asyncio.to_thread(self._agent_decisions, [market_state]))[0]
+                model = await asyncio.to_thread(self.agent_decisions, market_states, agent_cache)
                 latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
-                agent_res["latency_ms"] = latency_ms
-                return self._blend(agent_res, self._fallback_decision(market_state, latency_ms))
+                return [self.blend(dict(agent_res, latency_ms=latency_ms), self.fallback_decision(state, latency_ms))
+                        for state, agent_res in zip(market_states, model)]
             except Exception as e:
                 logger.warning(f"Native fine-tuned model inference failed: {e}. Trying fallback.")
 
         # 3. Fallback calibrated System 1 decision engine
         latency_ms = round((time.perf_counter() - start_time) * 1000, 1)
-        return self._fallback_decision(market_state, latency_ms)
+        return [self.fallback_decision(state, latency_ms) for state in market_states]
 
     _AGENT_QUESTIONS = {
         "position": {
@@ -428,7 +451,7 @@ class LayaEngine:
         }
     }
 
-    def _agent_summary(self, market_state: Dict[str, Any]) -> str:
+    def agent_summary(self, market_state: Dict[str, Any]) -> str:
         """Text state the native agent is queried with."""
         htf = market_state.get("htf") or {}
         depth = market_state.get("depth") or {}
@@ -447,17 +470,30 @@ class LayaEngine:
             f"Trend State: {market_state.get('trend_state')}"
         )
 
-    def _agent_decisions(self, market_states, batch_size: int = 32):
-        """Model-only decisions (no blend) for one or many states; blocking, call off the event loop."""
-        texts = [self._agent_summary(state) for state in market_states]
-        if len(texts) == 1:
-            raw = [self._agent.predict(texts[0], self._AGENT_QUESTIONS)]
-        else:
-            raw = self._agent.predict_batch(texts, self._AGENT_QUESTIONS, batch_size=batch_size)
-        engine_type = f"{self.model_filename}_{self.device}"
-        return [self._format_laya_response(r, 0.0, engine_type=engine_type) for r in raw]
+    def agent_decisions(self, market_states: Sequence[Dict[str, Any]],
+                        cache: Optional[Dict[str, Dict[str, Any]]] = None,
+                        batch_size: int = 32) -> List[Dict[str, Any]]:
+        """Native-model decisions (no blend) for one or many states; blocking, call off the event loop.
 
-    def _blend(self, agent_res: Dict[str, Any], mtf_res: Dict[str, Any]) -> Dict[str, Any]:
+        ``cache`` maps the SHA-256 of the exact text the model sees to its decision;
+        only missing texts are queried, and they are added to it.
+        """
+        texts = [self.agent_summary(state) for state in market_states]
+        keys = [hashlib.sha256(text.encode()).hexdigest() for text in texts]
+        cache = {} if cache is None else cache
+        missing = [i for i, key in enumerate(keys) if key not in cache]
+        if missing:
+            todo = [texts[i] for i in missing]
+            if len(todo) == 1:
+                raw = [self._agent.predict(todo[0], self._AGENT_QUESTIONS)]
+            else:
+                raw = self._agent.predict_batch(todo, self._AGENT_QUESTIONS, batch_size=batch_size)
+            engine_type = f"{self.model_filename}_{self.device}"
+            for i, response in zip(missing, raw):
+                cache[keys[i]] = self._format_laya_response(response, 0.0, engine_type=engine_type)
+        return [dict(cache[key]) for key in keys]
+
+    def blend(self, agent_res: Dict[str, Any], mtf_res: Dict[str, Any]) -> Dict[str, Any]:
         """Blend neural predictions 50/50 with the multi-timeframe rule-based scorer."""
         agent_res = dict(agent_res)
         p_long = 0.50 * agent_res["long_prob"] + 0.50 * mtf_res["long_prob"]
@@ -555,7 +591,7 @@ class LayaEngine:
             "engine": engine_type
         }
 
-    def _fallback_decision(self, market_state: Dict[str, Any], latency_ms: float) -> Dict[str, Any]:
+    def fallback_decision(self, market_state: Dict[str, Any], latency_ms: float) -> Dict[str, Any]:
         """
         Institutional-grade calibrated mathematical decision synthesizer.
         Evaluates confluence of:

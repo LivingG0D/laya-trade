@@ -1,4 +1,7 @@
-"""Model features for each closed base-timeframe bar, shared by training and live inference.
+"""Model features for each closed base-timeframe bar, for the research scripts' models.
+
+No live caller yet: wiring a model live means computing these on the market snapshot's
+closed candles.
 
 Every value uses only candles closed at or before the bar's close: base
 features use rolling and recursive indicators over past bars, and a
@@ -11,6 +14,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 import pandas as pd
 
+from .market_snapshot import INTERVAL_SECONDS
 from .indicators import (
     calculate_adx,
     calculate_atr,
@@ -21,7 +25,6 @@ from .indicators import (
     calculate_rsi,
 )
 
-STEP_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 HTF_PREFIX = {"15m": "m15", "1h": "h1", "4h": "h4", "1d": "d1"}
 DEFAULT_CONTEXT = ("15m", "1h", "4h")
 
@@ -112,14 +115,14 @@ def build_features(frames: Dict[str, pd.DataFrame], base: str = "5m",
     columns = feature_columns(context)
     base_frame = frames[base].reset_index(drop=True)
     out = pd.concat([base_frame[["time"]].astype(np.int64), _base_features(base_frame)], axis=1)
-    out["bar_close"] = out["time"] + STEP_SECONDS[base]
+    out["bar_close"] = out["time"] + INTERVAL_SECONDS[base]
     for tf in context:
         htf = frames[tf].reset_index(drop=True)
         feats = _htf_features(htf).add_prefix(HTF_PREFIX[tf] + "_")
-        feats["htf_close"] = htf["time"].astype(np.int64) + STEP_SECONDS[tf]
+        feats["htf_close"] = htf["time"].astype(np.int64) + INTERVAL_SECONDS[tf]
         # tolerance: a gap in higher-timeframe history leaves NaN instead of reusing an old candle
         out = pd.merge_asof(out, feats, left_on="bar_close", right_on="htf_close", direction="backward",
-                            tolerance=STEP_SECONDS[tf])
+                            tolerance=INTERVAL_SECONDS[tf])
         out = out.drop(columns="htf_close")
     out = out.drop(columns="bar_close")
     out[columns] = out[columns].astype(np.float32)

@@ -2,6 +2,7 @@ import pytest
 
 from src.indicators import compute_all_indicators
 from src.signal_generator import SignalGenerator
+from src.trade_management import ExitPolicy
 from src.strategy_evaluator import (
     CostModel,
     EvaluationConfig,
@@ -164,7 +165,7 @@ def test_breakeven_trigger_moves_stop_to_entry_for_later_bars():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.02), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(breakeven="legacy", leverage=4.5)), FREE  # 9% ROE at 4.5x = 2%
     )
 
     trade = result["trades"][0]
@@ -194,7 +195,7 @@ def test_tp1_fill_moves_stop_to_breakeven():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.5), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(breakeven="legacy", leverage=0.18)), FREE  # trigger 50%
     )
 
     trade = result["trades"][0]
@@ -213,7 +214,7 @@ def test_opposing_signal_exits_at_next_open():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, signal("SHORT", 106, 90, 85, 80), {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(opposing_exit_confidence=70), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(opposing_min_confidence=70)), FREE
     )
 
     trade = result["trades"][0]
@@ -232,7 +233,7 @@ def test_weak_opposing_signal_does_not_exit():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, signal("SHORT", 106, 90, 85, 60), {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(opposing_exit_confidence=70), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(opposing_min_confidence=70)), FREE
     )
 
     assert result["trades"][0]["exit_reason"] == "END_OF_DATA"
@@ -265,7 +266,7 @@ def test_stop_gapped_through_fills_at_open_not_stop():
     signals = [signal(stop=98, tp1=110, tp2=120), {}, {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(breakeven_trigger_pct=0.0018), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(breakeven="legacy", leverage=50)), FREE  # 9% ROE at 50x
     )
 
     trade = result["trades"][0]
@@ -296,7 +297,7 @@ def test_breakeven_after_tp1_ignores_price_wicks():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(breakeven_after_tp1=True, breakeven_offset_pct=0.0012), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(breakeven="tp1_fees")), FREE
     )
 
     assert result["trades"][0]["exit_reason"] == "END_OF_DATA"
@@ -311,7 +312,7 @@ def test_breakeven_after_tp1_covers_costs():
     signals = [signal(stop=95, tp1=110, tp2=120), {}, {}]
 
     result = evaluate_signal_sequence(
-        candles, signals, EvaluationConfig(breakeven_after_tp1=True, breakeven_offset_pct=0.0012), FREE
+        candles, signals, EvaluationConfig(exits=ExitPolicy(breakeven="tp1_fees")), FREE
     )
 
     trade = result["trades"][0]

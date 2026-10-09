@@ -1,13 +1,8 @@
 import numpy as np
 import pytest
 
-from experiments.train_gbm import (
-    DAY,
-    barrier_signals,
-    random_barrier_signals,
-    train_mask,
-    walk_forward_schedule,
-)
+from experiments.harness import DAY, pass_checks, train_mask, walk_forward_schedule
+from experiments.train_gbm import barrier_signals, random_barrier_signals
 
 
 def test_schedule_trains_first_then_steps_and_holds_out_the_end():
@@ -81,7 +76,6 @@ def test_subsample_keeps_every_symbol():
 
 
 def test_pass_checks_count_every_window_and_need_enough_holdout_trades():
-    from experiments.train_gbm import pass_checks
 
     good = {"trade_count": 40, "expectancy_r": 0.3, "avg_cost_r": 0.13}
     random_block = {"trade_count": 40, "expectancy_r": 0.0}

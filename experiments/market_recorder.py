@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import BASE_DIR, BINANCE_FUTURES_REST_URL  # noqa: E402
 from src.market_data import to_binance_symbol  # noqa: E402
+from experiments.history import get_json  # noqa: E402
 
 BAR_S = 900
 LOG_DIR = BASE_DIR / "data" / "market_log"
@@ -90,24 +91,6 @@ def merge_series(symbol: str, series: Dict[str, List[dict]], funding: List[dict]
     return out
 
 
-async def _get(client: httpx.AsyncClient, path: str, params: dict, retries: int = 4) -> Any:
-    for attempt in range(retries + 1):
-        try:
-            resp = await client.get(BINANCE_FUTURES_REST_URL + path, params=params)
-        except httpx.TransportError:
-            if attempt == retries:
-                raise
-            await asyncio.sleep(2 ** attempt)
-            continue
-        if resp.status_code in (418, 429) or resp.status_code >= 500:
-            if attempt == retries:
-                resp.raise_for_status()
-            await asyncio.sleep(5 * 2 ** attempt)
-            continue
-        resp.raise_for_status()
-        return resp.json()
-
-
 async def fetch_series(client: httpx.AsyncClient, path: str, symbol: str, start_ms: int, end_ms: int,
                        pause: float = 0.3, limit: int = 500) -> List[dict]:
     """All 15m points between start and end. Binance ignores startTime on these endpoints and
@@ -115,7 +98,8 @@ async def fetch_series(client: httpx.AsyncClient, path: str, symbol: str, start_
     out: Dict[int, dict] = {}
     cursor = end_ms
     while cursor >= start_ms:
-        batch = await _get(client, path, {"symbol": symbol, "period": "15m", "limit": limit, "endTime": cursor})
+        batch = await get_json(client, BINANCE_FUTURES_REST_URL + path,
+                               {"symbol": symbol, "period": "15m", "limit": limit, "endTime": cursor})
         if not batch:
             break
         for point in batch:
@@ -135,8 +119,8 @@ async def backfill(client: httpx.AsyncClient, symbol: str, days: float = 29.5) -
     end_ms = int(time.time() * 1000)
     start_ms = end_ms - int(days * 86400 * 1000)
     series = {name: await fetch_series(client, path, sym, start_ms, end_ms) for name, (path, _) in SERIES.items()}
-    funding = await _get(client, "/fapi/v1/fundingRate", {"symbol": sym, "startTime": start_ms - 86400_000,
-                                                          "endTime": end_ms, "limit": 1000})
+    funding = await get_json(client, BINANCE_FUTURES_REST_URL + "/fapi/v1/fundingRate",
+                             {"symbol": sym, "startTime": start_ms - 86400_000, "endTime": end_ms, "limit": 1000})
     return merge_series(symbol, series, funding)
 
 
@@ -147,14 +131,14 @@ async def snapshot(client: httpx.AsyncClient, symbol: str, now_s: Optional[float
     row: Dict[str, Any] = {"time": int(now_s) // BAR_S * BAR_S, "symbol": symbol, "source": "live",
                            "recorded_at": round(now_s, 1)}
     for path, fields in SERIES.values():
-        points = await _get(client, path, {"symbol": sym, "period": "15m", "limit": 1})
+        points = await get_json(client, BINANCE_FUTURES_REST_URL + path, {"symbol": sym, "period": "15m", "limit": 1})
         if points:
             row.update({out: float(points[-1][src]) for out, src in fields.items() if points[-1].get(src) is not None})
-    premium = await _get(client, "/fapi/v1/premiumIndex", {"symbol": sym})
+    premium = await get_json(client, BINANCE_FUTURES_REST_URL + "/fapi/v1/premiumIndex", {"symbol": sym})
     mark, index = float(premium["markPrice"]), float(premium["indexPrice"])
     row.update(mark=mark, index=index, basis_bps=(mark - index) / index * 1e4,
                funding_rate=float(premium["lastFundingRate"]))
-    depth = await _get(client, "/fapi/v1/depth", {"symbol": sym, "limit": 100})
+    depth = await get_json(client, BINANCE_FUTURES_REST_URL + "/fapi/v1/depth", {"symbol": sym, "limit": 100})
     row["book"] = book_features(depth["bids"], depth["asks"])
     return row
 

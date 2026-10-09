@@ -17,51 +17,44 @@ import argparse
 import asyncio
 import json
 import os
-import random
 import sys
 import time
-from statistics import mean
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.history import load_history  # noqa: E402
-from src.barrier import barrier_labels  # noqa: E402
-from src.config import (  # noqa: E402
-    BARRIER_MAX_HOLD_SECONDS,
-    BARRIER_SL_PCT,
-    BARRIER_TP_PCT,
-    BASE_DIR,
-    MODELS_DIR,
+from experiments.harness import (  # noqa: E402
+    BARRIER_BREAK_EVEN,
+    DAY,
+    PROBE_SEED,
+    REPORT_DIR,
+    SYMBOLS,
+    evaluate_trades,
+    load_frames,
+    matched_rate,
+    pass_checks,
+    positive_windows,
+    random_sides,
+    report_header,
+    report_line,
+    summarize_trades,
+    train_mask,
+    walk_forward_schedule,
 )
+from src.barrier import barrier_labels  # noqa: E402
+from src.config import BARRIER_MAX_HOLD_SECONDS, BARRIER_SL_PCT, BARRIER_TP_PCT, MODELS_DIR  # noqa: E402
 from src.features import FEATURE_COLUMNS, build_features  # noqa: E402
 from src.gbm_signal import SignalModel  # noqa: E402
-from src.strategy_evaluator import CostModel, EvaluationConfig, evaluate_signal_sequence  # noqa: E402
+from src.strategy_evaluator import CostModel  # noqa: E402
+from src.trade_plan import TradePlan  # noqa: E402
 
-DAY = 86400
 BAR = 300
 HORIZON = BARRIER_MAX_HOLD_SECONDS // BAR  # 24 bars of 5m
 LABEL_SECONDS = (HORIZON + 1) * BAR  # entry bar + horizon
-SYMBOLS = "BTCUSDT.P,ETHUSDT.P,SOLUSDT.P,BNBUSDT.P,XRPUSDT.P,DOGEUSDT.P,SUIUSDT.P,AVAXUSDT.P,LINKUSDT.P,LTCUSDT.P"
 WARMUP_DAYS = 14  # 4h EMA50 needs ~9 days of closed 4h candles
-BREAK_EVEN = (BARRIER_SL_PCT + 0.0012) / (BARRIER_TP_PCT + BARRIER_SL_PCT)
-
-
-def walk_forward_schedule(start: int, end: int, first_train_days: float, step_days: float,
-                          holdout_days: float) -> Tuple[List[Tuple[int, int]], Tuple[int, int]]:
-    """Contiguous test windows after an initial training span, then the holdout."""
-    holdout_start = int(end - holdout_days * DAY)
-    windows, t = [], int(start + first_train_days * DAY)
-    while t < holdout_start:
-        windows.append((t, min(int(t + step_days * DAY), holdout_start)))
-        t = windows[-1][1]
-    # A stub shorter than half a step folds into the window before it.
-    if len(windows) > 1 and windows[-1][1] - windows[-1][0] < step_days * DAY / 2:
-        windows[-2:] = [(windows[-2][0], windows[-1][1])]
-    return windows, (holdout_start, int(end))
 
 
 def subsample_mask(times: np.ndarray, every: int) -> np.ndarray:
@@ -69,34 +62,10 @@ def subsample_mask(times: np.ndarray, every: int) -> np.ndarray:
     return (times // BAR) % max(every, 1) == 0
 
 
-def pass_checks(windows: List[Dict[str, Any]], walk_forward: Dict[str, Any], holdout: Dict[str, Any],
-                round_trip_cost_r: float, min_holdout_trades: int = 30) -> Dict[str, bool]:
-    """The spec's pass criteria. Every walk-forward window counts, traded or not."""
-    positive = sum(1 for w in windows if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
-    model, rand = walk_forward["model"], walk_forward["random"]
-    return {
-        "holdout_expectancy_positive": holdout["model"]["trade_count"] >= min_holdout_trades
-            and holdout["model"]["expectancy_r"] > 0,
-        "windows_positive_60pct": bool(windows) and positive / len(windows) >= 0.6,
-        "beats_random_by_costs": model["trade_count"] > 0
-            and model["expectancy_r"] - rand["expectancy_r"] > round_trip_cost_r,
-    }
-
-
-def train_mask(times: np.ndarray, test_start: int, label_seconds: int = LABEL_SECONDS) -> np.ndarray:
-    """Rows whose label was fully known before ``test_start`` (no overlap with the test window)."""
-    return times + label_seconds <= test_start
-
-
 def _barrier_signal(close: float, side: int, probability: float) -> Dict[str, Any]:
-    return {
-        "action": "LONG" if side == 1 else "SHORT",
-        "confidence_pct": round(probability * 100, 2),
-        "stop_loss": close * (1 - side * BARRIER_SL_PCT),
-        "take_profit_1": close * (1 + side * BARRIER_TP_PCT),
-        "take_profit_2": 0.0,
-        "max_hold_seconds": BARRIER_MAX_HOLD_SECONDS,
-    }
+    return TradePlan(side=side, entry=0.0, stop=close * (1 - side * BARRIER_SL_PCT),
+                     tp1=close * (1 + side * BARRIER_TP_PCT), confidence_pct=round(probability * 100, 2),
+                     max_hold_seconds=BARRIER_MAX_HOLD_SECONDS).to_signal()
 
 
 def barrier_signals(closes: np.ndarray, p_long: np.ndarray, p_short: np.ndarray,
@@ -114,18 +83,9 @@ def barrier_signals(closes: np.ndarray, p_long: np.ndarray, p_short: np.ndarray,
 
 
 def random_barrier_signals(closes: np.ndarray, rate: float, seed) -> List[Dict[str, Any]]:
-    rng = random.Random(str(seed))  # seed may be a tuple: (seed, symbol, period start)
-    return [_barrier_signal(float(c), rng.choice((1, -1)), 0.5) if rng.random() < rate else {} for c in closes]
-
-
-def _frame(candles: List[Dict[str, Any]]) -> pd.DataFrame:
-    return pd.DataFrame(candles)[["time", "open", "high", "low", "close", "volume", "taker_buy_volume"]]
-
-
-async def load_symbol(client, symbol: str, days: float, now: float) -> Dict[str, pd.DataFrame]:
-    return {tf: _frame(await load_history(client, symbol, tf, days + WARMUP_DAYS,
-                                          BASE_DIR / "scratch" / "history", now=now, pause=0.3))
-            for tf in ("5m", "15m", "1h", "4h")}
+    """Barrier signals on random bars and sides; ``seed`` may be a tuple: (seed, symbol index, period start)."""
+    sides = random_sides(len(closes), rate, seed)
+    return [_barrier_signal(float(c), int(side), 0.5) if side else {} for c, side in zip(closes, sides)]
 
 
 def symbol_dataset(symbol: str, frames: Dict[str, pd.DataFrame], start: int) -> pd.DataFrame:
@@ -170,27 +130,6 @@ def label_metrics(df: pd.DataFrame, threshold: float) -> Dict[str, Any]:
     return out
 
 
-def _evaluate(candles: pd.DataFrame, signals: Sequence[Dict[str, Any]], costs: CostModel) -> Dict[str, Any]:
-    config = EvaluationConfig(min_confidence_pct=0.0, risk_per_trade=0.01, max_leverage=50.0)
-    rows = candles[["time", "open", "high", "low", "close", "volume"]].to_dict("records")
-    result = evaluate_signal_sequence(rows, list(signals), config, costs)
-    return {"trades": result["trades"], "trade_count": result["trade_count"]}
-
-
-def summarize_trades(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not trades:
-        return {"trade_count": 0, "win_rate_pct": 0.0, "expectancy_r": 0.0, "avg_cost_r": 0.0, "profit_factor": None}
-    r = np.array([t["r_multiple"] for t in trades])
-    gains, losses = r[r > 0].sum(), -r[r < 0].sum()
-    return {
-        "trade_count": len(trades),
-        "win_rate_pct": float((r > 0).mean() * 100),
-        "expectancy_r": float(r.mean()),
-        "avg_cost_r": float(np.mean([t["cost_r"] for t in trades])),
-        "profit_factor": float(gains / losses) if losses > 0 else None,
-    }
-
-
 def evaluate_period(data: pd.DataFrame, candles_by_symbol: Dict[str, pd.DataFrame], period: Tuple[int, int],
                     threshold: float, costs: CostModel, seeds: int) -> Dict[str, Any]:
     """Model trades and matched random trades over one period, per symbol and pooled."""
@@ -198,7 +137,7 @@ def evaluate_period(data: pd.DataFrame, candles_by_symbol: Dict[str, pd.DataFram
     model_trades: List[Dict[str, Any]] = []
     random_trades: List[Dict[str, Any]] = []
     per_symbol = {}
-    for symbol, candles in candles_by_symbol.items():
+    for sym_idx, (symbol, candles) in enumerate(candles_by_symbol.items()):
         rows = data[(data["symbol"] == symbol) & (data["time"] >= lo) & (data["time"] < hi)]
         if len(rows) < 2:
             continue
@@ -206,18 +145,19 @@ def evaluate_period(data: pd.DataFrame, candles_by_symbol: Dict[str, pd.DataFram
         preds = rows.set_index("time").reindex(window["time"])
         signals = barrier_signals(window["close"].to_numpy(float), preds["p_long"].fillna(0).to_numpy(),
                                   preds["p_short"].fillna(0).to_numpy(), threshold)
-        trades = _evaluate(window, signals, costs)["trades"]
+        trades = evaluate_trades(window, signals, costs)
         model_trades += trades
         per_symbol[symbol] = summarize_trades(trades)
-        # Random entries at the same trade count: rescale the entry rate against one probe seed.
-        rate = max(len(trades), 1) / len(window)
-        for _ in range(2):
-            probe = _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, (10_000, symbol, lo)), costs)
-            if probe["trade_count"]:
-                rate = min(1.0, rate * max(len(trades), 1) / probe["trade_count"])
+        closes = window["close"].to_numpy(float)
+
+        def random_trades_at(rate: float, seed) -> List[Dict[str, Any]]:
+            return evaluate_trades(window, random_barrier_signals(closes, rate, (seed, sym_idx, lo)), costs)
+
+        # Random entries at the same trade count.
+        rate = matched_rate(len(trades), max(len(trades), 1) / len(window),
+                            lambda r: len(random_trades_at(r, PROBE_SEED)))
         for seed in range(seeds):
-            random_trades += _evaluate(window, random_barrier_signals(window["close"].to_numpy(float), rate, (seed, symbol, lo)),
-                                       costs)["trades"]
+            random_trades += random_trades_at(rate, seed)
     rand = summarize_trades(random_trades)
     rand["trade_count"] = rand["trade_count"] / max(seeds, 1)
     return {"model": summarize_trades(model_trades), "random": rand, "per_symbol": per_symbol}
@@ -247,7 +187,7 @@ def main() -> int:
 
     async def load_all():
         async with httpx.AsyncClient(timeout=30.0) as client:
-            return {s: await load_symbol(client, s, args.days, now) for s in symbols}
+            return await load_frames(client, symbols, ("5m", "15m", "1h", "4h"), args.days + WARMUP_DAYS, now)
 
     for symbol, frames in asyncio.run(load_all()).items():
         ds = symbol_dataset(symbol, frames, start)
@@ -263,7 +203,7 @@ def main() -> int:
     X = data[FEATURE_COLUMNS].to_numpy(np.float32)
 
     def fit_before(test_start: int) -> SignalModel:
-        mask = train_mask(times, test_start) & data["y_long"].notna().to_numpy()
+        mask = train_mask(times, test_start, LABEL_SECONDS) & data["y_long"].notna().to_numpy()
         idx = np.flatnonzero(mask & subsample_mask(times, args.subsample))
         return SignalModel(max_iter=args.max_iter).fit(X[idx], data["y_long"].to_numpy()[idx],
                                                         data["y_short"].to_numpy()[idx])
@@ -282,7 +222,7 @@ def main() -> int:
     walk_forward = (windows[0][0], windows[-1][1])
     report: Dict[str, Any] = {
         "args": vars(args),
-        "break_even_hit_rate": BREAK_EVEN,
+        "break_even_hit_rate": BARRIER_BREAK_EVEN,
         "features": FEATURE_COLUMNS,
         "labels_walk_forward": label_metrics(data[(times >= walk_forward[0]) & (times < walk_forward[1])], args.threshold),
         "labels_holdout": label_metrics(data[times >= holdout[0]], args.threshold),
@@ -295,39 +235,32 @@ def main() -> int:
     report["holdout"] = evaluate_period(data, candles_by_symbol, holdout, args.threshold, costs, args.seeds)
 
     wf, ho = report["walk_forward"], report["holdout"]
-    positive_windows = sum(1 for w in report["windows"] if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
-    traded_windows = len(report["windows"])
     # Full round trip in R, slippage included (avg_cost_r holds fees only).
-    round_trip_cost_r = 2 * (args.fee_bps + args.slippage_bps) / 1e4 / BARRIER_SL_PCT
-    checks = pass_checks(report["windows"], wf, ho, round_trip_cost_r)
+    checks = pass_checks(report["windows"], wf, ho, costs.round_trip / BARRIER_SL_PCT)
     report["pass_checks"], report["passed"] = checks, all(checks.values())
     if report["passed"]:
         final = fit_before(end + LABEL_SECONDS)
         final.save(MODELS_DIR / "gbm_signal.joblib", metadata={"trained_until": end, "threshold": args.threshold,
                                                               "features": FEATURE_COLUMNS, "symbols": symbols})
 
-    out = BASE_DIR / "scratch" / "backtests" / f"gbm_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out = REPORT_DIR / f"gbm_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str))
 
-    def line(name, s):
-        pf = "-" if s["profit_factor"] is None else f"{s['profit_factor']:.2f}"
-        return (f"{name:<22}{s['trade_count']:>8.0f}{s['win_rate_pct']:>7.1f}{s['expectancy_r']:>8.3f}"
-                f"{pf:>6}{s['avg_cost_r']:>8.3f}")
-
-    print(f"\n{'':<22}{'trades':>8}{'win%':>7}{'exp R':>8}{'PF':>6}{'cost R':>8}")
+    print("\n" + report_header(22, cost=True))
     for name, block in (("walk-forward", wf), ("holdout", ho)):
-        print(line(f"{name} model", block["model"]))
-        print(line(f"{name} random", block["random"]))
+        print(report_line(f"{name} model", block["model"], 22, cost=True))
+        print(report_line(f"{name} random", block["random"], 22, cost=True))
     for side in ("long", "short"):
         lw, lh = report["labels_walk_forward"][side], report["labels_holdout"][side]
         print(f"{side}: AUC walk-forward {lw['auc']}, holdout {lh['auc']}; hit rate at >= {args.threshold}: "
-              f"{lw['hit_rate_at_threshold']} / {lh['hit_rate_at_threshold']} (break-even {BREAK_EVEN:.2f})")
+              f"{lw['hit_rate_at_threshold']} / {lh['hit_rate_at_threshold']} (break-even {BARRIER_BREAK_EVEN:.2f})")
     for name in ("labels_walk_forward", "labels_holdout"):
         m = report[name]
         print(f"{name}: direction AUC {m['direction_auc']}; top 1% hit long {m['long']['top_1pct_hit_rate']} "
               f"short {m['short']['top_1pct_hit_rate']}; top 0.1% long {m['long']['top_01pct_hit_rate']} "
               f"short {m['short']['top_01pct_hit_rate']}")
-    print(f"windows positive: {positive_windows}/{traded_windows}")
+    print(f"windows positive: {positive_windows(report['windows'])}/{len(report['windows'])}")
     print(f"checks: {checks} -> {'PASS' if report['passed'] else 'FAIL'}")
     print(f"Saved {out}")
     return 0

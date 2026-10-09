@@ -1,3 +1,12 @@
+"""Manual smoke run of the live pipeline (network): market data -> indicators -> Laya -> signal.
+
+Run:  python experiments/smoke_pipeline.py
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 from src.market_data import MarketDataService
 from src.indicators import compute_all_indicators

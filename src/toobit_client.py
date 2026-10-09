@@ -1,18 +1,13 @@
 import asyncio
 import hashlib
 import hmac
-import math
 import logging
 import time
 from typing import Dict, Any, List, Optional
 import httpx
 
-from .config import (
-    TOOBIT_REST_URL,
-    DEFAULT_SYMBOL,
-    DEFAULT_POSITION_MARGIN_USD,
-    DEFAULT_KELLY_FRACTION_PCT
-)
+from .config import TOOBIT_REST_URL
+from .exchange import quantity_to_step
 from .market_data import symbol_key, to_toobit_symbol
 
 logger = logging.getLogger("toobit_client")
@@ -54,45 +49,6 @@ def _api_response_error(payload: Any) -> str:
         or payload.get("error")
         or "Toobit rejected the request"
     )
-
-
-def _probability_value(probabilities: Any, *keys: str, default: float = 0.0) -> float:
-    """Read a probability consistently from legacy lowercase or current uppercase keys."""
-    if not isinstance(probabilities, dict):
-        return default
-    for key in keys:
-        value = probabilities.get(key)
-        if value is None:
-            continue
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(numeric):
-            return min(1.0, max(0.0, numeric))
-    return default
-
-
-def _confidence_percent(value: Any = None, score: Any = None) -> float:
-    """Normalize model confidence to a 0-100 display percentage."""
-    candidate = value
-    if candidate is None:
-        candidate = score
-        try:
-            numeric_score = float(candidate)
-            if 1.0 <= numeric_score <= 4.0:
-                candidate = numeric_score / 4.0
-        except (TypeError, ValueError):
-            return 50.0
-    try:
-        numeric = float(candidate)
-    except (TypeError, ValueError):
-        return 50.0
-    if not math.isfinite(numeric):
-        return 50.0
-    if 0.0 <= numeric <= 1.0:
-        numeric *= 100.0
-    return min(100.0, max(0.0, numeric))
 
 
 def _position_side_from_order_side(side: str) -> Optional[str]:
@@ -147,31 +103,6 @@ def _response_matches_tpsl(
     return True
 
 
-def _default_demo_targets(
-    entry_price: float,
-    side: str,
-    leverage: int,
-) -> tuple[float, float, float]:
-    """Build conservative demo-only protection targets when none were supplied."""
-    if entry_price <= 0:
-        return 0.0, 0.0, 0.0
-    normalized_leverage = max(float(leverage), 1.0)
-    risk_distance = 0.25 / normalized_leverage
-    tp1_distance = 0.40 / normalized_leverage
-    tp2_distance = 0.60 / normalized_leverage
-    if str(side).upper() == "SHORT":
-        return (
-            entry_price * (1.0 + risk_distance),
-            entry_price * (1.0 - tp1_distance),
-            entry_price * (1.0 - tp2_distance),
-        )
-    return (
-        entry_price * (1.0 - risk_distance),
-        entry_price * (1.0 + tp1_distance),
-        entry_price * (1.0 + tp2_distance),
-    )
-
-
 def _price_to_exchange_precision(price: float, tick_size: float) -> tuple[str, float]:
     """Quantize a price without ever converting a positive target to zero."""
     if price <= 0:
@@ -199,14 +130,15 @@ _CONNECT_ERROR_HINTS = {
 
 class ToobitClient:
     """
-    Client for interacting with Toobit's Perpetual Futures API.
-    Supports live authenticated accounts (HMAC-SHA256) and simulated demo mode.
+    Client for Toobit's Perpetual Futures API: HMAC-SHA256 signed requests to the
+    live account. The demo account is ``SimulatedExchange``, behind the same interface.
     """
 
-    def __init__(self, api_key: str = "", api_secret: str = "", is_demo: bool = False):
+    is_demo = False
+
+    def __init__(self, api_key: str = "", api_secret: str = ""):
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
-        self.is_demo = is_demo
         self.base_url = TOOBIT_REST_URL
         self._time_offset: int = 0  # Milliseconds offset: server_time - local_time
         self._last_time_sync: float = 0.0
@@ -215,41 +147,23 @@ class ToobitClient:
             limits=httpx.Limits(max_connections=40, max_keepalive_connections=15, keepalive_expiry=30.0)
         )
 
-        # Demo mode state storage
-        self._demo_balance = 5000.0  # $5,000 USDT virtual starting margin
-        self._demo_positions: Dict[str, Dict[str, Any]] = {}
         self._last_positions: List[Dict[str, Any]] = []  # last live positions fetched
         self._position_tpsl_cache: Dict[str, Dict[str, Any]] = {}  # local cache of configured TP/SL
         self._contract_rules_cache: Dict[str, Dict[str, Any]] = {}
         self._last_rules_cache_time: float = 0.0
-        
-        # If demo mode is default or requested without keys, initialize a default demo position for 1000PEPE
-        if is_demo:
-            self._init_default_demo_position()
-
-    def _init_default_demo_position(self):
-        """Seed an initial demo position for 1000PEPE so users can test immediately."""
-        pos = self.simulate_position(DEFAULT_SYMBOL, "LONG", 100000.0, 0.004180, leverage=50)
-        # show it already in profit rather than flat at entry
-        pos.update(markPrice=0.004245, unrealizedPnl=6.50, pnlPercentage=77.75, liquidationPrice=0.004105)
 
     @property
     def is_connected(self) -> bool:
-        return bool(self.api_key and self.api_secret) or self.is_demo
+        return bool(self.api_key and self.api_secret)
 
-    def set_credentials(self, api_key: str, api_secret: str, is_demo: bool = False):
+    def set_credentials(self, api_key: str, api_secret: str):
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
-        self.is_demo = is_demo
-        if is_demo and not self._demo_positions:
-            self._init_default_demo_position()
-        logger.info(f"ToobitClient configured: demo={self.is_demo}, has_keys={bool(self.api_key)}")
+        logger.info(f"ToobitClient configured: has_keys={bool(self.api_key)}")
 
     def disconnect(self):
         self.api_key = ""
         self.api_secret = ""
-        self.is_demo = False
-        self._demo_positions.clear()
         self._last_positions = []
         logger.info("ToobitClient disconnected and session cleared")
 
@@ -362,13 +276,6 @@ class ToobitClient:
 
     async def test_connection(self) -> Dict[str, Any]:
         """Test API credentials with thorough validation and diagnostics."""
-        if self.is_demo:
-            return {
-                "success": True,
-                "mode": "demo",
-                "message": "Connected to Simulated Demo Account (Virtual $5,000 USDT Margin)."
-            }
-
         if not self.api_key or not self.api_secret:
             return {
                 "success": False,
@@ -431,23 +338,6 @@ class ToobitClient:
 
     async def get_balance(self) -> Dict[str, Any]:
         """Fetch account balance details."""
-        if self.is_demo:
-            # Calculate total demo equity including unrealized PnL
-            unrealized_total = sum(p.get("unrealizedPnl", 0.0) for p in self._demo_positions.values())
-            total_margin = sum(p.get("margin", 0.0) for p in self._demo_positions.values())
-            free_margin = max(0.0, self._demo_balance - total_margin)
-            equity = self._demo_balance + unrealized_total
-
-            return {
-                "mode": "demo",
-                "asset": "USDT",
-                "totalBalance": round(self._demo_balance, 2),
-                "availableBalance": round(free_margin, 2),
-                "marginBalance": round(total_margin, 2),
-                "unrealizedPnl": round(unrealized_total, 2),
-                "totalEquity": round(equity, 2)
-            }
-
         try:
             raw_balances = await self._send_signed_request("GET", "/api/v1/futures/balance")
             usdt_bal = {}
@@ -489,34 +379,6 @@ class ToobitClient:
         Fetch active open positions.
         Filters out positions with size == 0.
         """
-        if self.is_demo:
-            positions = []
-            for sym, pos in list(self._demo_positions.items()):
-                # If current price is provided, update live PnL dynamically
-                if current_market_price and current_market_price > 0:
-                    pos["markPrice"] = current_market_price
-                    entry = pos["entryPrice"]
-                    qty = pos["quantity"]
-                    side = pos["side"]
-
-                    if side == "LONG":
-                        pnl = (current_market_price - entry) * qty
-                        pnl_pct = ((current_market_price - entry) / entry) * 100 * pos["leverage"]
-                    else:
-                        pnl = (entry - current_market_price) * qty
-                        pnl_pct = ((entry - current_market_price) / entry) * 100 * pos["leverage"]
-
-                    pos["unrealizedPnl"] = round(pnl, 2)
-                    pos["pnlPercentage"] = round(pnl_pct, 2)
-
-                if symbol:
-                    toobit_sym = to_toobit_symbol(symbol)
-                    if sym == toobit_sym:
-                        positions.append(dict(pos))
-                else:
-                    positions.append(dict(pos))
-            return positions
-
         try:
             # Query all active positions; /api/v1/futures/positions does not take symbol parameter
             raw_positions = await self._send_signed_request("GET", "/api/v1/futures/positions")
@@ -600,27 +462,6 @@ class ToobitClient:
         """
         toobit_sym = to_toobit_symbol(symbol)
 
-        if self.is_demo:
-            if toobit_sym in self._demo_positions:
-                closed = self._demo_positions.pop(toobit_sym)
-                pnl = closed.get("unrealizedPnl", 0.0)
-                self._demo_balance += pnl
-                return {
-                    "success": True,
-                    "mode": "demo",
-                    "symbol": toobit_sym,
-                    "closedPosition": closed,
-                    "realizedPnl": pnl,
-                    "message": f"Successfully Flash Closed simulated position {toobit_sym} (PnL: {'+' if pnl >= 0 else ''}${pnl:.2f})"
-                }
-            else:
-                return {
-                    "success": False,
-                    "mode": "demo",
-                    "symbol": toobit_sym,
-                    "message": f"No open demo position found for {toobit_sym}"
-                }
-
         try:
             side = await self._resolve_position_side(symbol)
             if not side:
@@ -678,62 +519,6 @@ class ToobitClient:
                 "error": str(e),
                 "message": f"Failed to Flash Close {toobit_sym}: {str(e)}"
             }
-
-    def simulate_position(
-        self,
-        symbol: str,
-        side: str,
-        quantity: float,
-        entry_price: float,
-        leverage: int = 50,
-        stop_loss: float = 0.0,
-        take_profit_1: float = 0.0,
-        take_profit_2: float = 0.0
-    ) -> Dict[str, Any]:
-        """Open or replace a simulated demo position for testing."""
-        toobit_sym = to_toobit_symbol(symbol)
-        side_norm = side.upper()
-        if side_norm not in ("LONG", "SHORT"):
-            side_norm = "LONG"
-
-        default_sl, default_tp1, default_tp2 = _default_demo_targets(
-            entry_price,
-            side_norm,
-            leverage,
-        )
-        stop_loss = stop_loss if stop_loss > 0 else default_sl
-        take_profit_1 = take_profit_1 if take_profit_1 > 0 else default_tp1
-        take_profit_2 = take_profit_2 if take_profit_2 > 0 else default_tp2
-
-        margin = (quantity * entry_price) / max(leverage, 1)
-
-        # Estimate liquidation price (approx ~ 85-90% margin depletion)
-        if side_norm == "LONG":
-            liq_price = entry_price * (1.0 - (0.9 / leverage))
-        else:
-            liq_price = entry_price * (1.0 + (0.9 / leverage))
-
-        pos = {
-            "symbol": toobit_sym,
-            "displaySymbol": symbol,
-            "side": side_norm,
-            "positionSide": side_norm,
-            "quantity": quantity,
-            "entryPrice": entry_price,
-            "markPrice": entry_price,
-            "leverage": leverage,
-            "margin": round(margin, 2),
-            "unrealizedPnl": 0.0,
-            "pnlPercentage": 0.0,
-            "liquidationPrice": round(liq_price, 6),
-            "stopLoss": stop_loss,
-            "takeProfit1": take_profit_1,
-            "takeProfit2": take_profit_2,
-            "isolated": True,
-            "createdAt": int(time.time() * 1000)
-        }
-        self._demo_positions[toobit_sym] = pos
-        return pos
 
     async def get_symbol_rules(self, symbol: str) -> Dict[str, Any]:
         """Fetch trading rules, step size, and tick precision for a contract symbol."""
@@ -798,11 +583,6 @@ class ToobitClient:
     async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
         """Configure leverage multiplier on Toobit futures."""
         toobit_sym = to_toobit_symbol(symbol)
-        if self.is_demo:
-            if toobit_sym in self._demo_positions:
-                self._demo_positions[toobit_sym]["leverage"] = leverage
-            return {"success": True, "mode": "demo", "symbol": toobit_sym, "leverage": leverage}
-
         params = {"symbol": toobit_sym, "leverage": leverage}
         try:
             res = await self._send_signed_request("POST", "/api/v1/futures/leverage", params)
@@ -816,9 +596,6 @@ class ToobitClient:
     async def get_symbol_leverage_config(self, symbol: str) -> Dict[str, Any]:
         """Read the leverage and margin mode the account already uses for a symbol."""
         toobit_sym = to_toobit_symbol(symbol)
-        if self.is_demo:
-            return {"success": True, "mode": "demo", "symbol": toobit_sym, "marginType": None, "leverage": None}
-
         try:
             res = await self._send_signed_request("GET", "/api/v1/futures/accountLeverage", {"symbol": toobit_sym})
         except Exception as e:
@@ -859,9 +636,6 @@ class ToobitClient:
     async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> Dict[str, Any]:
         """Configure margin mode: ISOLATED or CROSSED."""
         toobit_sym = to_toobit_symbol(symbol)
-        if self.is_demo:
-            return {"success": True, "mode": "demo", "symbol": toobit_sym, "marginType": margin_type}
-
         params = {"symbol": toobit_sym, "marginType": margin_type.upper()}
         try:
             res = await self._send_signed_request("POST", "/api/v1/futures/marginType", params)
@@ -934,7 +708,10 @@ class ToobitClient:
 
         has_tp1 = take_profit_1 > 0
         has_tp2 = take_profit_2 > 0
-        tp1_quantity = quantity / 2.0 if has_tp1 and has_tp2 else quantity
+        # Both halves must sit on the contract's step; rules are cached by the sizing call before entry.
+        step = float(self._contract_rules_cache.get(to_toobit_symbol(symbol), {}).get("step_size", 0.0))
+        half = quantity_to_step(quantity / 2.0, step) if step > 0 else quantity / 2.0
+        tp1_quantity = half if has_tp1 and has_tp2 else quantity
         tp2_quantity = quantity - tp1_quantity if has_tp2 else 0.0
         bracket: List[Dict[str, Any]] = []
         errors: List[str] = []
@@ -997,7 +774,7 @@ class ToobitClient:
         """
         Execute an order on Toobit futures.
         Side: BUY (Long), SELL (Short).
-        Supports live authenticated orders and simulated demo execution.
+        Live entries are verified: margin mode and leverage first, protection after the fill.
         """
         toobit_sym = to_toobit_symbol(symbol)
         side_norm = side.upper()
@@ -1007,38 +784,16 @@ class ToobitClient:
             toobit_side = "BUY_OPEN"
         elif side_norm in ("BUY_CLOSE",):
             order_side = "BUY"
-            pos_side = "LONG"
+            pos_side = "SHORT"  # buying closes a short
             toobit_side = "BUY_CLOSE"
         elif side_norm in ("SELL_CLOSE",):
             order_side = "SELL"
-            pos_side = "SHORT"
+            pos_side = "LONG"
             toobit_side = "SELL_CLOSE"
         else:
             order_side = "SELL"
             pos_side = "SHORT"
             toobit_side = "SELL_OPEN"
-
-        if self.is_demo:
-            pos = self.simulate_position(
-                symbol=symbol,
-                side=pos_side,
-                quantity=quantity,
-                entry_price=entry_price,
-                leverage=leverage,
-                stop_loss=stop_loss,
-                take_profit_1=take_profit_1,
-                take_profit_2=take_profit_2
-            )
-            return {
-                "success": True,
-                "mode": "demo",
-                "orderId": f"demo_{int(time.time() * 1000)}",
-                "symbol": toobit_sym,
-                "side": order_side,
-                "quantity": quantity,
-                "price": entry_price,
-                "position": pos
-            }
 
         try:
             # 1. Set leverage and margin mode before any live entry is dispatched
@@ -1097,6 +852,11 @@ class ToobitClient:
                     res = await self._send_signed_request("POST", "/api/v1/futures/order", params)
                 else:
                     raise e
+
+            if "CLOSE" in toobit_side:
+                # A close reduces an existing position: there is nothing new to protect.
+                return {"success": True, "mode": "live", "symbol": toobit_sym, "side": order_side,
+                        "quantity": quantity, "data": res}
 
             # 3. Attach and verify protective orders before reporting success
             protection = await self._attach_entry_protection(
@@ -1157,40 +917,17 @@ class ToobitClient:
         if pos_side is None:
             return {
                 "success": False,
-                "mode": "live" if not self.is_demo else "demo",
+                "mode": "live",
                 "symbol": toobit_sym,
                 "message": f"Invalid position side: {side}",
             }
         if stop_loss <= 0 and take_profit <= 0:
             return {
                 "success": False,
-                "mode": "live" if not self.is_demo else "demo",
+                "mode": "live",
                 "symbol": toobit_sym,
                 "side": pos_side,
                 "message": "At least one positive stop-loss or take-profit is required.",
-            }
-
-        if self.is_demo:
-            if toobit_sym not in self._demo_positions:
-                return {
-                    "success": False,
-                    "mode": "demo",
-                    "symbol": toobit_sym,
-                    "side": pos_side,
-                    "message": "No open demo position found for protection update.",
-                }
-            if stop_loss > 0:
-                self._demo_positions[toobit_sym]["stopLoss"] = stop_loss
-            if take_profit > 0:
-                self._demo_positions[toobit_sym]["takeProfit1"] = take_profit
-            return {
-                "success": True,
-                "mode": "demo",
-                "symbol": toobit_sym,
-                "side": pos_side,
-                "stopLoss": stop_loss,
-                "takeProfit": take_profit,
-                "verified": True,
             }
 
         await self.get_symbol_rules(toobit_sym)  # refresh cache; a miss keeps tick 0 (no rounding)
@@ -1285,36 +1022,16 @@ class ToobitClient:
         if normalized_side is None:
             return {
                 "success": False,
-                "mode": "live" if not self.is_demo else "demo",
+                "mode": "live",
                 "symbol": toobit_sym,
                 "message": f"Invalid position side: {position_side or side}",
             }
         if quantity <= 0 or trigger_price <= 0:
             return {
                 "success": False,
-                "mode": "live" if not self.is_demo else "demo",
+                "mode": "live",
                 "symbol": toobit_sym,
                 "message": "A positive quantity and trigger price are required.",
-            }
-
-        if self.is_demo:
-            position = self._demo_positions.get(toobit_sym)
-            if position is None:
-                return {
-                    "success": False,
-                    "mode": "demo",
-                    "symbol": toobit_sym,
-                    "message": "No open demo position found for protection order.",
-                }
-            slot = take_profit_slot if "PROFIT" in order_type.upper() else "stopLoss"
-            position[slot] = trigger_price
-            return {
-                "success": True,
-                "mode": "demo",
-                "symbol": toobit_sym,
-                "triggerPrice": trigger_price,
-                "type": order_type,
-                "positionSide": normalized_side,
             }
 
         await self.get_symbol_rules(toobit_sym)  # refresh cache; a miss keeps tick 0 (no rounding)
@@ -1382,19 +1099,12 @@ class ToobitClient:
     async def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
         """Cancel all resting and plan orders for a given symbol."""
         toobit_sym = to_toobit_symbol(symbol)
-        if self.is_demo:
-            if toobit_sym in self._demo_positions:
-                self._demo_positions[toobit_sym]["stopLoss"] = 0.0
-                self._demo_positions[toobit_sym]["takeProfit1"] = 0.0
-                self._demo_positions[toobit_sym]["takeProfit2"] = 0.0
-            return {"success": True, "mode": "demo", "symbol": toobit_sym, "message": "All orders cancelled"}
-
         params = {"symbol": toobit_sym}
         for ep in ["/api/v1/futures/allOpenOrders", "/api/v1/futures/batchOrders"]:
             try:
                 res = await self._send_signed_request("DELETE", ep, params)
                 return {"success": True, "mode": "live", "symbol": toobit_sym, "data": res}
-            except Exception as e:
+            except Exception:
                 continue
 
         return {
@@ -1406,170 +1116,3 @@ class ToobitClient:
 
     async def close(self):
         await self._http_client.aclose()
-
-
-def generate_position_suggestion(
-    position: Optional[Dict[str, Any]],
-    current_price: float,
-    signal: Optional[Dict[str, Any]] = None,
-    laya_decision: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Synthesize position status with Laya System-1 probabilistic intelligence
-    to produce actionable trade management recommendations.
-    """
-    sig = signal or {}
-    laya = laya_decision or {}
-    action = str(
-        sig.get("action")
-        or laya.get("primary_action")
-        or laya.get("position")
-        or "NEUTRAL"
-    ).upper()
-    raw_confidence = sig.get("confidence_pct")
-    if raw_confidence is None:
-        raw_confidence = sig.get("confidence")
-    if raw_confidence is None:
-        raw_confidence = laya.get("confidence_prob", laya.get("confidence"))
-    confidence = _confidence_percent(raw_confidence, laya.get("confidence_score"))
-    probs = laya.get("probabilities", {})
-    targets = sig.get("targets", {})
-
-    p_strong_long = _probability_value(probs, "STRONG_LONG", "strong_long", default=0.2)
-    p_scalp_long = _probability_value(probs, "SCALP_LONG", "scalp_long", default=0.2)
-    p_bull = p_strong_long + p_scalp_long
-
-    p_strong_short = _probability_value(probs, "STRONG_SHORT", "strong_short", default=0.2)
-    p_scalp_short = _probability_value(probs, "SCALP_SHORT", "scalp_short", default=0.2)
-    p_bear = p_strong_short + p_scalp_short
-
-    # Helper formatter to prevent showing $0.000000
-    def fmt_p(val: float) -> str:
-        if not val or val <= 0:
-            return "--"
-        return f"${val:.6f}" if val < 0.1 else f"${val:.2f}"
-
-    # Determine baseline price
-    base_price = current_price
-    if base_price <= 0:
-        base_price = sig.get("entry_price") or 0.0
-
-    def card(has_position, alignment, action_code, badge, badge_class, headline, text, steps, sl, tp):
-        return {
-            "hasPosition": has_position, "alignment": alignment, "action": action_code,
-            "badgeText": badge, "badgeClass": badge_class, "headline": headline,
-            "suggestion": text, "steps": steps, "canFlashClose": has_position,
-            "recommendedSl": sl, "recommendedTp": tp,
-        }
-
-    # No active position: suggest an entry setup (LONG checked first, as before)
-    if not position:
-        if "LONG" not in action and "SHORT" not in action:
-            return card(
-                False, "NONE", "WAIT", "WAIT FOR SETUP ⚪", "badge-neutral",
-                "Market Consolidating: Stand By",
-                "No active position. Market is currently consolidating without high directional conviction. Wait for Laya to identify a high-probability breakout.",
-                ["Keep powder dry and avoid over-trading",
-                 "Wait for next candle close to confirm direction",
-                 "Watch key support and resistance boundaries"],
-                0.0, 0.0,
-            )
-        long = "LONG" in action
-        entry = sig.get("entry_price") or targets.get("entry", base_price)
-        if entry <= 0:
-            entry = base_price
-        tp_mult, sl_mult = (1.015, 0.985) if long else (0.985, 1.015)
-        tp1 = sig.get("take_profit_1") or targets.get("take_profit_1", (entry * tp_mult if entry > 0 else 0.0))
-        sl = sig.get("stop_loss") or targets.get("stop_loss", (entry * sl_mult if entry > 0 else 0.0))
-        side = "LONG" if long else "SHORT"
-        margin = f"${DEFAULT_POSITION_MARGIN_USD:.2f}"
-        return card(
-            False, "NONE", "ENTER_SETUP",
-            "BULLISH SETUP 🟢" if long else "BEARISH SETUP 🔴",
-            "badge-profit" if long else "badge-danger",
-            f"Ready for Entry: Laya suggests {action}",
-            f"No active position. Laya System-1 detects {'bullish confluence' if long else 'downward momentum'} ({confidence}% confidence). "
-            f"Recommended setup: {'Buy' if long else 'Short'} near {fmt_p(entry)}, Target TP1 at {fmt_p(tp1)}, Protective SL at {fmt_p(sl)}. "
-            f"Use fixed {margin} margin to prevent compounding volatility drag.",
-            [f"Consider opening {side} near {fmt_p(entry)}",
-             f"Position Sizing: Use Fixed {margin} margin (or max {int(DEFAULT_KELLY_FRACTION_PCT*100)}% equity shield)",
-             f"Set Target Take Profit 1 at {fmt_p(tp1)}",
-             f"Set Stop Loss at {fmt_p(sl)}"],
-            sl, tp1,
-        )
-
-    # Position is active: judge it against the side the model now favours
-    long = position.get("side", "LONG").upper() == "LONG"
-    side, against = ("LONG", "SHORT") if long else ("SHORT", "LONG")
-    entry = position.get("entryPrice", current_price)
-    pnl = position.get("unrealizedPnl", 0.0)
-    pnl_pct = position.get("pnlPercentage", 0.0)
-    symbol = position.get("displaySymbol", position.get("symbol", "contract"))
-    p_with, p_against = (p_bull, p_bear) if long else (p_bear, p_bull)
-    tp_mult, sl_mult, tp_far = (1.015, 0.985, 1.02) if long else (0.985, 1.015, 0.98)
-    sl_target = targets.get("stop_loss", entry * sl_mult)
-    liquidation = f"Liquidation threshold is at ${position.get('liquidationPrice', 0.0):.6f}"
-
-    if p_with >= 0.50 or side in action:
-        if pnl_pct >= 8.0:
-            rec_sl = max(entry, current_price * 0.992) if long else min(entry, current_price * 1.008)
-            return card(
-                True, "ALIGNED", "HOLD_TRAIL_SL", "PROTECT PROFIT 🛡️", "badge-profit",
-                f"Great Trade (+{pnl_pct:.1f}%): Trail Stop Loss" if long
-                else f"Short Working Well (+{pnl_pct:.1f}%): Trail Stop Loss",
-                f"Your {symbol} LONG is up +{pnl_pct:.1f}% (${pnl:+.2f}). Laya AI confirms ongoing bullish pressure ({int(p_bull*100)}%). Recommend moving your Stop Loss to break-even or above entry (${rec_sl:.6f}) to lock in guaranteed profit while riding the trend." if long
-                else f"Your {symbol} SHORT is profitable (+{pnl_pct:.1f}% / ${pnl:+.2f}). Laya AI shows continued bearish follow-through ({int(p_bear*100)}%). Lower your Stop Loss to ${rec_sl:.6f} to lock in profit.",
-                [f"Move Stop Loss to ${rec_sl:.6f} (Risk-Free Mode)" if long else f"Lower Stop Loss to ${rec_sl:.6f} (Risk-Free)",
-                 f"Next Take Profit target: ${targets.get('take_profit_1', current_price * tp_mult):.6f}",
-                 "Let winners run while protecting capital" if long else "Let downward trend continue"],
-                rec_sl, targets.get("take_profit_1", current_price * tp_far),
-            )
-        return card(
-            True, "ALIGNED", "HOLD_TRAIL_SL",
-            "KEEP HOLDING 🟢" if long else "KEEP HOLDING 🔴", "badge-profit",
-            "Bullish Trend Aligned: Hold Position" if long else "Bearish Trend Aligned: Hold Short",
-            (f"Laya AI probabilities favor continued upward move ({int(p_bull*100)}% bullish). Keep holding your LONG position" if long
-             else f"Laya AI indicates strong seller dominance ({int(p_bear*100)}% bearish). Keep holding your SHORT position")
-            + f" towards target ${targets.get('take_profit_1', entry * tp_mult):.6f}.",
-            ["Keep position open" if long else "Keep SHORT position open",
-             f"Ensure Stop Loss is active at ${sl_target:.6f}",
-             f"Watch for TP1 target near ${targets.get('take_profit_1', entry * tp_far):.6f}"],
-            sl_target, targets.get("take_profit_1", entry * tp_far),
-        )
-
-    if p_against >= 0.50 or against in action:
-        if pnl > 0:
-            return card(
-                True, "OPPOSED", "TAKE_PROFIT", "TAKE PROFIT 🎯", "badge-warning",
-                "⚠️ Momentum Turning Bearish: Cash Out Now" if long else "⚠️ Bullish Bounce Detected: Close Short",
-                f"Warning: Laya AI detects strong downward shift ({int(p_bear*100)}% short pressure). Your LONG is currently profitable (+{pnl_pct:.1f}%). Strongly consider taking profit or clicking Flash Close before momentum reverses your gains." if long
-                else f"Warning: Buyers are stepping in ({int(p_bull*100)}% bull probability). Your SHORT is in profit (+{pnl_pct:.1f}%). Cash out now using Flash Close to secure your gains.",
-                ["Click 'Flash Close' to capture profits immediately",
-                 "Or close 50% size and tighten SL to current price",
-                 "Prepare for potential short entry if breakdown confirms"] if long else
-                ["Click 'Flash Close' to capture profits",
-                 "Avoid holding short into strong bounce",
-                 "Look for clean re-entry or wait"],
-                current_price * (0.998 if long else 1.002), current_price,
-            )
-        return card(
-            True, "OPPOSED", "CUT_LOSS",
-            "EXIT / REDUCE RISK 🚨" if long else "EXIT / CUT LOSS 🚨", "badge-danger",
-            "🚨 Bearish Breakdown: Reduce Exposure" if long else "🚨 Bullish Squeeze Risk: Exit Short",
-            f"Risk Alert: Price is declining ({pnl_pct:.1f}%) and Laya AI indicates sellers are in control ({int(p_bear*100)}% bearish). Exit position via Flash Close to avoid deeper drawdown or liquidation." if long
-            else f"Risk Alert: Price is moving up against your SHORT ({pnl_pct:.1f}%). Laya AI signals bullish momentum ({int(p_bull*100)}%). Flash close now to prevent short-squeeze liquidation.",
-            ["Click 'Flash Close' to limit loss", liquidation, "Preserve margin for higher-conviction setup"] if long
-            else ["Click 'Flash Close' immediately", liquidation, "Protect account equity"],
-            current_price, entry,
-        )
-
-    return card(
-        True, "NEUTRAL", "HOLD_TRAIL_SL", "MONITOR ⏳", "badge-neutral",
-        "Market Pausing: Maintain Guard" if long else "Market Sideways: Keep Alert",
-        f"Price is in a consolidation range. Your LONG is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${sl_target:.6f} and wait for volume to pick up." if long
-        else f"Price is stalling. Your SHORT is at {pnl_pct:+.1f}%. Keep your protective Stop Loss at ${sl_target:.6f}.",
-        ["Hold position while price remains above support" if long else "Hold position while price stays below resistance",
-         f"Stop loss safety boundary: ${sl_target:.6f}",
-         "Monitor for next trend impulse" if long else "Wait for seller volume"],
-        sl_target, targets.get("take_profit_1", entry * tp_mult),
-    )

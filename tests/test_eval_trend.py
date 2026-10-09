@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from experiments.eval_trend import donchian_signals, max_drawdown_r, simulate
+from experiments.eval_trend import donchian_signals, simulate
+from experiments.harness import max_drawdown_r
+from src.strategy_evaluator import CostModel
+
+FREE = CostModel(fee_bps=0, slippage_bps=0)
 
 BAR = 86400
 
@@ -28,7 +32,7 @@ def test_entry_at_next_open_and_gap_through_stop_fills_at_open():
     entry = np.array([1, 0, 0, 0])
     no_exit = np.zeros(4, bool)
     atr = np.full(4, 2.0)
-    trades = simulate(b, entry, no_exit, no_exit, atr, fee=0.0, slip=0.0)
+    trades = simulate(b, entry, no_exit, no_exit, atr, costs=FREE)
     (t,) = trades
     # enters at bar 1 open 100, stop 100 - 2*2 = 96; bar 3 opens at 90, below the stop -> fills at 90
     assert t["entry_time"] == BAR and t["exit_reason"] == "STOP" and t["exit_price"] == 90
@@ -41,7 +45,7 @@ def test_channel_exit_at_next_open_then_reverse():
     entry = np.array([1, 0, 0, -1, 0])
     exit_long = np.array([False, False, False, True, False])
     no_exit = np.zeros(5, bool)
-    trades = simulate(b, entry, exit_long, no_exit, np.full(5, 10.0), fee=0.0, slip=0.0)
+    trades = simulate(b, entry, exit_long, no_exit, np.full(5, 10.0), costs=FREE)
     long, short = trades
     assert long["exit_reason"] == "CHANNEL" and long["exit_price"] == 99 and long["exit_time"] == 4 * BAR
     assert long["r_multiple"] == pytest.approx((99 - 100) / 20)
@@ -54,7 +58,7 @@ def test_long_pays_positive_funding_and_fees_count_in_r():
     entry = np.array([1, 0, 0])
     no_exit = np.zeros(3, bool)
     funding = (np.array([BAR + 3600, 2 * BAR + 3600]), np.array([0.001, 0.001]))
-    (t,) = simulate(b, entry, no_exit, no_exit, np.full(3, 5.0), fee=0.0004, slip=0.0, funding=funding)
+    (t,) = simulate(b, entry, no_exit, no_exit, np.full(3, 5.0), costs=CostModel(fee_bps=4, slippage_bps=0), funding=funding)
     # risk 10 per unit; fees 0.0004 * (100 + 100) = 0.08; funding 2 * 0.001 * 100 = 0.2
     assert t["cost_r"] == pytest.approx(0.028)
     assert t["r_multiple"] == pytest.approx(-0.028)
@@ -64,7 +68,7 @@ def test_entries_ignored_while_in_position():
     b = bars([100] * 5, [101] * 5, [99] * 5, [100] * 5)
     entry = np.array([1, 1, -1, 1, 0])
     no_exit = np.zeros(5, bool)
-    trades = simulate(b, entry, no_exit, no_exit, np.full(5, 5.0), fee=0.0, slip=0.0)
+    trades = simulate(b, entry, no_exit, no_exit, np.full(5, 5.0), costs=FREE)
     assert len(trades) == 1 and trades[0]["side"] == "LONG" and trades[0]["exit_reason"] == "END"
 
 

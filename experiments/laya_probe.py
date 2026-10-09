@@ -21,6 +21,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from experiments.harness import BARRIER_BREAK_EVEN  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
 
 TRAINING_QUESTION = {
@@ -34,7 +35,7 @@ TRAINING_QUESTION = {
         },
     }
 }
-BREAK_EVEN = (0.6 + 0.12) / 1.8  # win rate needed for +1.2% / -0.6% after 0.12% round-trip costs
+BREAK_EVEN = BARRIER_BREAK_EVEN  # win rate needed for +1.2% / -0.6% after round-trip costs
 
 
 def summarize(p_side: Sequence[float], hit: Sequence[bool]) -> Dict[str, float]:

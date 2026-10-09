@@ -1,6 +1,6 @@
 import pytest
 
-from src.edge_gate import EdgeTable, bucket_key, gate_walk_forward, signal_outcomes
+from src.edge_gate import EdgeTable, bucket_key, gate_walk_forward, load_tables, save_tables, signal_outcomes
 from src.strategy_evaluator import CostModel, EvaluationConfig
 
 FREE = CostModel(fee_bps=0, slippage_bps=0)
@@ -52,8 +52,8 @@ def test_table_needs_min_samples_and_positive_mean():
 def test_table_round_trips_through_json(tmp_path):
     table = EdgeTable.fit([long_signal()] * 30, [0.3] * 30, min_samples=30)
     path = tmp_path / "edge.json"
-    table.save(path)
-    assert EdgeTable.load(path).expected_r(long_signal()) == pytest.approx(0.3)
+    save_tables(path, {"BTCUSDT.P": table})
+    assert load_tables(path)["BTCUSDT.P"].expected_r(long_signal()) == pytest.approx(0.3)
 
 
 def test_gate_walk_forward_fits_only_on_outcomes_resolved_before_each_window():

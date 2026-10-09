@@ -86,7 +86,6 @@ APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 # Risk & Strategy Defaults
 DEFAULT_LEVERAGE = 50
 DEFAULT_ATR_SL_MULTIPLIER = 1.6
-DEFAULT_BE_RR = 0.45          # Fast Break-Even trigger at +0.45R (+9% to +12% ROE)
 DEFAULT_TP1_RR = 0.80         # Primary Scalp Take-Profit at +0.80R (+16% to +20% ROE)
 DEFAULT_TP2_RR = 1.40         # Secondary Runner Target at +1.40R (+28% to +35% ROE)
 LEVERAGE_MAX_SL_PCT = 0.0080  # 0.80% maximum price move
@@ -101,6 +100,8 @@ DEFAULT_KELLY_FRACTION_PCT = 0.20     # Quarter-Kelly maximum equity allocation 
 BARRIER_TP_PCT = 0.012
 BARRIER_SL_PCT = 0.006
 BARRIER_MAX_HOLD_SECONDS = 7200
-# Round-trip trading cost (4 bps fee + 2 bps slippage per side), used for the
-# break-even offset and the cost filter
-ROUND_TRIP_COST_PCT = 0.0012
+# Trading costs per side (taker fee, slippage), the defaults of the backtest
+# CostModel; the round trip sets the break-even offset and the cost filter.
+TAKER_FEE_BPS = 4.0
+SLIPPAGE_BPS = 2.0
+ROUND_TRIP_COST_PCT = 2 * (TAKER_FEE_BPS + SLIPPAGE_BPS) / 10000.0

@@ -15,16 +15,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .strategy_evaluator import CostModel, EvaluationConfig, evaluate_signal_sequence, walk_forward_windows
+from .trade_plan import TradePlan
 
 BUCKET_WIDTH = 5.0
 
 
 def bucket_key(signal: Mapping[str, Any]) -> Optional[str]:
-    action = str(signal.get("action", "")).upper()
-    if action not in ("LONG", "SHORT"):
+    plan = TradePlan.from_signal(signal)
+    if plan is None:
         return None
-    confidence = float(signal.get("confidence_pct", 0.0) or 0.0)
-    return f"{action}:{int(confidence // BUCKET_WIDTH * BUCKET_WIDTH)}"
+    return f"{plan.action}:{int(plan.confidence_pct // BUCKET_WIDTH * BUCKET_WIDTH)}"
 
 
 def signal_outcomes(candles: Sequence[Mapping[str, Any]], signals: Sequence[Mapping[str, Any]],
@@ -67,13 +67,17 @@ class EdgeTable:
         expected = self.expected_r(signal)
         return expected is not None and expected > 0
 
-    def save(self, path: Path) -> None:
-        Path(path).write_text(json.dumps({"min_samples": self.min_samples, "stats": self.stats}, indent=2))
 
-    @classmethod
-    def load(cls, path: Path) -> "EdgeTable":
-        data = json.loads(Path(path).read_text())
-        return cls(stats=data["stats"], min_samples=int(data["min_samples"]))
+
+def save_tables(path: Path, tables: Mapping[str, EdgeTable]) -> None:
+    """Write one table per symbol: the file the backtest writes and the auto-trader reads."""
+    Path(path).write_text(json.dumps(
+        {symbol: {"min_samples": t.min_samples, "stats": t.stats} for symbol, t in tables.items()}, indent=2))
+
+
+def load_tables(path: Path) -> Dict[str, EdgeTable]:
+    data = json.loads(Path(path).read_text())
+    return {symbol: EdgeTable(stats=row["stats"], min_samples=int(row["min_samples"])) for symbol, row in data.items()}
 
 
 def gate_walk_forward(signals: Sequence[Mapping[str, Any]], outcomes: Sequence[Optional[float]],

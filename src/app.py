@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Set, Optional
 
@@ -17,15 +18,19 @@ from .config import (
     WEB_DIR,
     BASE_DIR,
     TOOBIT_API_KEY,
-    TOOBIT_API_SECRET
+    TOOBIT_API_SECRET,
+    DEFAULT_POSITION_MARGIN_USD,
 )
 from .market_data import MarketDataService, symbol_key
 from .indicators import compute_all_indicators
+from .market_snapshot import dashboard_timeframes, higher_timeframe, market_state, snapshot_timeframe
 from .laya_engine import LayaEngine
 from .signal_generator import SignalGenerator
 
 from pydantic import BaseModel
-from .toobit_client import ToobitClient, generate_position_suggestion
+from .toobit_client import ToobitClient
+from .simulated_exchange import SimulatedExchange
+from .position_advice import generate_position_suggestion
 from .auto_trader import AutoTrader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -35,36 +40,46 @@ logger = logging.getLogger("app")
 market_service = MarketDataService()
 laya_engine = LayaEngine()
 signal_generator = SignalGenerator()
-toobit_client = ToobitClient(
-    api_key=TOOBIT_API_KEY,
-    api_secret=TOOBIT_API_SECRET,
-    is_demo=not bool(TOOBIT_API_KEY and TOOBIT_API_SECRET)
-)
+toobit_live = ToobitClient(api_key=TOOBIT_API_KEY, api_secret=TOOBIT_API_SECRET)
+
+
+async def _last_price(symbol: str) -> float:
+    ticker = await market_service.fetch_ticker_24h(symbol=symbol)
+    return float(ticker.get("last_price") or 0.0)
+
+
+# The demo account trades on live prices and live contract rules.
+simulated_exchange = SimulatedExchange(price_source=_last_price, rules_source=toobit_live.get_symbol_rules)
+# The venue every route and the auto-trader trade through; switched by _use_exchange.
+exchange = toobit_live if toobit_live.is_connected else simulated_exchange
+
+
+def _exchange_mode() -> str:
+    return "demo" if exchange.is_demo else ("live" if exchange.api_key else "disconnected")
 
 # Cache latest market analysis for instant position suggestion evaluation
 latest_analysis_cache: Dict[str, Any] = {}
 
 
-def _attach_context(latest: Dict[str, Any], htf: Any, depth: Any, funding: Any) -> None:
-    """Attach HTF / order-book / funding context; failed fetches arrive as exceptions and are skipped."""
-    for key, ctx in (("htf", htf), ("depth", depth), ("funding", funding)):
+def _attach_context(latest: Dict[str, Any], contexts: Dict[str, Any]) -> None:
+    """Attach display context (HTF / order book / funding); failed fetches arrive as exceptions and are skipped."""
+    for key, ctx in contexts.items():
         if isinstance(ctx, dict):
             latest[key] = ctx
 
 
-async def _run_analysis(raw_klines, symbol: str, interval: str, context=()) -> tuple:
-    """Indicators -> Laya decision -> signal, cached for the position-suggestion endpoint."""
-    calc = compute_all_indicators(raw_klines)
-    latest = calc["latest"]
-    latest["symbol"] = symbol.upper()
-    latest["interval"] = interval
-    latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
-    if context:
-        _attach_context(latest, *context)
-    laya_decision = await laya_engine.decide(latest)
-    signal = signal_generator.generate_signal(latest, laya_decision)
-    latest_analysis_cache.update(latest=latest, signal=signal, laya=laya_decision, symbol=symbol.upper())
-    return latest, laya_decision, signal
+async def _run_analysis(symbol: str, interval: str) -> tuple:
+    """Snapshot -> Laya decision -> signal on the closed-candle state the auto-trader decides on.
+
+    The chart interval is the entry timeframe, with the auto-trader's 15m/1h
+    context above it, so the dashboard shows the plan the auto-trader would trade.
+    """
+    state = await market_state(market_service.fetch_klines, symbol.upper(), dashboard_timeframes(interval),
+                               auto_trader.settings["leverage"], entry_timeframe=interval)
+    laya_decision = await laya_engine.decide(state)
+    signal = signal_generator.generate_signal(state, laya_decision)
+    latest_analysis_cache.update(latest=state, signal=signal, laya=laya_decision, symbol=symbol.upper())
+    return state, laya_decision, signal
 
 
 def _write_toobit_keys(api_key: str = "", api_secret: str = "") -> None:
@@ -91,7 +106,7 @@ class ToobitCloseRequest(BaseModel):
 class ToobitSimulateRequest(BaseModel):
     symbol: str = DEFAULT_SYMBOL
     side: str = "LONG"
-    quantity: float = 100000.0
+    quantity: Optional[float] = None  # default: the fixed margin at this leverage
     entryPrice: Optional[float] = None
     leverage: int = 50
     stopLoss: Optional[float] = None
@@ -131,12 +146,19 @@ ws_manager = ConnectionManager()
 
 # Autonomous Algorithmic Trading Supervisor
 auto_trader = AutoTrader(
-    toobit_client=toobit_client,
+    exchange=exchange,
     market_service=market_service,
     laya_engine=laya_engine,
     signal_generator=signal_generator,
     ws_manager=ws_manager
 )
+
+
+def _use_exchange(adapter) -> None:
+    """Point the routes and the auto-trader at ``adapter`` (live Toobit or the simulated exchange)."""
+    global exchange
+    exchange = adapter
+    auto_trader.exchange = adapter
 
 # Background tick handler
 async def handle_candle_tick(candle_update: Dict[str, Any]):
@@ -166,7 +188,7 @@ async def lifespan(app: FastAPI):
     await auto_trader.stop_loop()
     await market_service.close()
     await laya_engine.close()
-    await toobit_client.close()
+    await toobit_live.close()
 
 app = FastAPI(title="Laya Trade Analyzer", lifespan=lifespan)
 
@@ -242,13 +264,14 @@ async def get_klines(
 
         # Asynchronously fetch institutional metrics (HTF, depth, funding) to enrich latest telemetry
         try:
-            htf_ctx, depth_ctx, funding_ctx = await asyncio.gather(
-                market_service.fetch_htf_context(symbol),
+            htf_snapshot, depth_ctx, funding_ctx = await asyncio.gather(
+                snapshot_timeframe(market_service.fetch_klines, symbol, "1h", auto_trader.settings["leverage"]),
                 market_service.fetch_order_book_depth(symbol),
                 market_service.fetch_funding_rate(symbol),
                 return_exceptions=True
             )
-            _attach_context(calculated["latest"], htf_ctx, depth_ctx, funding_ctx)
+            htf_ctx = higher_timeframe(htf_snapshot) if isinstance(htf_snapshot, dict) else None
+            _attach_context(calculated["latest"], {"htf": htf_ctx, "depth": depth_ctx, "funding": funding_ctx})
         except Exception as e:
             logger.debug(f"Non-critical institutional enrichment in klines: {e}")
 
@@ -269,24 +292,21 @@ async def trigger_analysis(
     interval: str = Query(DEFAULT_TIMEFRAME)
 ):
     """Run full technical calculation and Laya System 1 probabilistic decision with multi-factor confluence."""
+    if interval not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported interval")
     try:
-        # Fully parallel gather across all external exchange network endpoints
-        results = await asyncio.gather(
-            market_service.fetch_klines(symbol=symbol, interval=interval, limit=200),
-            market_service.fetch_htf_context(symbol),
+        # Order book and funding are shown, not decided on: the auto-trader never sees them.
+        analysis, depth_ctx, funding_ctx = await asyncio.gather(
+            _run_analysis(symbol, interval),
             market_service.fetch_order_book_depth(symbol),
             market_service.fetch_funding_rate(symbol),
             return_exceptions=True
         )
-        raw_klines, htf_ctx, depth_ctx, funding_ctx = results
-
-        if isinstance(raw_klines, Exception) or not raw_klines:
-            logger.error(f"Failed to fetch market klines: {raw_klines}")
-            raise HTTPException(status_code=500, detail="Failed to fetch market klines from exchange")
-
-        latest, laya_decision, signal = await _run_analysis(
-            raw_klines, symbol, interval, context=(htf_ctx, depth_ctx, funding_ctx)
-        )
+        if isinstance(analysis, Exception):
+            raise analysis
+        state, laya_decision, signal = analysis
+        latest = dict(state)
+        _attach_context(latest, {"depth": depth_ctx, "funding": funding_ctx})
 
         # Broadcast signal to WebSocket clients
         await ws_manager.broadcast({
@@ -319,7 +339,7 @@ async def get_history():
 async def connect_toobit(req: ToobitConnectRequest):
     """Connect to Toobit via API key/secret or activate simulated Demo mode."""
     if req.isDemo:
-        toobit_client.set_credentials("", "", is_demo=True)
+        _use_exchange(simulated_exchange)
         return {
             "success": True,
             "mode": "demo",
@@ -330,10 +350,11 @@ async def connect_toobit(req: ToobitConnectRequest):
         raise HTTPException(status_code=400, detail="Both API Key and Secret are required for live connection.")
     
     # Test connection with Toobit
-    toobit_client.set_credentials(req.apiKey, req.apiSecret, is_demo=False)
-    test_result = await toobit_client.test_connection()
+    toobit_live.set_credentials(req.apiKey, req.apiSecret)
+    _use_exchange(toobit_live)
+    test_result = await toobit_live.test_connection()
     if not test_result.get("success"):
-        toobit_client.disconnect()
+        toobit_live.disconnect()
         return JSONResponse(status_code=401, content=test_result)
 
     # Persist validated keys to .env
@@ -351,7 +372,9 @@ async def connect_toobit(req: ToobitConnectRequest):
 @app.post("/api/toobit/disconnect")
 async def disconnect_toobit():
     """Disconnect and clear credentials."""
-    toobit_client.disconnect()
+    toobit_live.disconnect()
+    simulated_exchange.reset()
+    _use_exchange(toobit_live)
     try:
         _write_toobit_keys()
     except Exception as e:
@@ -361,11 +384,10 @@ async def disconnect_toobit():
 @app.get("/api/toobit/status")
 async def get_toobit_status():
     """Get active Toobit connection mode, balance, and account overview."""
-    mode = "demo" if toobit_client.is_demo else ("live" if toobit_client.api_key else "disconnected")
-    balance = await toobit_client.get_balance() if toobit_client.is_connected else {}
+    balance = await exchange.get_balance() if exchange.is_connected else {}
     return {
-        "connected": toobit_client.is_connected,
-        "mode": mode,
+        "connected": exchange.is_connected,
+        "mode": _exchange_mode(),
         "balance": balance
     }
 
@@ -374,8 +396,8 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
     """Fetch active open positions with live calculated PnL."""
     try:
         # Fetch all open positions across the Toobit account
-        all_positions = await toobit_client.get_positions(symbol=None)
-        
+        all_positions = await exchange.get_positions(symbol=None)
+
         # If symbol specified, filter/prioritize matching position
         matching_positions = []
         if symbol and all_positions:
@@ -406,24 +428,21 @@ async def get_toobit_positions(symbol: Optional[str] = Query(None)):
         positions_to_return = matching_positions if matching_positions else all_positions
 
         return {
-            "connected": toobit_client.is_connected,
-            "mode": "demo" if toobit_client.is_demo else "live",
+            "connected": exchange.is_connected,
+            "mode": _exchange_mode(),
             "positions": positions_to_return,
             "all_positions": all_positions,
             "has_matching_position": bool(matching_positions)
         }
     except Exception as e:
         logger.error(f"Error fetching Toobit positions: {e}")
-        return {"connected": toobit_client.is_connected, "positions": [], "all_positions": [], "error": str(e)}
+        return {"connected": exchange.is_connected, "positions": [], "all_positions": [], "error": str(e)}
 
 @app.post("/api/toobit/close")
 async def close_toobit_position(req: ToobitCloseRequest):
-    """Execute flashClose order on Toobit."""
+    """Market-close a position; a trade the auto-trader manages is booked toward its loss limits."""
     try:
-        res = await toobit_client.flash_close(req.symbol)
-        if res.get("success"):
-            auto_trader._remove_active_trade(req.symbol)
-        return res
+        return await auto_trader.close_trade(req.symbol, reason="manual close")
     except Exception as e:
         logger.error(f"Error closing position {req.symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -431,9 +450,15 @@ async def close_toobit_position(req: ToobitCloseRequest):
 @app.post("/api/toobit/demo/simulate")
 async def simulate_demo_position(req: ToobitSimulateRequest):
     """Open or replace a demo position for testing."""
-    if not toobit_client.is_demo:
-        toobit_client.set_credentials("", "", is_demo=True)
-    
+    if not exchange.is_demo:
+        if exchange.api_key:
+            # Never flip a connected live account to demo behind the trader's back.
+            return JSONResponse(status_code=409, content={
+                "success": False,
+                "message": "Connected to the live account: switch to demo before simulating positions.",
+            })
+        _use_exchange(simulated_exchange)
+
     entry_price = req.entryPrice
     try:
         ticker = await market_service.fetch_ticker_24h(symbol=req.symbol)
@@ -449,10 +474,10 @@ async def simulate_demo_position(req: ToobitSimulateRequest):
     if not entry_price or entry_price <= 0:
         entry_price = 0.0042
 
-    pos = toobit_client.simulate_position(
+    pos = simulated_exchange.simulate_position(
         symbol=req.symbol,
         side=req.side,
-        quantity=req.quantity,
+        quantity=req.quantity or DEFAULT_POSITION_MARGIN_USD * req.leverage / entry_price,
         entry_price=entry_price,
         leverage=req.leverage,
         stop_loss=float(req.stopLoss or 0.0),
@@ -472,7 +497,7 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
     and return tailored actionable trade management suggestions.
     """
     # 1. Fetch active positions across account
-    all_positions = await toobit_client.get_positions(symbol=None)
+    all_positions = await exchange.get_positions(symbol=None)
     target_sym = symbol or market_service.current_symbol
 
     # 2. Check for matching position or fallback to open account position
@@ -504,9 +529,7 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
 
     if not analysis or latest_analysis_cache.get("symbol") != target_sym.upper():
         try:
-            interval = market_service.current_interval
-            raw_klines = await market_service.fetch_klines(symbol=target_sym, interval=interval, limit=100)
-            _, laya_dec, analysis = await _run_analysis(raw_klines, target_sym, interval)
+            _, laya_dec, analysis = await _run_analysis(target_sym, market_service.current_interval)
         except Exception as e:
             logger.warning(f"Could not compute fresh analysis for suggestion: {e}")
 
@@ -553,11 +576,17 @@ async def clear_autotrade_logs():
     """Clear AutoTrader audit log history."""
     return auto_trader.clear_logs()
 
+# Perpetual symbols in display ("BTCUSDT.P", "BTCUSDT") or Toobit ("BTC-SWAP-USDT") form.
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{1,20}(USDT(\.P)?|-SWAP-USDT)$")
+
+
 @app.post("/api/switch")
 async def switch_stream(symbol: str = Query(...), interval: str = Query(DEFAULT_TIMEFRAME)):
-    sym = symbol.upper()
-    if sym not in SUPPORTED_SYMBOLS:
-        SUPPORTED_SYMBOLS.append(sym)
+    # Streaming any symbol is fine; SUPPORTED_SYMBOLS stays fixed because it is the
+    # auto-trader's allow-list, which a chart switch must never widen.
+    sym = symbol.upper().strip()
+    if not _SYMBOL_PATTERN.match(sym) or interval not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported symbol or interval")
     await market_service.start_streaming(sym, interval)
     return {
         "status": "success",

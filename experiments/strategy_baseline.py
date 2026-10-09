@@ -17,13 +17,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import bisect
-import hashlib
 import json
 import os
-import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from statistics import mean
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -32,11 +30,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx  # noqa: E402
 
-from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
-from src.auto_trader import merge_timeframes, timeframe_snapshot  # noqa: E402
+from experiments.harness import PROBE_SEED, REPORT_DIR, load_candles, matched_rate, random_sides  # noqa: E402
+from experiments.history import INTERVAL_SECONDS  # noqa: E402
+from src.market_snapshot import WINDOW, closed_window, merge_timeframes, timeframe_snapshot  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
-from src.edge_gate import EdgeTable, gate_walk_forward, signal_outcomes  # noqa: E402
+from src.edge_gate import EdgeTable, gate_walk_forward, save_tables, signal_outcomes  # noqa: E402
 from src.signal_generator import SignalGenerator  # noqa: E402
+from src.trade_management import ExitPolicy  # noqa: E402
 from src.strategy_evaluator import (  # noqa: E402
     CostModel,
     EvaluationConfig,
@@ -46,24 +46,17 @@ from src.strategy_evaluator import (  # noqa: E402
 
 ENTRY_TF = "5m"
 CONTEXT_TFS = ("15m", "1h")
-WINDOW = 150  # candles per timeframe, as the live auto-trader fetches
 WARMUP_DAYS = 7  # enough 1h history to fill the first window
 SCRATCH = BASE_DIR / "scratch"
 HOLD = {"position": "NEUTRAL_HOLD"}
 KNOWN_GAPS = [
     "Binance futures prices stand in for Toobit.",
-    "Funding costs are 0.",
+    "Funding costs are 0 (experiments/eval_trend.py charges real funding events).",
     "Sizing is fixed-risk; live uses fixed margin. Compare results in R.",
     "No order-book or funding context (the live auto-trader does not fetch them either).",
     "Batched model inference can differ from single calls in the last decimals.",
+    "Decision latency is not simulated: live decides a few seconds after the bar closes.",
 ]
-
-
-def htf_window(candles: Sequence[Mapping[str, Any]], opens: Sequence[int], step: int,
-               bar_close: int, size: int = WINDOW) -> List[Mapping[str, Any]]:
-    """The last ``size`` candles whose close time is at or before ``bar_close``."""
-    closed = bisect.bisect_right(opens, bar_close - step)
-    return list(candles[max(0, closed - size):closed])
 
 
 def _decision(position: str) -> Dict[str, Any]:
@@ -72,14 +65,8 @@ def _decision(position: str) -> Dict[str, Any]:
 
 def random_decisions(count: int, rate: float, seed: int) -> List[Dict[str, Any]]:
     """Enter at ``rate`` of bars in a random direction; everything else holds."""
-    rng = random.Random(seed)
-    out = []
-    for _ in range(count):
-        if rng.random() < rate:
-            out.append(_decision("STRONG_LONG" if rng.random() < 0.5 else "STRONG_SHORT"))
-        else:
-            out.append(HOLD)
-    return out
+    return [_decision("STRONG_LONG" if side > 0 else "STRONG_SHORT") if side else HOLD
+            for side in random_sides(count, rate, seed)]
 
 
 def tradeable_rate(signals: Sequence[Mapping[str, Any]], min_confidence: float) -> float:
@@ -111,16 +98,18 @@ def build_states(history: Dict[str, List[Dict[str, Any]]], symbol: str, start: i
     """Auto-trader states for every entry bar opening at or after ``start``."""
     entry = history[ENTRY_TF]
     entry_step = INTERVAL_SECONDS[ENTRY_TF]
-    opens = {tf: [c["time"] for c in history[tf]] for tf in CONTEXT_TFS}
+    opens = {tf: [c["time"] for c in history[tf]] for tf in (ENTRY_TF, *CONTEXT_TFS)}
     memo: Dict[tuple, Dict[str, Any]] = {}
     candles, states = [], []
     for i, bar in enumerate(entry):
         if bar["time"] < start or i + 1 < WINDOW:
             continue
+        # The state the live auto-trader builds when this bar closes (src/market_snapshot.py).
         bar_close = bar["time"] + entry_step
-        snapshots = {ENTRY_TF: timeframe_snapshot(entry[i + 1 - WINDOW:i + 1], symbol, ENTRY_TF, leverage)}
+        window = closed_window(entry, ENTRY_TF, bar_close, opens=opens[ENTRY_TF])
+        snapshots = {ENTRY_TF: timeframe_snapshot(window, symbol, ENTRY_TF, leverage)}
         for tf in CONTEXT_TFS:
-            window = htf_window(history[tf], opens[tf], INTERVAL_SECONDS[tf], bar_close)
+            window = closed_window(history[tf], tf, bar_close, opens=opens[tf])
             if len(window) < WINDOW:
                 break
             key = (tf, window[-1]["time"])
@@ -133,19 +122,17 @@ def build_states(history: Dict[str, List[Dict[str, Any]]], symbol: str, start: i
     return candles, states
 
 
-def model_decisions(engine, states: List[Dict[str, Any]], cache_path: Path) -> List[Dict[str, Any]]:
-    """Model-only decisions, cached by the hash of the exact text the model sees."""
+def warm_agent_cache(engine, states: List[Dict[str, Any]], cache_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Native-model decisions for every state, cached on disk by the hash of the exact text the model sees."""
     cache: Dict[str, Dict[str, Any]] = json.loads(cache_path.read_text()) if cache_path.exists() else {}
-    keys = [hashlib.sha256(engine._agent_summary(s).encode()).hexdigest() for s in states]
-    missing = [i for i, k in enumerate(keys) if k not in cache]
     chunk = 512
-    for n in range(0, len(missing), chunk):
-        idx = missing[n:n + chunk]
-        for i, decision in zip(idx, engine._agent_decisions([states[i] for i in idx])):
-            cache[keys[i]] = decision
-        print(f"    model {min(n + chunk, len(missing))}/{len(missing)}", file=sys.stderr)
-        cache_path.write_text(json.dumps(cache))
-    return [cache[k] for k in keys]
+    for n in range(0, len(states), chunk):
+        before = len(cache)
+        engine.agent_decisions(states[n:n + chunk], cache)
+        if len(cache) > before:
+            print(f"    model {min(n + chunk, len(states))}/{len(states)}", file=sys.stderr)
+            cache_path.write_text(json.dumps(cache))
+    return cache
 
 
 def evaluate(candles, signals, config: EvaluationConfig, costs: CostModel, window_bars: int) -> Dict[str, Any]:
@@ -215,30 +202,26 @@ async def main() -> int:
 
     engines = [e for e in args.engines.split(",") if e]
     costs = CostModel(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
-    round_trip = 2 * (args.fee_bps + args.slippage_bps) / 10000.0
-    breakeven = {
-        "legacy": dict(breakeven_trigger_pct=0.09 / args.leverage),
-        "tp1_fees": dict(breakeven_after_tp1=True, breakeven_offset_pct=round_trip),
-        "off": {},
-    }[args.breakeven]
-    live_exits = dict(**breakeven, opposing_exit_confidence=70.0,
-                      max_leverage=float(args.leverage), risk_per_trade=0.01)
-    strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, **live_exits)
-    baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, **live_exits)
+    # The auto-trader's exit rules, built from the settings keys it reads.
+    exits = ExitPolicy.from_settings({"breakeven_mode": args.breakeven, "leverage": args.leverage})
+    sizing = dict(max_leverage=float(args.leverage), risk_per_trade=0.01)
+    strategy_cfg = EvaluationConfig(min_confidence_pct=args.min_confidence, exits=exits, **sizing)
+    baseline_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=exits, **sizing)
     # Outcome labels: each signal alone, no confidence gate, no opposing exit.
-    outcome_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": None})
+    outcome_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=replace(exits, opposing_min_confidence=None), **sizing)
     # Gated signals already passed the outcome gate: any opposite gated signal closes the trade.
-    gated_cfg = EvaluationConfig(min_confidence_pct=0.0, **{**live_exits, "opposing_exit_confidence": 0.0})
+    gated_cfg = EvaluationConfig(min_confidence_pct=0.0, exits=replace(exits, opposing_min_confidence=0.0), **sizing)
     horizon_bars = 288  # one day of 5m bars caps an outcome label
-    edge_tables: Dict[str, Dict[str, Any]] = {}
+    edge_tables: Dict[str, Dict[str, EdgeTable]] = {}
     window_bars = int(args.window_days * 86400 / INTERVAL_SECONDS[ENTRY_TF])
 
     from src.laya_engine import LayaEngine
 
     engine = LayaEngine()
     if {"live", "model"} & set(engines):
-        if not await engine.start_server() or engine._agent is None:
-            print("Native Laya model did not load; running fallback only.", file=sys.stderr)
+        await engine.start_server()
+        if engine.runtime == "fallback":
+            print("No Laya model loaded; running fallback only.", file=sys.stderr)
             engines = [e for e in engines if e == "fallback"]
 
     now = time.time()
@@ -247,25 +230,26 @@ async def main() -> int:
     async with httpx.AsyncClient(timeout=30.0) as client:
         for symbol in [s.strip() for s in args.symbols.split(",") if s.strip()]:
             print(f"{symbol}: loading history", file=sys.stderr)
-            history = {
-                tf: await load_history(client, symbol, tf, args.days + WARMUP_DAYS, SCRATCH / "history", now=now)
-                for tf in (ENTRY_TF, *CONTEXT_TFS)
-            }
+            history = (await load_candles(client, [symbol], (ENTRY_TF, *CONTEXT_TFS), args.days + WARMUP_DAYS,
+                                          now, pause=0.0))[symbol]
             candles, states = build_states(history, symbol, start, args.leverage)
             print(f"{symbol}: {len(states)} bars", file=sys.stderr)
 
-            fallback = [engine._fallback_decision(s, 0.0) for s in states]
             decisions: Dict[str, List[Dict[str, Any]]] = {}
             if "fallback" in engines:
-                decisions["fallback"] = fallback
+                decisions["fallback"] = [engine.fallback_decision(s, 0.0) for s in states]
             if {"live", "model"} & set(engines):
-                cache = SCRATCH / "backtest_cache" / f"{engine.model_filename}_{symbol.replace('.', '_')}.json"
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                model = model_decisions(engine, states, cache)
-                if "model" in engines:
-                    decisions["model"] = model
+                cache: Dict[str, Dict[str, Any]] = {}
+                if engine.runtime == "agent":
+                    cache_path = SCRATCH / "backtest_cache" / f"{engine.model_filename}_{symbol.replace('.', '_')}.json"
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache = warm_agent_cache(engine, states, cache_path)
+                # The live row runs the engine's public path, exactly what the auto-trader calls.
+                live = await engine.decide_batch(states, agent_cache=cache)
+                if "model" in engines:  # model only: no blend (the ONNX runtime never blends)
+                    decisions["model"] = engine.agent_decisions(states, cache) if engine.runtime == "agent" else live
                 if "live" in engines:
-                    decisions["live"] = [engine._blend(m, f) for m, f in zip(model, fallback)]
+                    decisions["live"] = live
 
             generator = SignalGenerator(leverage=args.leverage, exit_profile=args.exit_profile,
                                         max_cost_share=args.max_cost_share)
@@ -286,19 +270,13 @@ async def main() -> int:
                     gated = gate_walk_forward(signals, outcomes, window_bars, horizon_bars, args.gate_min_samples)
                     rows.append({"symbol": symbol, "strategy": f"{name}+gate",
                                  **evaluate(candles, gated, gated_cfg, costs, window_bars)})
-                    table = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
-                    edge_tables.setdefault(name, {})[symbol] = {"min_samples": table.min_samples, "stats": table.stats}
+                    edge_tables.setdefault(name, {})[symbol] = EdgeTable.fit(signals, outcomes, args.gate_min_samples)
 
             # Strategy signals cluster on consecutive bars and filters drop some random
-            # entries, so matching signal rate does not match trade count. Rescale the
-            # random entry rate twice against a probe seed to match the strategy's trades.
-            random_rate = directional_rate
-            for _ in range(2):
-                probe = evaluate(candles, to_signals(random_decisions(len(states), random_rate, 10_000)),
-                                 baseline_cfg, costs, window_bars)["trade_count"]
-                if not probe or not target_trades:
-                    break
-                random_rate = min(1.0, random_rate * target_trades / probe)
+            # entries, so matching signal rate does not match trade count.
+            random_rate = matched_rate(target_trades, directional_rate, lambda rate: evaluate(
+                candles, to_signals(random_decisions(len(states), rate, PROBE_SEED)),
+                baseline_cfg, costs, window_bars)["trade_count"])
             rows.append({"symbol": symbol, "strategy": "flat",
                          **evaluate(candles, [{}] * len(candles), baseline_cfg, costs, window_bars)})
             seeds = [evaluate(candles, to_signals(random_decisions(len(states), random_rate, seed)),
@@ -309,9 +287,8 @@ async def main() -> int:
                          **evaluate(candles, to_signals(ema_cross_decisions(states)), baseline_cfg, costs, window_bars)})
 
     await engine.close()
-    out_dir = SCRATCH / "backtests"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = REPORT_DIR / f"baseline_{time.strftime('%Y%m%d_%H%M%S')}.json"
     out_path.write_text(json.dumps({"args": vars(args), "engines": engines, "known_gaps": KNOWN_GAPS,
                                     "rows": rows}, indent=2, default=str))
     if edge_tables:
@@ -319,7 +296,7 @@ async def main() -> int:
         table_dir.mkdir(parents=True, exist_ok=True)
         for name, per_symbol in edge_tables.items():
             path = table_dir / f"{name}_{args.exit_profile}_{args.breakeven}.json"
-            path.write_text(json.dumps(per_symbol, indent=2))
+            save_tables(path, per_symbol)
             print(f"Edge table (fit on all {args.days:g} days): {path}")
     print_table(rows)
     print(f"\nrandom = entries matched to the first engine's trade count, same bracket, mean of {args.seeds} seeds")

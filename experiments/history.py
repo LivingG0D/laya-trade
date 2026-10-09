@@ -12,17 +12,35 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import BINANCE_FUTURES_REST_URL  # noqa: E402
 from src.market_data import _parse_klines, to_binance_symbol  # noqa: E402
-
-INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+from src.market_snapshot import INTERVAL_SECONDS  # noqa: E402
 KLINES_URL = f"{BINANCE_FUTURES_REST_URL}/fapi/v1/klines"
+
+
+async def get_json(client: httpx.AsyncClient, url: str, params: dict, retries: int = 4,
+                   retry_delay: float = 5.0) -> Any:
+    """GET a Binance endpoint; rate limits (429/418), 5xx and dropped connections retry with backoff."""
+    for attempt in range(retries + 1):
+        try:
+            resp = await client.get(url, params=params)
+        except httpx.TransportError:
+            if attempt == retries:
+                raise
+            await asyncio.sleep(retry_delay * 2 ** attempt)
+            continue
+        if (resp.status_code in (418, 429) or resp.status_code >= 500) and attempt < retries:
+            await asyncio.sleep(retry_delay * 2 ** attempt)
+            continue
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def fetch_range(
@@ -47,19 +65,7 @@ async def fetch_range(
     end_ms = int(now * 1000)
     while True:
         params = {"symbol": to_binance_symbol(symbol), "interval": interval, "limit": page, "endTime": end_ms}
-        for attempt in range(retries + 1):
-            try:
-                resp = await client.get(KLINES_URL, params=params)
-            except httpx.TransportError:
-                if attempt == retries:
-                    raise
-                await asyncio.sleep(retry_delay * 2 ** attempt)
-                continue
-            if resp.status_code not in (418, 429) and resp.status_code < 500 or attempt == retries:
-                break
-            await asyncio.sleep(retry_delay * 2 ** attempt)
-        resp.raise_for_status()
-        batch = resp.json()
+        batch = await get_json(client, KLINES_URL, params, retries, retry_delay)
         if not batch:
             break
         rows.extend(batch)
@@ -103,3 +109,24 @@ async def load_history(
         candles = await fetch_range(client, symbol, interval, start, now, pause=pause)
     path.write_text(json.dumps(candles))
     return [c for c in candles if c["time"] >= start]
+
+
+async def load_funding(client: httpx.AsyncClient, symbol: str, start_ms: int,
+                       cache_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """Full funding history (seconds, rate), cached on disk; pages forward by startTime."""
+    path = Path(cache_dir) / f"{symbol.upper().replace('.', '_')}_funding.json"
+    rows: List[dict] = json.loads(path.read_text()) if path.exists() else []
+    if rows and int(rows[0]["fundingTime"]) > start_ms + 86400_000:
+        rows = []  # cache starts later than asked (or the symbol listed later): refetch it all
+    cursor = int(rows[-1]["fundingTime"]) + 1 if rows else start_ms
+    while True:
+        batch = await get_json(client, f"{BINANCE_FUTURES_REST_URL}/fapi/v1/fundingRate",
+                               {"symbol": to_binance_symbol(symbol), "startTime": cursor, "limit": 1000})
+        rows += batch
+        if len(batch) < 1000:
+            break
+        cursor = int(batch[-1]["fundingTime"]) + 1
+        await asyncio.sleep(0.3)
+    path.write_text(json.dumps(rows))
+    return (np.array([int(r["fundingTime"]) // 1000 for r in rows], dtype=np.int64),
+            np.array([float(r["fundingRate"]) for r in rows]))

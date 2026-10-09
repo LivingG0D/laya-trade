@@ -1,23 +1,27 @@
 """Deterministic cost-aware evaluation for strategy experiments.
 
 The evaluator intentionally uses the previous candle's signal and the next
-candle's open for entry. It is a research baseline, not a live execution
-engine: callers must provide realistic candles and signal targets.
+candle's open for entry. Open positions are managed by src/trade_management.py,
+the rules the live auto-trader runs; callers must provide realistic candles and
+signals (read through src/trade_plan.py).
 """
 
 from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
+from .config import SLIPPAGE_BPS, TAKER_FEE_BPS
 from .indicators import validate_klines
+from .trade_management import ExitPolicy, breakeven_stop, opposing_exit, time_stop_due, trigger_exit
+from .trade_plan import TradePlan
 
 
 @dataclass(frozen=True)
 class CostModel:
     """Per-side trading costs expressed in basis points."""
 
-    fee_bps: float = 4.0
-    slippage_bps: float = 2.0
+    fee_bps: float = TAKER_FEE_BPS
+    slippage_bps: float = SLIPPAGE_BPS
     funding_bps_per_bar: float = 0.0
     # Entry-side overrides, e.g. a maker (limit) entry with a lower fee and no slippage.
     entry_fee_bps: Optional[float] = None
@@ -32,6 +36,13 @@ class CostModel:
         )):
             raise ValueError("Cost model values must be finite and non-negative")
 
+    @property
+    def round_trip(self) -> float:
+        """Entry plus exit fees and slippage, as a fraction of price."""
+        entry_fee = self.fee_bps if self.entry_fee_bps is None else self.entry_fee_bps
+        entry_slippage = self.slippage_bps if self.entry_slippage_bps is None else self.entry_slippage_bps
+        return (entry_fee + entry_slippage + self.fee_bps + self.slippage_bps) / 10000.0
+
 
 @dataclass(frozen=True)
 class EvaluationConfig:
@@ -42,13 +53,9 @@ class EvaluationConfig:
     max_leverage: float = 10.0
     min_confidence_pct: float = 55.0
     allow_short: bool = True
-    # Live-exit mirrors, off by default. Break-even: once price moves this
-    # fraction in favour (or TP1 fills), later bars use entry +/- offset as stop.
-    breakeven_trigger_pct: float = 0.0
-    breakeven_offset_pct: float = 0.0005
-    breakeven_after_tp1: bool = False  # TP1 fill alone moves the stop (implied when a price trigger is set)
-    # Close at the next open when an opposite signal reaches this confidence.
-    opposing_exit_confidence: Optional[float] = None
+    # The live exit rules (break-even, opposing-signal exit); off by default.
+    # An opposing exit closes at the next open.
+    exits: ExitPolicy = ExitPolicy()
 
     def __post_init__(self) -> None:
         if not isfinite(self.initial_equity) or self.initial_equity <= 0:
@@ -59,8 +66,6 @@ class EvaluationConfig:
             raise ValueError("max_leverage must be positive")
         if not isfinite(self.min_confidence_pct) or not 0 <= self.min_confidence_pct <= 100:
             raise ValueError("min_confidence_pct must be in [0, 100]")
-        if not all(isfinite(v) and v >= 0 for v in (self.breakeven_trigger_pct, self.breakeven_offset_pct)):
-            raise ValueError("break-even settings must be finite and non-negative")
 
 
 def walk_forward_windows(
@@ -88,42 +93,6 @@ def walk_forward_windows(
             break
 
 
-def _as_float(value: Any) -> Optional[float]:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric if isfinite(numeric) else None
-
-
-def _signal_confidence(signal: Mapping[str, Any]) -> float:
-    value = _as_float(signal.get("confidence_pct"))
-    if value is None:
-        value = _as_float(signal.get("confidence"))
-    if value is None:
-        return 0.0
-    if 0.0 <= value <= 1.0:
-        value *= 100.0
-    return min(100.0, max(0.0, value))
-
-
-def _signal_side(signal: Mapping[str, Any]) -> Optional[int]:
-    action = str(signal.get("action") or signal.get("position") or "").upper()
-    if action in {"LONG", "BUY", "STRONG_LONG", "SCALP_LONG"}:
-        return 1
-    if action in {"SHORT", "SELL", "STRONG_SHORT", "SCALP_SHORT"}:
-        return -1
-    return None
-
-
-def _signal_price(signal: Mapping[str, Any], *keys: str) -> float:
-    for key in keys:
-        value = _as_float(signal.get(key))
-        if value is not None and value > 0:
-            return value
-    return 0.0
-
-
 def _entry_price(open_price: float, side: int, slippage_rate: float) -> float:
     return open_price * (1.0 + slippage_rate if side == 1 else 1.0 - slippage_rate)
 
@@ -149,29 +118,8 @@ def _targets_are_valid(side: int, entry: float, stop: float, tp1: float, tp2: fl
 
 
 def _trigger_exit(position: Mapping[str, Any], candle: Mapping[str, Any]) -> Optional[tuple[str, float]]:
-    side = position["side"]
-    high = float(candle["high"])
-    low = float(candle["low"])
-    open_price = float(candle["open"])
-    stop = position["stop"]
-    tp1 = position["tp1"]
-    tp2 = position["tp2"]
-
-    if side == 1:
-        if low <= stop:
-            return "STOP", min(stop, open_price)  # a gap through the stop fills at the open
-        if not position["tp1_hit"] and high >= tp1 > 0:
-            return "TP1", tp1
-        if position["tp1_hit"] and high >= tp2 > 0:
-            return "TP2", tp2
-    else:
-        if high >= stop:
-            return "STOP", max(stop, open_price)
-        if not position["tp1_hit"] and low <= tp1 > 0:
-            return "TP1", tp1
-        if position["tp1_hit"] and low <= tp2 > 0:
-            return "TP2", tp2
-    return None
+    return trigger_exit(position["side"], position["stop"], position["tp1"], position["tp2"], position["tp1_hit"],
+                        float(candle["open"]), float(candle["high"]), float(candle["low"]))
 
 
 def _mark_equity(equity: float, position: Optional[Mapping[str, Any]], close: float) -> float:
@@ -199,17 +147,20 @@ def _close_quantity(
     return equity + gross - exit_fee
 
 
-def _move_to_breakeven(position: Dict[str, Any], offset_pct: float) -> None:
-    position["stop"] = position["entry"] * (1.0 + position["side"] * offset_pct)
-    position["be_moved"] = True
+def _move_to_breakeven(position: Dict[str, Any], exits: ExitPolicy, favourable: float) -> None:
+    """Apply the live break-even rule; ``favourable`` is the best price seen on this bar."""
+    if position["be_moved"]:
+        return
+    stop = breakeven_stop(exits, position["side"], position["entry"], position["tp1"], favourable)
+    if stop is not None:
+        position["stop"] = stop
+        position["be_moved"] = True
 
 
 def _hold_expired(position: Mapping[str, Any], candle: Mapping[str, Any]) -> bool:
     """True once the bar closing now reaches the signal's maximum holding time."""
-    max_hold = position.get("max_hold_seconds")
-    if not max_hold or position.get("bar_seconds") is None:
-        return False
-    return float(candle["time"]) + position["bar_seconds"] - position["entry_open_time"] >= max_hold
+    bar_close = float(candle["time"]) + position["bar_seconds"]
+    return time_stop_due(position["entry_open_time"], position.get("max_hold_seconds"), bar_close)
 
 
 def _process_position(
@@ -230,17 +181,13 @@ def _process_position(
 
     exit_event = _trigger_exit(position, candle)
     trade: Optional[Dict[str, Any]] = None
-    breakeven_on = config.breakeven_trigger_pct > 0
     if exit_event is None and _hold_expired(position, candle):
         position["exit_time"] = candle.get("time")
         equity, trade = _finish_trade(position, close, "TIME", bar_index, slippage_rate, fee_rate, equity)
         return equity, None, trade
     if exit_event is None:
-        if breakeven_on and not position["be_moved"]:
-            favourable = float(candle["high"]) if position["side"] == 1 else float(candle["low"])
-            move = position["side"] * (favourable - position["entry"]) / position["entry"]
-            if move >= config.breakeven_trigger_pct:
-                _move_to_breakeven(position, config.breakeven_offset_pct)
+        favourable = float(candle["high"]) if position["side"] == 1 else float(candle["low"])
+        _move_to_breakeven(position, config.exits, favourable)  # applies from the next bar
         return equity, position, trade
 
     reason, trigger = exit_event
@@ -258,8 +205,7 @@ def _process_position(
             equity,
         )
         position["tp1_hit"] = True
-        if (breakeven_on or config.breakeven_after_tp1) and not position["be_moved"]:
-            _move_to_breakeven(position, config.breakeven_offset_pct)
+        _move_to_breakeven(position, config.exits, trigger)
         return equity, position, trade
 
     position["exit_time"] = candle.get("time")
@@ -316,10 +262,7 @@ def _finish_trade(
 
 
 def _is_opposing(position: Mapping[str, Any], signal: Mapping[str, Any], config: EvaluationConfig) -> bool:
-    if config.opposing_exit_confidence is None or not signal:
-        return False
-    side = _signal_side(signal)
-    return side == -position["side"] and _signal_confidence(signal) >= config.opposing_exit_confidence
+    return opposing_exit(config.exits, position["side"], signal)
 
 
 def evaluate_signal_sequence(
@@ -364,20 +307,16 @@ def evaluate_signal_sequence(
 
         if position is None:
             # Flat: try to open on the previous bar's signal, then manage it on this bar like any open position
-            signal = signals[index - 1]
-            if not signal:
+            plan = TradePlan.from_signal(signals[index - 1])
+            if plan is None or (plan.side == -1 and not config.allow_short):
                 continue
-            side = _signal_side(signal)
-            if side is None or (side == -1 and not config.allow_short):
-                continue
-            if _signal_confidence(signal) < config.min_confidence_pct:
+            if plan.confidence_pct < config.min_confidence_pct:
                 skipped_low_confidence += 1
                 continue
 
+            side = plan.side
             entry = _entry_price(float(candle["open"]), side, entry_slippage_rate)
-            stop = _signal_price(signal, "stop_loss", "stopLoss")
-            tp1 = _signal_price(signal, "take_profit_1", "takeProfit1")
-            tp2 = _signal_price(signal, "take_profit_2", "takeProfit2")
+            stop, tp1, tp2 = plan.stop, plan.tp1, plan.tp2
             if not _targets_are_valid(side, entry, stop, tp1, tp2):
                 skipped_invalid_signals += 1
                 continue
@@ -404,7 +343,7 @@ def evaluate_signal_sequence(
                 "tp2": tp2,
                 "tp1_hit": False,
                 "be_moved": False,
-                "max_hold_seconds": _as_float(signal.get("max_hold_seconds")),
+                "max_hold_seconds": plan.max_hold_seconds,
                 "entry_open_time": float(candle["time"]),
                 "bar_seconds": bar_seconds,
                 "remaining_qty": quantity,

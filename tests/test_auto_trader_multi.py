@@ -92,7 +92,7 @@ def make_trader(tmp_path, monkeypatch, positions=None, symbols=None, shadow=True
         flash_close=AsyncMock(return_value={"success": True}),
     )
     trader = AutoTrader(
-        toobit_client=client,
+        exchange=client,
         market_service=FakeMarketService(),
         laya_engine=FakeLayaEngine(),
         signal_generator=FakeSignalGenerator(),

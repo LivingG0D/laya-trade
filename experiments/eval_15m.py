@@ -21,27 +21,36 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.history import load_history  # noqa: E402
-from experiments.train_gbm import (  # noqa: E402
+from experiments.harness import (  # noqa: E402
+    PROBE_SEED,
+    REPORT_DIR,
     SYMBOLS,
-    label_metrics,
+    evaluate_trades,
+    load_frames,
+    matched_rate,
     pass_checks,
+    positive_windows,
+    random_sides,
+    report_header,
+    report_line,
+    round_trip_cost_r,
     summarize_trades,
     train_mask,
     walk_forward_schedule,
 )
+from experiments.train_gbm import label_metrics  # noqa: E402
 from src.barrier import barrier_labels  # noqa: E402
-from src.config import BASE_DIR  # noqa: E402
 from src.features import build_features, feature_columns  # noqa: E402
 from src.gbm_signal import SignalModel  # noqa: E402
-from src.strategy_evaluator import CostModel, EvaluationConfig, evaluate_signal_sequence  # noqa: E402
+from src.strategy_evaluator import CostModel  # noqa: E402
+from src.trade_plan import TradePlan  # noqa: E402
 
 BASE = "15m"
 BAR = 900
@@ -89,18 +98,6 @@ def ev_sides(p_long: np.ndarray, p_short: np.ndarray, cost_r: np.ndarray, margin
     return np.where(np.maximum(ev_long, ev_short) >= margin, best, 0)
 
 
-def random_sides(n: int, rate: float, seed, eligible: Optional[np.ndarray] = None) -> np.ndarray:
-    """Random entries at ``rate`` of all bars, placed only on ``eligible`` bars (the bars the
-    strategy itself could trade, so the random cost profile matches). ``seed`` may be a tuple
-    such as (seed, symbol index, period start) so symbols and windows draw independently."""
-    rng = np.random.default_rng(seed)
-    if eligible is None:
-        eligible = np.ones(n, dtype=bool)
-    share = eligible.mean() if n else 0.0
-    enter = eligible & (rng.random(n) < (min(1.0, rate / share) if share > 0 else 0.0))
-    return np.where(enter, rng.choice([1, -1], size=n), 0)
-
-
 def signals_from_sides(closes: np.ndarray, atr: np.ndarray, sides: np.ndarray, stop_mult: float,
                        target_mult: float, hold_seconds: int) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -108,34 +105,15 @@ def signals_from_sides(closes: np.ndarray, atr: np.ndarray, sides: np.ndarray, s
         if side == 0 or not np.isfinite(a) or a <= 0:
             out.append({})
             continue
-        out.append({
-            "action": "LONG" if side > 0 else "SHORT",
-            "confidence_pct": 100.0,
-            "stop_loss": float(close - side * stop_mult * a),
-            "take_profit_1": float(close + side * target_mult * a),
-            "take_profit_2": 0.0,
-            "max_hold_seconds": hold_seconds,
-        })
+        out.append(TradePlan(side=1 if side > 0 else -1, entry=0.0, stop=float(close - side * stop_mult * a),
+                             tp1=float(close + side * target_mult * a), confidence_pct=100.0,
+                             max_hold_seconds=hold_seconds).to_signal())
     return out
 
 
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
-
-def _evaluate(candles: pd.DataFrame, signals: Sequence[Dict[str, Any]], costs: CostModel) -> List[Dict[str, Any]]:
-    config = EvaluationConfig(min_confidence_pct=0.0, risk_per_trade=0.01, max_leverage=50.0)
-    rows = candles[["time", "open", "high", "low", "close", "volume"]].to_dict("records")
-    return evaluate_signal_sequence(rows, list(signals), config, costs)["trades"]
-
-
-def round_trip_cost_r(trades: List[Dict[str, Any]], costs: CostModel) -> float:
-    """Mean full round-trip cost in R (fees and slippage on both sides) over these trades."""
-    entry_fee = costs.fee_bps if costs.entry_fee_bps is None else costs.entry_fee_bps
-    entry_slip = costs.slippage_bps if costs.entry_slippage_bps is None else costs.entry_slippage_bps
-    rt = (entry_fee + entry_slip + costs.fee_bps + costs.slippage_bps) / 1e4
-    return float(np.mean([rt / t["initial_risk_pct"] for t in trades])) if trades else 0.0
-
 
 def evaluate_period(sides_by_symbol: Dict[str, np.ndarray], candles_by_symbol: Dict[str, pd.DataFrame],
                     atr_by_symbol: Dict[str, np.ndarray], bracket: Tuple[float, float],
@@ -151,29 +129,23 @@ def evaluate_period(sides_by_symbol: Dict[str, np.ndarray], candles_by_symbol: D
         window = candles[sel].reset_index(drop=True)
         closes, atr = window["close"].to_numpy(float), atr_by_symbol[symbol][sel]
         eligible = eligible_by_symbol[symbol][sel] if eligible_by_symbol else None
-        trades = _evaluate(window, signals_from_sides(closes, atr, sides_by_symbol[symbol][sel], *bracket,
-                                                      HOLD_SECONDS), costs)
+        trades = evaluate_trades(window, signals_from_sides(closes, atr, sides_by_symbol[symbol][sel], *bracket,
+                                                            HOLD_SECONDS), costs)
         model_trades += trades
-        rate = max(len(trades), 1) / len(window)
-        for _ in range(2):  # match the random entry rate to the model's trade count
-            probe = _evaluate(window, signals_from_sides(
-                closes, atr, random_sides(len(window), rate, (10_000, sym_idx, lo), eligible),
-                *bracket, HOLD_SECONDS), costs)
-            if probe:
-                rate = min(1.0, rate * max(len(trades), 1) / len(probe))
+
+        def random_trades_at(rate: float, seed) -> List[Dict[str, Any]]:
+            sides = random_sides(len(window), rate, (seed, sym_idx, lo), eligible)
+            return evaluate_trades(window, signals_from_sides(closes, atr, sides, *bracket, HOLD_SECONDS), costs)
+
+        rate = matched_rate(len(trades), max(len(trades), 1) / len(window),
+                            lambda r: len(random_trades_at(r, PROBE_SEED)))
         for seed in range(seeds):
-            random_trades += _evaluate(window, signals_from_sides(
-                closes, atr, random_sides(len(window), rate, (seed, sym_idx, lo), eligible),
-                *bracket, HOLD_SECONDS), costs)
+            random_trades += random_trades_at(rate, seed)
     rand = summarize_trades(random_trades)
     rand["trade_count"] = rand["trade_count"] / max(seeds, 1)
     model = summarize_trades(model_trades)
     model["round_trip_cost_r"] = round_trip_cost_r(model_trades, costs)
     return {"model": model, "random": rand}
-
-
-def _frame(candles: List[Dict[str, Any]]) -> pd.DataFrame:
-    return pd.DataFrame(candles)[["time", "open", "high", "low", "close", "volume", "taker_buy_volume"]]
 
 
 def main() -> int:
@@ -195,15 +167,10 @@ def main() -> int:
 
     async def load_all():
         async with httpx.AsyncClient(timeout=30.0) as client:
-            out = {}
-            for s in symbols:
-                out[s] = {tf: _frame(await load_history(client, s, tf, args.days + WARMUP_DAYS,
-                                                        BASE_DIR / "scratch" / "history", now=now, pause=0.3))
-                          for tf in (BASE, *CONTEXT)}
-            return out
+            return await load_frames(client, symbols, (BASE, *CONTEXT), args.days + WARMUP_DAYS, now)
 
     datasets, candles_by_symbol, feats_by_symbol = [], {}, {}
-    taker_rt = 2 * (COSTS["taker"].fee_bps + COSTS["taker"].slippage_bps) / 1e4
+    taker_rt = COSTS["taker"].round_trip
     for symbol, frames in asyncio.run(load_all()).items():
         feats = build_features(frames, base=BASE, context=CONTEXT)
         base = frames[BASE]
@@ -292,22 +259,18 @@ def main() -> int:
             report["strategies"][f"{name}/{cost_name}"] = block
             print(f"  evaluated {name} / {cost_name}", file=sys.stderr)
 
-    out = BASE_DIR / "scratch" / "backtests" / f"eval15m_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out = REPORT_DIR / f"eval15m_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str))
 
-    def line(label, s):
-        pf = "-" if s["profit_factor"] is None else f"{s['profit_factor']:.2f}"
-        return f"{label:<34}{s['trade_count']:>8.0f}{s['win_rate_pct']:>7.1f}{s['expectancy_r']:>8.3f}{pf:>6}"
-
-    print(f"\n{'':<34}{'trades':>8}{'win%':>7}{'exp R':>8}{'PF':>6}")
+    print("\n" + report_header(34))
     for key, block in report["strategies"].items():
-        pos = sum(1 for w in block["windows"] if w["model"]["trade_count"] and w["model"]["expectancy_r"] > 0)
         print(f"{key}  (cost {block['walk_forward']['model']['round_trip_cost_r']:.3f}R, "
-              f"windows +{pos}/{len(block['windows'])}) -> "
+              f"windows +{positive_windows(block['windows'])}/{len(block['windows'])}) -> "
               f"{'info' if block['passed'] is None else 'PASS' if block['passed'] else 'FAIL'}")
         for period in ("walk_forward", "holdout"):
-            print(line(f"  {period} model", block[period]["model"]))
-            print(line(f"  {period} random", block[period]["random"]))
+            print(report_line(f"  {period} model", block[period]["model"], 34))
+            print(report_line(f"  {period} random", block[period]["random"], 34))
     for name in ("labels_walk_forward", "labels_holdout"):
         m = report[name]
         print(f"C {name}: AUC long {m['long']['auc']}, short {m['short']['auc']}, direction {m['direction_auc']}")

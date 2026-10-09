@@ -7,7 +7,6 @@ opposing signal reversal exits, and strict portfolio circuit breakers.
 
 import asyncio
 import json
-import math
 import logging
 import time
 from pathlib import Path
@@ -15,15 +14,17 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .config import (
-    ROUND_TRIP_COST_PCT,
     DEFAULT_LEVERAGE,
     BASE_DIR,
     SUPPORTED_SYMBOLS,
     SUPPORTED_TIMEFRAMES,
 )
-from .indicators import compute_all_indicators
-from .edge_gate import EdgeTable
+from .edge_gate import EdgeTable, load_tables
+from .exchange import quantity_to_step
 from .market_data import to_toobit_symbol
+from .market_snapshot import merge_timeframes, snapshot_timeframe
+from .trade_management import ExitPolicy, breakeven_stop, fallback_bracket, opposing_exit, time_stop_due
+from .trade_plan import TradePlan
 
 logger = logging.getLogger("auto_trader")
 
@@ -36,65 +37,6 @@ def _position_key(symbol: str) -> str:
     return to_toobit_symbol(str(symbol or "").strip())
 
 
-def _timeframe_seconds(timeframe: str) -> int:
-    """Return the nominal duration of a supported timeframe in seconds."""
-    value = str(timeframe or "").lower()
-    if value.endswith("m"):
-        return int(value[:-1]) * 60
-    if value.endswith("h"):
-        return int(value[:-1]) * 3600
-    if value.endswith("d"):
-        return int(value[:-1]) * 86400
-    return 300
-
-
-def _is_fresh_timestamp(timestamp: Any, timeframe: str) -> bool:
-    """Allow a short clock skew while rejecting stale closed-candle data."""
-    try:
-        candle_time = float(timestamp)
-    except (TypeError, ValueError):
-        return False
-    if candle_time <= 0:
-        return False
-    age = time.time() - candle_time
-    return -60 <= age <= _timeframe_seconds(timeframe) * 2 + 30
-
-
-def timeframe_snapshot(raw_klines: List[Dict[str, Any]], symbol: str, timeframe: str, leverage: int) -> Dict[str, Any]:
-    """Latest indicator telemetry for one timeframe, as the auto-trader decides on it."""
-    calculated = compute_all_indicators(raw_klines)
-    latest = dict(calculated["latest"])
-    latest["symbol"] = symbol
-    latest["interval"] = timeframe
-    latest["time"] = calculated.get("series", [{}])[-1].get("time", raw_klines[-1].get("time", 0))
-    latest["leverage"] = int(leverage)
-    return latest
-
-
-def merge_timeframes(latest_by_timeframe: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Entry-timeframe state enriched with higher-timeframe context (shared with the backtest)."""
-    entry_timeframe = "5m" if "5m" in latest_by_timeframe else list(latest_by_timeframe)[-1]
-    state = dict(latest_by_timeframe[entry_timeframe])
-    higher = latest_by_timeframe.get("1h") or latest_by_timeframe.get("15m")
-    if higher:
-        state["htf"] = {
-            "trend": higher.get("trend_state", "NEUTRAL"),
-            "interval": higher.get("interval"),
-            "rsi": higher.get("rsi"),
-            "adx": higher.get("adx"),
-        }
-    state["multi_timeframe"] = {
-        timeframe: {
-            "time": snapshot.get("time"),
-            "trend": snapshot.get("trend_state"),
-            "rsi": snapshot.get("rsi"),
-            "adx": snapshot.get("adx"),
-        }
-        for timeframe, snapshot in latest_by_timeframe.items()
-    }
-    return state
-
-
 class AutoTrader:
     """
     Autonomous Execution & Safety Supervisor Engine.
@@ -103,13 +45,13 @@ class AutoTrader:
 
     def __init__(
         self,
-        toobit_client,
+        exchange,
         market_service,
         laya_engine,
         signal_generator,
         ws_manager=None
     ):
-        self.toobit_client = toobit_client
+        self.exchange = exchange  # live Toobit or the simulated exchange (src/exchange.py)
         self.market_service = market_service
         self.laya_engine = laya_engine
         self.signal_generator = signal_generator
@@ -338,10 +280,11 @@ class AutoTrader:
         self._active_trade = next(iter(self._active_trades.values()), None)
 
     def _apply_generator_settings(self) -> None:
-        """Share exit profile and cost filter with the signal generator (dashboard shows the same plan)."""
+        """Share exit profile, exit rules and cost filter with the signal generator (dashboard shows the same plan)."""
         if hasattr(self.signal_generator, "exit_profile"):
             self.signal_generator.exit_profile = self.settings["exit_profile"]
             self.signal_generator.max_cost_share = self.settings["max_cost_share"]
+            self.signal_generator.exit_policy = ExitPolicy.from_settings(self.settings)
 
     def _edge_table(self, symbol: str) -> Optional[EdgeTable]:
         """Outcome table for a symbol from the configured file; None when unavailable."""
@@ -354,11 +297,7 @@ class AutoTrader:
                 self.add_log("warning", "EDGE_GATE", f"Edge table '{name}' not found in {EDGE_TABLE_DIR}; gate blocks all trades.")
             else:
                 try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    self._edge_tables = {
-                        sym: EdgeTable(stats=row["stats"], min_samples=int(row["min_samples"]))
-                        for sym, row in data.items()
-                    }
+                    self._edge_tables = load_tables(path)
                 except (ValueError, KeyError, TypeError) as exc:
                     logger.warning("Could not load edge table %s: %s", path, exc)
         return self._edge_tables.get(symbol) or self._edge_tables.get(str(symbol).upper())
@@ -366,12 +305,12 @@ class AutoTrader:
     def _mode_mismatch_reason(self) -> Optional[str]:
         """Return a safety reason when configured and exchange modes differ."""
         expected_demo = self.settings.get("mode") == "demo"
-        client_is_demo = bool(getattr(self.toobit_client, "is_demo", False))
+        client_is_demo = bool(self.exchange.is_demo)
         if expected_demo != client_is_demo:
             expected_mode = "DEMO" if expected_demo else "LIVE"
             actual_mode = "DEMO" if client_is_demo else "LIVE"
             return f"Configured {expected_mode} mode does not match the connected {actual_mode} client."
-        if not expected_demo and not getattr(self.toobit_client, "api_key", ""):
+        if not expected_demo and not self.exchange.api_key:
             return "Live mode requires a connected Toobit API key."
         return None
 
@@ -516,13 +455,6 @@ class AutoTrader:
             if "edge_table_file" in new_settings:
                 # Basename only: the file must live in scratch/edge_tables.
                 self.settings["edge_table_file"] = Path(str(new_settings["edge_table_file"] or "")).name
-            self._apply_generator_settings()
-
-            if self.enabled:
-                mode_error = self._mode_mismatch_reason()
-                if mode_error:
-                    return self._halt_for_mode_mismatch(mode_error)
-
             for bool_key in ("auto_bracket", "auto_breakeven", "opposing_reversal_exit"):
                 if bool_key in new_settings:
                     self.settings[bool_key] = bool(new_settings[bool_key])
@@ -535,6 +467,13 @@ class AutoTrader:
 
             if "cooldown_seconds" in new_settings:
                 self.settings["cooldown_seconds"] = max(10, int(new_settings["cooldown_seconds"]))
+            self._apply_generator_settings()
+
+            # Checked after every setting is applied: a halt must not drop the rest of the update.
+            if self.enabled:
+                mode_error = self._mode_mismatch_reason()
+                if mode_error:
+                    return self._halt_for_mode_mismatch(mode_error)
 
             self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
             self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
@@ -551,7 +490,7 @@ class AutoTrader:
         errors: List[str] = []
         for symbol in sorted(set(symbols)):
             try:
-                result = await self.toobit_client.cancel_all_orders(symbol)
+                result = await self.exchange.cancel_all_orders(symbol)
                 if not result or not result.get("success"):
                     message = (result or {}).get("message", "cancellation was not confirmed")
                     errors.append(f"{symbol}: {message}")
@@ -569,7 +508,7 @@ class AutoTrader:
                 errors.append("position missing symbol")
                 continue
             try:
-                result = await self.toobit_client.flash_close(symbol)
+                result = await self.close_trade(symbol, reason="emergency stop")
                 if result and result.get("success"):
                     closed_count += 1
                 else:
@@ -596,7 +535,7 @@ class AutoTrader:
             errors: List[str] = []
             open_positions: List[Dict[str, Any]] = []
             try:
-                open_positions = await self.toobit_client.get_positions(symbol=None)
+                open_positions = await self.exchange.get_positions(symbol=None)
             except Exception as exc:
                 errors.append(f"position query: {exc}")
 
@@ -616,7 +555,7 @@ class AutoTrader:
             errors.extend(close_result["errors"])
 
             try:
-                remaining_positions = await self.toobit_client.get_positions(symbol=None)
+                remaining_positions = await self.exchange.get_positions(symbol=None)
             except Exception as exc:
                 remaining_positions = []
                 errors.append(f"final position verification: {exc}")
@@ -689,21 +628,10 @@ class AutoTrader:
             await asyncio.sleep(5)
 
     async def _fetch_timeframe_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
-        """Fetch, validate, and calculate one closed-candle timeframe."""
+        """One timeframe's closed-candle snapshot (raises when missing or stale)."""
         async with self._fetch_semaphore:
-            raw_klines = await self.market_service.fetch_klines(
-                symbol=symbol,
-                interval=timeframe,
-                limit=150,
-            )
-        if not raw_klines:
-            raise RuntimeError(f"No {timeframe} candles returned for {symbol}")
-        latest = timeframe_snapshot(raw_klines, symbol, timeframe, self.settings["leverage"])
-        if not latest.get("is_closed", True):
-            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is not closed")
-        if not _is_fresh_timestamp(latest.get("time"), timeframe):
-            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is stale")
-        return latest
+            return await snapshot_timeframe(self.market_service.fetch_klines, symbol, timeframe,
+                                            self.settings["leverage"])
 
     async def _analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Analyze one symbol using parallel timeframe data and bounded inference."""
@@ -782,18 +710,15 @@ class AutoTrader:
             if not isinstance(result, dict) or not result:
                 continue
             signal = result["signal"]
-            action = str(signal.get("action", "")).upper()
-            confidence = float(signal.get("confidence_pct", 0.0))
-            if action in {"NEUTRAL", "WAIT", ""}:
-                continue
-            if "LONG" not in action and "SHORT" not in action:
+            plan = TradePlan.from_signal(signal)
+            if plan is None:
                 continue
             if self.settings.get("edge_gate"):
                 table = self._edge_table(result["symbol"])
                 if table is None or not table.allows(signal):
                     continue
                 signal["expected_r"] = table.expected_r(signal)
-            elif confidence < float(self.settings["min_confidence"]):
+            elif plan.confidence_pct < float(self.settings["min_confidence"]):
                 continue
             if time.time() - float(signal.get("analysis_timestamp", 0.0)) > float(self.settings["signal_ttl_seconds"]):
                 continue
@@ -844,23 +769,21 @@ class AutoTrader:
             except (TypeError, ValueError):
                 pass
 
+        policy = ExitPolicy.from_settings(self.settings)
+        side_sign = 1 if side == "LONG" else -1
+
         if self.settings.get("auto_bracket", True):
-            stop_loss = float(trade.get("stop_loss", 0.0))
-            take_profit = float(trade.get("take_profit_1", 0.0))
-            if analysis and analysis.get("targets"):
-                targets = analysis["targets"]
-                stop_loss = stop_loss or float(analysis.get("stop_loss") or targets.get("stop_loss", 0.0))
-                take_profit = take_profit or float(analysis.get("take_profit_1") or targets.get("take_profit_1", 0.0))
+            stop_loss = float(trade.get("stop_loss") or 0.0)
+            take_profit = float(trade.get("take_profit_1") or 0.0)
             if (stop_loss <= 0 or take_profit <= 0) and entry_price > 0:
-                distance = 0.25 / max(int(self.settings.get("leverage", 50)), 1)
-                if side == "LONG":
-                    stop_loss = stop_loss or entry_price * (1.0 - distance)
-                    take_profit = take_profit or entry_price * (1.0 + distance * 1.6)
-                else:
-                    stop_loss = stop_loss or entry_price * (1.0 + distance)
-                    take_profit = take_profit or entry_price * (1.0 - distance * 1.6)
+                # Fill a missing leg from a same-side plan, else from the fallback bracket.
+                plan = TradePlan.from_signal(analysis)
+                if plan is not None and plan.side == side_sign:
+                    stop_loss, take_profit = stop_loss or plan.stop, take_profit or plan.tp1
+                fallback_stop, fallback_tp1, _ = fallback_bracket(side_sign, entry_price, policy.leverage)
+                stop_loss, take_profit = stop_loss or fallback_stop, take_profit or fallback_tp1
                 try:
-                    result = await self.toobit_client.set_position_tpsl(
+                    result = await self.exchange.set_position_tpsl(
                         symbol=symbol,
                         side=side,
                         stop_loss=stop_loss,
@@ -875,18 +798,12 @@ class AutoTrader:
                 except Exception as exc:
                     self.add_log("danger", "BRACKET", f"Could not confirm exchange TP/SL for {display_symbol}: {exc}")
 
-        be_mode = self.settings.get("breakeven_mode", "legacy")
-        if self.settings.get("auto_breakeven", True) and be_mode != "off" and not trade.get("be_moved"):
-            take_profit = float(trade.get("take_profit_1", 0.0))
-            tp1_reached = ((side == "LONG" and mark_price >= take_profit > 0)
-                           or (side == "SHORT" and mark_price <= take_profit > 0))
-            should_move = tp1_reached or (be_mode == "legacy" and pnl_pct >= 9.0)
-            if should_move and entry_price > 0:
-                # tp1_fees: the stop covers round-trip costs, so a break-even exit does not lose money.
-                offset = ROUND_TRIP_COST_PCT if be_mode == "tp1_fees" else 0.0005
-                new_stop = entry_price * (1.0 + offset) if side == "LONG" else entry_price * (1.0 - offset)
+        if not trade.get("be_moved"):
+            take_profit = float(trade.get("take_profit_1") or 0.0)
+            new_stop = breakeven_stop(policy, side_sign, entry_price, take_profit, mark_price)
+            if new_stop is not None:
                 try:
-                    result = await self.toobit_client.set_position_tpsl(
+                    result = await self.exchange.set_position_tpsl(
                         symbol=symbol,
                         side=side,
                         stop_loss=new_stop,
@@ -899,58 +816,38 @@ class AutoTrader:
                 except Exception as exc:
                     logger.warning("Could not move break-even stop for %s: %s", display_symbol, exc)
 
-        if self.settings.get("opposing_reversal_exit", True) and analysis:
-            action = str(analysis.get("action", "")).upper()
-            confidence = float(analysis.get("confidence_pct", 0.0))
-            opposed = (side == "LONG" and "SHORT" in action) or (side == "SHORT" and "LONG" in action)
-            if self.settings.get("edge_gate"):
-                table = self._edge_table(display_symbol)
-                strong = table is not None and table.allows(analysis)
-            else:
-                strong = confidence >= 70.0
-            if opposed and strong:
-                result = await self.toobit_client.flash_close(symbol)
-                if result.get("success"):
-                    self._handle_trade_closed(position, reason=f"opposing {action}")
-                return
-
-        if self.settings.get("mode") == "demo":
-            stop_loss = float(position.get("stopLoss", trade.get("stop_loss", 0.0)))
-            take_profit = float(position.get("takeProfit2", trade.get("take_profit_2", 0.0)))
-            hit = (side == "LONG" and ((stop_loss > 0 and mark_price <= stop_loss) or (take_profit > 0 and mark_price >= take_profit)))
-            hit = hit or (side == "SHORT" and ((stop_loss > 0 and mark_price >= stop_loss) or (take_profit > 0 and mark_price <= take_profit)))
-            if hit:
-                result = await self.toobit_client.flash_close(symbol)
-                if result.get("success"):
-                    self._handle_trade_closed(position, reason="demo SL/TP")
+        gate = None
+        if self.settings.get("edge_gate"):
+            table = self._edge_table(display_symbol)
+            gate = table.allows if table is not None else (lambda _signal: False)
+        if opposing_exit(policy, side_sign, analysis, gate):
+            await self.close_trade(symbol, reason=f"opposing {analysis.get('action')}")
 
     async def _execute_candidate(self, candidate: Dict[str, Any]) -> None:
         """Validate, size, and dispatch one ranked candidate under the portfolio lock."""
         symbol = candidate["symbol"]
-        signal = candidate["signal"]
         latest = candidate.get("latest", {})
-        action = str(signal.get("action", "")).upper()
-        if "LONG" in action:
-            position_side, order_side = "LONG", "BUY"
-        elif "SHORT" in action:
-            position_side, order_side = "SHORT", "SELL"
-        else:
+        plan = TradePlan.from_signal(candidate["signal"])
+        if plan is None:
             return
-        entry_price = float(signal.get("entry_price", latest.get("price", latest.get("close", 0.0))))
+        position_side, order_side = ("LONG", "BUY") if plan.side == 1 else ("SHORT", "SELL")
+        entry_price = plan.entry or float(latest.get("price", latest.get("close", 0.0)))
         if entry_price <= 0:
             return
+        if plan.stop <= 0 or plan.tp1 <= 0:
+            self.add_log("warning", "ORDER", f"Skipping {symbol}: signal is missing a valid SL or TP1.")
+            return
 
-        balance = await self.toobit_client.get_balance()
+        balance = await self.exchange.get_balance()
         available_margin = float(balance.get("availableBalance", 0.0))
         total_equity = float(balance.get("totalEquity", balance.get("totalBalance", 0.0)))
         if available_margin < 0.50:
             self.add_log("warning", "ORDER", f"Pre-flight skipped for {symbol}: insufficient available margin.")
             return
         leverage = int(self.settings["leverage"])
-        planned_stop = float(signal.get("stop_loss") or signal.get("targets", {}).get("stop_loss", 0.0) or 0.0)
-        if self.settings["sizing_mode"] == "risk_pct" and planned_stop > 0:
+        if self.settings["sizing_mode"] == "risk_pct":
             # Lose equity_risk_pct of equity if the stop fills: notional = risk / stop distance.
-            stop_pct = abs(entry_price - planned_stop) / entry_price
+            stop_pct = abs(entry_price - plan.stop) / entry_price
             risk_usd = total_equity * float(self.settings["equity_risk_pct"]) / 100.0
             target_margin = max(0.50, risk_usd / max(stop_pct, 1e-6) / leverage)
         elif self.settings["sizing_mode"] == "pct_equity":
@@ -959,17 +856,14 @@ class AutoTrader:
             target_margin = max(0.50, float(self.settings["fixed_margin_usd"]))
         target_margin = min(target_margin, available_margin * 0.20)
         notional_value = target_margin * leverage
-        rules = await self.toobit_client.get_symbol_rules(symbol)
+        rules = await self.exchange.get_symbol_rules(symbol)
         multiplier = float(rules.get("multiplier", 1.0))
         step_size = max(float(rules.get("step_size", 0.001)), 1e-8)
         min_qty = float(rules.get("min_qty", 0.001))
         contract_unit_value = entry_price * multiplier
         if contract_unit_value <= 0 or notional_value <= 0:
             return
-        raw_quantity = notional_value / contract_unit_value
-        step_text = f"{step_size:.8f}".rstrip("0")
-        decimals = len(step_text.split(".")[1]) if "." in step_text else 0
-        quantity = round(math.floor(raw_quantity / step_size + 1e-9) * step_size, decimals)  # epsilon: 1.0 // 0.001 == 999
+        quantity = quantity_to_step(notional_value / contract_unit_value, step_size)
         if quantity < min_qty:
             minimum_margin = (min_qty * contract_unit_value) / leverage
             if minimum_margin > available_margin * 0.40:
@@ -977,25 +871,18 @@ class AutoTrader:
                 return
             quantity = min_qty
         final_margin = (quantity * contract_unit_value) / leverage
-        targets = signal.get("targets", {})
-        stop_loss = float(signal.get("stop_loss", targets.get("stop_loss", 0.0)))
-        take_profit_1 = float(signal.get("take_profit_1", targets.get("take_profit_1", 0.0)))
-        take_profit_2 = float(signal.get("take_profit_2", targets.get("take_profit_2", 0.0)))
-        if stop_loss <= 0 or take_profit_1 <= 0:
-            self.add_log("warning", "ORDER", f"Skipping {symbol}: signal is missing a valid SL or TP1.")
-            return
 
         async with self._lock:
-            result = await self.toobit_client.create_order(
+            result = await self.exchange.create_order(
                 symbol=symbol,
                 side=order_side,
                 order_type="MARKET",
                 quantity=quantity,
                 leverage=leverage,
                 entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit_1=take_profit_1,
-                take_profit_2=take_profit_2,
+                stop_loss=plan.stop,
+                take_profit_1=plan.tp1,
+                take_profit_2=plan.tp2,
             )
             if not result.get("success"):
                 self.add_log("danger", "ORDER", f"Order execution failed for {symbol}: {result.get('message', 'rejected')}")
@@ -1007,12 +894,12 @@ class AutoTrader:
                 "quantity": quantity,
                 "entry_price": entry_price,
                 "margin": final_margin,
-                "stop_loss": stop_loss,
-                "take_profit_1": take_profit_1,
-                "take_profit_2": take_profit_2,
+                "stop_loss": plan.stop,
+                "take_profit_1": plan.tp1,
+                "take_profit_2": plan.tp2,
                 "be_moved": False,
                 "open_time": time.time(),
-                "max_hold_seconds": signal.get("max_hold_seconds"),
+                "max_hold_seconds": plan.max_hold_seconds,
             })
             self._symbol_cooldowns[_position_key(symbol)] = time.time() + float(self.settings["per_symbol_cooldown_seconds"])
             self.stats["total_trades"] += 1
@@ -1027,8 +914,7 @@ class AutoTrader:
         now = time.time()
         expired = [
             trade for trade in list(self._active_trades.values())
-            if trade.get("max_hold_seconds")
-            and now - float(trade.get("open_time", now)) >= float(trade["max_hold_seconds"])
+            if time_stop_due(float(trade.get("open_time", now)), trade.get("max_hold_seconds"), now)
         ]
         if not expired:
             return
@@ -1040,12 +926,10 @@ class AutoTrader:
         for trade in expired:
             symbol = trade.get("exchange_symbol") or trade.get("symbol")
             try:
-                result = await self.toobit_client.flash_close(symbol)
+                result = await self.close_trade(symbol, reason="time stop")
             except Exception as exc:
                 result = {"success": False, "message": str(exc)}
-            if result and result.get("success"):
-                self._handle_trade_closed(trade, reason="time stop")
-            elif not trade.get("time_stop_failed"):
+            if not (result and result.get("success")) and not trade.get("time_stop_failed"):
                 trade["time_stop_failed"] = True  # log once, retry every tick
                 self.add_log("danger", "TIME_STOP",
                              f"Time stop close failed for {trade.get('symbol')}: "
@@ -1104,7 +988,7 @@ class AutoTrader:
         # 5. Fetch Open Positions across account
         open_positions = []
         try:
-            open_positions = await self.toobit_client.get_positions(symbol=None)
+            open_positions = await self.exchange.get_positions(symbol=None)
         except Exception as e:
             logger.warning(f"AutoTrader could not query positions: {e}")
             return
@@ -1163,6 +1047,20 @@ class AutoTrader:
             return
         await self._execute_candidate(candidate)
 
+    async def close_trade(self, symbol: str, reason: str) -> Dict[str, Any]:
+        """Market-close a position and book it when the auto-trader manages it.
+
+        The one exit path for time stops, opposing signals, emergency stops and
+        manual closes; bracket fills on the exchange are booked by ``tick``.
+        """
+        result = await self.exchange.flash_close(symbol)
+        trade = self.get_active_trade(symbol)
+        if result and result.get("success") and trade is not None:
+            # The venue's realized PnL when it reports one, else the last mark snapshot.
+            reported = {"realizedPnl": result["realizedPnl"]} if "realizedPnl" in result else {}
+            self._handle_trade_closed({**trade, **reported}, reason=reason)
+        return result
+
     @staticmethod
     def _resolve_realized_pnl(payload: Dict[str, Any]) -> tuple[Optional[float], str]:
         """Best-available PnL for a closed trade.
@@ -1218,8 +1116,9 @@ class AutoTrader:
 
         cooldown = int(self.settings["cooldown_seconds"])
         self.stats["cooldown_until"] = time.time() + cooldown
-        self.status = "COOLDOWN"
-        self.status_message = f"Cooldown active ({cooldown}s remaining). Guarding against volatility whipsaws."
+        if self.status != "HALTED":  # a close while halted (time or emergency stop) keeps the halt visible
+            self.status = "COOLDOWN"
+            self.status_message = f"Cooldown active ({cooldown}s remaining). Guarding against volatility whipsaws."
         self._remove_active_trade(sym)
         self._symbol_cooldowns[_position_key(sym)] = time.time() + int(self.settings["cooldown_seconds"])
         self._save_state()
