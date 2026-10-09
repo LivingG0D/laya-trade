@@ -159,3 +159,18 @@ def test_edge_table_reloads_when_file_changes_or_appears(tmp_path, monkeypatch):
     stat = path.stat()
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000))
     assert trader._edge_table("BTCUSDT.P").expected_r({"action": "LONG", "confidence_pct": 80}) == pytest.approx(-0.2)
+
+
+def test_mode_mismatch_halt_still_applies_the_whole_settings_update(tmp_path, monkeypatch):
+    trader, client = make_trader(tmp_path, monkeypatch)
+    trader.enabled = True
+    client.is_demo = False  # configured demo, connected live: the update must halt
+
+    result = asyncio.run(trader.update_settings({
+        "auto_breakeven": False, "max_daily_loss_usd": 3.0, "cooldown_seconds": 45,
+    }))
+
+    assert result["success"] is False and trader.status == "HALTED"
+    assert trader.settings["auto_breakeven"] is False
+    assert trader.settings["max_daily_loss_usd"] == 3.0
+    assert trader.settings["cooldown_seconds"] == 45

@@ -516,13 +516,6 @@ class AutoTrader:
             if "edge_table_file" in new_settings:
                 # Basename only: the file must live in scratch/edge_tables.
                 self.settings["edge_table_file"] = Path(str(new_settings["edge_table_file"] or "")).name
-            self._apply_generator_settings()
-
-            if self.enabled:
-                mode_error = self._mode_mismatch_reason()
-                if mode_error:
-                    return self._halt_for_mode_mismatch(mode_error)
-
             for bool_key in ("auto_bracket", "auto_breakeven", "opposing_reversal_exit"):
                 if bool_key in new_settings:
                     self.settings[bool_key] = bool(new_settings[bool_key])
@@ -535,6 +528,13 @@ class AutoTrader:
 
             if "cooldown_seconds" in new_settings:
                 self.settings["cooldown_seconds"] = max(10, int(new_settings["cooldown_seconds"]))
+            self._apply_generator_settings()
+
+            # Checked after every setting is applied: a halt must not drop the rest of the update.
+            if self.enabled:
+                mode_error = self._mode_mismatch_reason()
+                if mode_error:
+                    return self._halt_for_mode_mismatch(mode_error)
 
             self._fetch_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_fetches"]))
             self._decision_semaphore = asyncio.Semaphore(int(self.settings["max_concurrent_decisions"]))
