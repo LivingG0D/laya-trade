@@ -13,6 +13,7 @@ from .config import (
     DEFAULT_SYMBOL,
     DEFAULT_TIMEFRAME,
 )
+from .market_snapshot import INTERVAL_SECONDS
 
 logger = logging.getLogger("market_data")
 
@@ -51,8 +52,15 @@ def to_binance_symbol(symbol: str) -> str:
     return s
 
 
-def _parse_klines(raw_klines: List[list]) -> List[Dict[str, Any]]:
-    """Exchange kline rows -> dicts keyed by open time (seconds), deduplicated and sorted."""
+def _parse_klines(raw_klines: List[list], interval: Optional[str] = None,
+                  now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Exchange kline rows -> dicts keyed by open time (seconds), deduplicated and sorted.
+
+    ``is_closed`` is stamped from the clock when the interval is known; REST
+    responses end with the still-forming bar.
+    """
+    step = INTERVAL_SECONDS.get(interval or "")
+    now = time.time() if now is None else now
     by_time = {}
     for item in raw_klines:
         open_time_sec = int(item[0] // 1000)
@@ -65,7 +73,7 @@ def _parse_klines(raw_klines: List[list]) -> List[Dict[str, Any]]:
             "volume": float(item[5]),
             "taker_buy_volume": float(item[9]) if len(item) > 9 else 0.0,
             "trades": int(item[8]) if len(item) > 8 else 0,
-            "is_closed": True
+            "is_closed": step is None or open_time_sec + step <= now,
         }
     return [by_time[t] for t in sorted(by_time)]
 
@@ -97,7 +105,6 @@ class MarketDataService:
         self._ticker_cache: Dict[str, tuple] = {}  # key -> (timestamp, Dict)
         self._depth_cache: Dict[str, tuple] = {}   # key -> (timestamp, Dict)
         self._funding_cache: Dict[str, tuple] = {} # key -> (timestamp, float)
-        self._htf_cache: Dict[str, tuple] = {}     # key -> (timestamp, Dict)
 
     async def close(self):
         self._running = False
@@ -157,7 +164,7 @@ class MarketDataService:
         }
         resp = await self._http_client.get(url, params=params)
         resp.raise_for_status()
-        return _parse_klines(resp.json())
+        return _parse_klines(resp.json(), interval)
 
     async def _fetch_binance_klines(self, symbol: str, interval: str, limit: int) -> List[Dict[str, Any]]:
         binance_sym = to_binance_symbol(symbol)
@@ -169,7 +176,7 @@ class MarketDataService:
         }
         resp = await self._http_client.get(url, params=params)
         resp.raise_for_status()
-        return _parse_klines(resp.json())
+        return _parse_klines(resp.json(), interval)
 
     async def fetch_ticker_24h(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
         """Fetch 24h price stats from Toobit with Binance fallback (2s cache)."""
@@ -312,72 +319,6 @@ class MarketDataService:
             "funding_rate_pct": 0.01
         }
         return default_res
-
-    async def fetch_htf_context(self, symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
-        """
-        Fetch 1-Hour klines to evaluate macro trend structure (EMA50, EMA200, 1h RSI).
-        """
-        now = time.time()
-        sym_key = symbol.upper()
-        if (cached := _fresh(self._htf_cache, sym_key, 60.0, now)) is not None:
-            return cached
-
-        try:
-            htf_klines = await self.fetch_klines(symbol=symbol, interval="1h", limit=100)
-            if len(htf_klines) >= 20:
-                import numpy as np
-                from .indicators import calculate_ema, calculate_rsi
-                c = np.array([k["close"] for k in htf_klines], dtype=float)
-                ema50 = calculate_ema(c, 50)
-                ema200 = calculate_ema(c, 200) if len(c) >= 200 else None
-                rsi14 = calculate_rsi(c, 14)
-
-                cur_p = c[-1]
-                e50 = ema50[-1] if not np.isnan(ema50[-1]) else cur_p
-                e200 = None
-                if ema200 is not None and not np.isnan(ema200[-1]):
-                    e200 = float(ema200[-1])
-                r14 = rsi14[-1] if not np.isnan(rsi14[-1]) else 50.0
-
-                if e200 is None:
-                    if cur_p > e50:
-                        trend = "BULLISH"
-                    elif cur_p < e50:
-                        trend = "BEARISH"
-                    else:
-                        trend = "NEUTRAL"
-                elif cur_p > e50 > e200:
-                    trend = "STRONG_BULLISH"
-                elif cur_p > e50:
-                    trend = "BULLISH"
-                elif cur_p < e50 < e200:
-                    trend = "STRONG_BEARISH"
-                elif cur_p < e50:
-                    trend = "BEARISH"
-                else:
-                    trend = "NEUTRAL"
-
-                res = {
-                    "interval": "1h",
-                    "trend": trend,
-                    "htf_trend": trend,
-                    "rsi": round(float(r14), 1),
-                    "ema50": round(float(e50), 6),
-                    "ema200": round(e200, 6) if e200 is not None else None,
-                }
-                self._htf_cache[sym_key] = (now, res)
-                return res
-        except Exception as e:
-            logger.debug(f"HTF context fetch error for {symbol}: {e}")
-
-        return {
-            "interval": "1h",
-            "trend": "NEUTRAL",
-            "htf_trend": "NEUTRAL",
-            "rsi": 50.0,
-            "ema50": 0.0,
-            "ema200": None,
-        }
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], Any]):
         """Subscribe to real-time candle tick updates."""

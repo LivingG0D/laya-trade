@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import bisect
 import hashlib
 import json
 import os
@@ -34,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx  # noqa: E402
 
 from experiments.history import INTERVAL_SECONDS, load_history  # noqa: E402
-from src.auto_trader import merge_timeframes, timeframe_snapshot  # noqa: E402
+from src.market_snapshot import WINDOW, closed_window, merge_timeframes, timeframe_snapshot  # noqa: E402
 from src.config import BASE_DIR  # noqa: E402
 from src.edge_gate import EdgeTable, gate_walk_forward, save_tables, signal_outcomes  # noqa: E402
 from src.signal_generator import SignalGenerator  # noqa: E402
@@ -48,7 +47,6 @@ from src.strategy_evaluator import (  # noqa: E402
 
 ENTRY_TF = "5m"
 CONTEXT_TFS = ("15m", "1h")
-WINDOW = 150  # candles per timeframe, as the live auto-trader fetches
 WARMUP_DAYS = 7  # enough 1h history to fill the first window
 SCRATCH = BASE_DIR / "scratch"
 HOLD = {"position": "NEUTRAL_HOLD"}
@@ -59,13 +57,6 @@ KNOWN_GAPS = [
     "No order-book or funding context (the live auto-trader does not fetch them either).",
     "Batched model inference can differ from single calls in the last decimals.",
 ]
-
-
-def htf_window(candles: Sequence[Mapping[str, Any]], opens: Sequence[int], step: int,
-               bar_close: int, size: int = WINDOW) -> List[Mapping[str, Any]]:
-    """The last ``size`` candles whose close time is at or before ``bar_close``."""
-    closed = bisect.bisect_right(opens, bar_close - step)
-    return list(candles[max(0, closed - size):closed])
 
 
 def _decision(position: str) -> Dict[str, Any]:
@@ -113,16 +104,18 @@ def build_states(history: Dict[str, List[Dict[str, Any]]], symbol: str, start: i
     """Auto-trader states for every entry bar opening at or after ``start``."""
     entry = history[ENTRY_TF]
     entry_step = INTERVAL_SECONDS[ENTRY_TF]
-    opens = {tf: [c["time"] for c in history[tf]] for tf in CONTEXT_TFS}
+    opens = {tf: [c["time"] for c in history[tf]] for tf in (ENTRY_TF, *CONTEXT_TFS)}
     memo: Dict[tuple, Dict[str, Any]] = {}
     candles, states = [], []
     for i, bar in enumerate(entry):
         if bar["time"] < start or i + 1 < WINDOW:
             continue
+        # The state the live auto-trader builds when this bar closes (src/market_snapshot.py).
         bar_close = bar["time"] + entry_step
-        snapshots = {ENTRY_TF: timeframe_snapshot(entry[i + 1 - WINDOW:i + 1], symbol, ENTRY_TF, leverage)}
+        window = closed_window(entry, ENTRY_TF, bar_close, opens=opens[ENTRY_TF])
+        snapshots = {ENTRY_TF: timeframe_snapshot(window, symbol, ENTRY_TF, leverage)}
         for tf in CONTEXT_TFS:
-            window = htf_window(history[tf], opens[tf], INTERVAL_SECONDS[tf], bar_close)
+            window = closed_window(history[tf], tf, bar_close, opens=opens[tf])
             if len(window) < WINDOW:
                 break
             key = (tf, window[-1]["time"])

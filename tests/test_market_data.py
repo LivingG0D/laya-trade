@@ -38,39 +38,10 @@ def test_kline_cache_separates_requested_limits(monkeypatch):
     assert "BTCUSDT.P_5m_350" in service._klines_cache
 
 
-def test_htf_context_does_not_label_short_history_as_ema200(monkeypatch):
-    service = MarketDataService()
+def test_rest_klines_mark_the_forming_bar_open():
+    from src.market_data import _parse_klines
 
-    async def fake_klines(symbol, interval, limit):
-        return [candle(index, 100 + index) for index in range(100)]
-
-    monkeypatch.setattr(service, "fetch_klines", fake_klines)
-
-    async def scenario():
-        result = await service.fetch_htf_context("BTCUSDT.P")
-        await service.close()
-        return result
-
-    result = asyncio.run(scenario())
-
-    assert result["ema200"] is None
-    assert result["trend"] in {"NEUTRAL", "BULLISH", "BEARISH"}
-
-
-def test_htf_context_rejects_invalid_candles(monkeypatch):
-    service = MarketDataService()
-
-    async def fake_klines(symbol, interval, limit):
-        return [candle(1, 100), candle(1, 101)]
-
-    monkeypatch.setattr(service, "fetch_klines", fake_klines)
-
-    async def scenario():
-        result = await service.fetch_htf_context("BTCUSDT.P")
-        await service.close()
-        return result
-
-    result = asyncio.run(scenario())
-
-    assert result["trend"] == "NEUTRAL"
-    assert result["ema200"] is None
+    rows = [[t * 1000, 1, 2, 0.5, 1.5, 10] for t in (0, 300, 600)]
+    closed = [c["is_closed"] for c in _parse_klines(rows, "5m", now=900)]
+    assert closed == [True, True, True]
+    assert [c["is_closed"] for c in _parse_klines(rows, "5m", now=899)] == [True, True, False]

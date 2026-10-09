@@ -1,6 +1,7 @@
 import asyncio
+import time
 
-from src.auto_trader import merge_timeframes, timeframe_snapshot
+from src.market_snapshot import closed_window, merge_timeframes, timeframe_snapshot
 from tests.test_auto_trader_multi import FakeMarketService, make_trader
 
 
@@ -22,7 +23,8 @@ def test_shared_builder_matches_live_analysis_state(tmp_path, monkeypatch):
 
     market = FakeMarketService()
     snapshots = {
-        tf: timeframe_snapshot(asyncio.run(market.fetch_klines("BTCUSDT.P", tf)), "BTCUSDT.P", tf, 50)
+        tf: timeframe_snapshot(closed_window(asyncio.run(market.fetch_klines("BTCUSDT.P", tf)), tf, time.time()),
+                               "BTCUSDT.P", tf, 50)
         for tf in ("5m", "15m", "1h")
     }
     live_state = engine.states[0]
@@ -72,17 +74,22 @@ def test_engine_split_reproduces_live_decision():
     assert engine._agent.texts[0] == engine._agent.texts[1] == engine._agent_summary(LIVE_STATE)
 
 
-def test_htf_window_excludes_candles_not_closed_at_bar_close():
-    from experiments.strategy_baseline import htf_window
-
+def test_closed_window_excludes_candles_not_closed_at_bar_close():
     hour = [{"time": t} for t in range(0, 10 * 3600, 3600)]
-    opens = [c["time"] for c in hour]
     # 5m bar opening 04:55 closes 05:00 -> the 04:00 hour candle has just closed.
-    window = htf_window(hour, opens, 3600, bar_close=5 * 3600, size=3)
+    window = closed_window(hour, "1h", at=5 * 3600, size=3)
     assert [c["time"] for c in window] == [2 * 3600, 3 * 3600, 4 * 3600]
     # One second earlier the 04:00 candle is still forming.
-    window = htf_window(hour, opens, 3600, bar_close=5 * 3600 - 1, size=3)
-    assert window[-1]["time"] == 3 * 3600
+    assert closed_window(hour, "1h", at=5 * 3600 - 1, size=3)[-1]["time"] == 3 * 3600
+
+
+def test_live_state_never_includes_the_forming_bar(tmp_path, monkeypatch):
+    trader, _ = make_trader(tmp_path, monkeypatch)
+    engine = RecordingEngine()
+    trader.laya_engine = engine
+    asyncio.run(trader._analyze_symbol("BTCUSDT.P"))
+    # FakeMarketService's newest 5m candle opened just now, so it is still forming.
+    assert time.time() - engine.states[0]["time"] >= 300
 
 
 def test_random_decisions_are_seeded_and_match_rate():
@@ -121,3 +128,21 @@ def test_tradeable_rate_counts_only_signals_that_pass_the_confidence_gate():
     ]
     assert tradeable_rate(signals, 65.0) == 0.5
     assert tradeable_rate([], 65.0) == 0.0
+
+
+def test_dashboard_and_auto_trader_decide_on_the_same_state(tmp_path, monkeypatch):
+    from src.market_snapshot import dashboard_timeframes, market_state
+
+    trader, _ = make_trader(tmp_path, monkeypatch)  # timeframes 5m, 15m, 1h
+    engine = RecordingEngine()
+    trader.laya_engine = engine
+    asyncio.run(trader._analyze_symbol("BTCUSDT.P"))
+
+    dashboard = asyncio.run(market_state(FakeMarketService().fetch_klines, "BTCUSDT.P", dashboard_timeframes("5m"),
+                                         trader.settings["leverage"], entry_timeframe="5m"))
+    assert dashboard_timeframes("5m") == ["5m", "15m", "1h"]
+    for state in (dashboard, engine.states[0]):  # fake candles are stamped with the current second
+        state.pop("time")
+        for row in state["multi_timeframe"].values():
+            row.pop("time")
+    assert dashboard == engine.states[0]

@@ -19,10 +19,10 @@ from .config import (
     SUPPORTED_SYMBOLS,
     SUPPORTED_TIMEFRAMES,
 )
-from .indicators import compute_all_indicators
 from .edge_gate import EdgeTable, load_tables
 from .exchange import quantity_to_step
 from .market_data import to_toobit_symbol
+from .market_snapshot import merge_timeframes, snapshot_timeframe
 from .trade_management import ExitPolicy, breakeven_stop, fallback_bracket, opposing_exit, time_stop_due
 from .trade_plan import TradePlan
 
@@ -35,65 +35,6 @@ EDGE_TABLE_DIR = BASE_DIR / "scratch" / "edge_tables"
 def _position_key(symbol: str) -> str:
     """Normalize display and exchange symbol forms to one map key."""
     return to_toobit_symbol(str(symbol or "").strip())
-
-
-def _timeframe_seconds(timeframe: str) -> int:
-    """Return the nominal duration of a supported timeframe in seconds."""
-    value = str(timeframe or "").lower()
-    if value.endswith("m"):
-        return int(value[:-1]) * 60
-    if value.endswith("h"):
-        return int(value[:-1]) * 3600
-    if value.endswith("d"):
-        return int(value[:-1]) * 86400
-    return 300
-
-
-def _is_fresh_timestamp(timestamp: Any, timeframe: str) -> bool:
-    """Allow a short clock skew while rejecting stale closed-candle data."""
-    try:
-        candle_time = float(timestamp)
-    except (TypeError, ValueError):
-        return False
-    if candle_time <= 0:
-        return False
-    age = time.time() - candle_time
-    return -60 <= age <= _timeframe_seconds(timeframe) * 2 + 30
-
-
-def timeframe_snapshot(raw_klines: List[Dict[str, Any]], symbol: str, timeframe: str, leverage: int) -> Dict[str, Any]:
-    """Latest indicator telemetry for one timeframe, as the auto-trader decides on it."""
-    calculated = compute_all_indicators(raw_klines)
-    latest = dict(calculated["latest"])
-    latest["symbol"] = symbol
-    latest["interval"] = timeframe
-    latest["time"] = calculated.get("series", [{}])[-1].get("time", raw_klines[-1].get("time", 0))
-    latest["leverage"] = int(leverage)
-    return latest
-
-
-def merge_timeframes(latest_by_timeframe: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Entry-timeframe state enriched with higher-timeframe context (shared with the backtest)."""
-    entry_timeframe = "5m" if "5m" in latest_by_timeframe else list(latest_by_timeframe)[-1]
-    state = dict(latest_by_timeframe[entry_timeframe])
-    higher = latest_by_timeframe.get("1h") or latest_by_timeframe.get("15m")
-    if higher:
-        state["htf"] = {
-            "trend": higher.get("trend_state", "NEUTRAL"),
-            "interval": higher.get("interval"),
-            "rsi": higher.get("rsi"),
-            "adx": higher.get("adx"),
-        }
-    state["multi_timeframe"] = {
-        timeframe: {
-            "time": snapshot.get("time"),
-            "trend": snapshot.get("trend_state"),
-            "rsi": snapshot.get("rsi"),
-            "adx": snapshot.get("adx"),
-        }
-        for timeframe, snapshot in latest_by_timeframe.items()
-    }
-    return state
 
 
 class AutoTrader:
@@ -687,21 +628,10 @@ class AutoTrader:
             await asyncio.sleep(5)
 
     async def _fetch_timeframe_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
-        """Fetch, validate, and calculate one closed-candle timeframe."""
+        """One timeframe's closed-candle snapshot (raises when missing or stale)."""
         async with self._fetch_semaphore:
-            raw_klines = await self.market_service.fetch_klines(
-                symbol=symbol,
-                interval=timeframe,
-                limit=150,
-            )
-        if not raw_klines:
-            raise RuntimeError(f"No {timeframe} candles returned for {symbol}")
-        latest = timeframe_snapshot(raw_klines, symbol, timeframe, self.settings["leverage"])
-        if not latest.get("is_closed", True):
-            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is not closed")
-        if not _is_fresh_timestamp(latest.get("time"), timeframe):
-            raise RuntimeError(f"Latest {timeframe} candle for {symbol} is stale")
-        return latest
+            return await snapshot_timeframe(self.market_service.fetch_klines, symbol, timeframe,
+                                            self.settings["leverage"])
 
     async def _analyze_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Analyze one symbol using parallel timeframe data and bounded inference."""

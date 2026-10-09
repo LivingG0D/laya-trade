@@ -23,6 +23,7 @@ from .config import (
 )
 from .market_data import MarketDataService, symbol_key
 from .indicators import compute_all_indicators
+from .market_snapshot import dashboard_timeframes, higher_timeframe, market_state, snapshot_timeframe
 from .laya_engine import LayaEngine
 from .signal_generator import SignalGenerator
 
@@ -60,26 +61,25 @@ def _exchange_mode() -> str:
 latest_analysis_cache: Dict[str, Any] = {}
 
 
-def _attach_context(latest: Dict[str, Any], htf: Any, depth: Any, funding: Any) -> None:
-    """Attach HTF / order-book / funding context; failed fetches arrive as exceptions and are skipped."""
-    for key, ctx in (("htf", htf), ("depth", depth), ("funding", funding)):
+def _attach_context(latest: Dict[str, Any], contexts: Dict[str, Any]) -> None:
+    """Attach display context (HTF / order book / funding); failed fetches arrive as exceptions and are skipped."""
+    for key, ctx in contexts.items():
         if isinstance(ctx, dict):
             latest[key] = ctx
 
 
-async def _run_analysis(raw_klines, symbol: str, interval: str, context=()) -> tuple:
-    """Indicators -> Laya decision -> signal, cached for the position-suggestion endpoint."""
-    calc = compute_all_indicators(raw_klines)
-    latest = calc["latest"]
-    latest["symbol"] = symbol.upper()
-    latest["interval"] = interval
-    latest["time"] = calc["series"][-1]["time"] if calc["series"] else 0
-    if context:
-        _attach_context(latest, *context)
-    laya_decision = await laya_engine.decide(latest)
-    signal = signal_generator.generate_signal(latest, laya_decision)
-    latest_analysis_cache.update(latest=latest, signal=signal, laya=laya_decision, symbol=symbol.upper())
-    return latest, laya_decision, signal
+async def _run_analysis(symbol: str, interval: str) -> tuple:
+    """Snapshot -> Laya decision -> signal on the closed-candle state the auto-trader decides on.
+
+    The chart interval is the entry timeframe, with the auto-trader's 15m/1h
+    context above it, so the dashboard shows the plan the auto-trader would trade.
+    """
+    state = await market_state(market_service.fetch_klines, symbol.upper(), dashboard_timeframes(interval),
+                               auto_trader.settings["leverage"], entry_timeframe=interval)
+    laya_decision = await laya_engine.decide(state)
+    signal = signal_generator.generate_signal(state, laya_decision)
+    latest_analysis_cache.update(latest=state, signal=signal, laya=laya_decision, symbol=symbol.upper())
+    return state, laya_decision, signal
 
 
 def _write_toobit_keys(api_key: str = "", api_secret: str = "") -> None:
@@ -264,13 +264,14 @@ async def get_klines(
 
         # Asynchronously fetch institutional metrics (HTF, depth, funding) to enrich latest telemetry
         try:
-            htf_ctx, depth_ctx, funding_ctx = await asyncio.gather(
-                market_service.fetch_htf_context(symbol),
+            htf_snapshot, depth_ctx, funding_ctx = await asyncio.gather(
+                snapshot_timeframe(market_service.fetch_klines, symbol, "1h", auto_trader.settings["leverage"]),
                 market_service.fetch_order_book_depth(symbol),
                 market_service.fetch_funding_rate(symbol),
                 return_exceptions=True
             )
-            _attach_context(calculated["latest"], htf_ctx, depth_ctx, funding_ctx)
+            htf_ctx = higher_timeframe(htf_snapshot) if isinstance(htf_snapshot, dict) else None
+            _attach_context(calculated["latest"], {"htf": htf_ctx, "depth": depth_ctx, "funding": funding_ctx})
         except Exception as e:
             logger.debug(f"Non-critical institutional enrichment in klines: {e}")
 
@@ -291,24 +292,21 @@ async def trigger_analysis(
     interval: str = Query(DEFAULT_TIMEFRAME)
 ):
     """Run full technical calculation and Laya System 1 probabilistic decision with multi-factor confluence."""
+    if interval not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported interval")
     try:
-        # Fully parallel gather across all external exchange network endpoints
-        results = await asyncio.gather(
-            market_service.fetch_klines(symbol=symbol, interval=interval, limit=200),
-            market_service.fetch_htf_context(symbol),
+        # Order book and funding are shown, not decided on: the auto-trader never sees them.
+        analysis, depth_ctx, funding_ctx = await asyncio.gather(
+            _run_analysis(symbol, interval),
             market_service.fetch_order_book_depth(symbol),
             market_service.fetch_funding_rate(symbol),
             return_exceptions=True
         )
-        raw_klines, htf_ctx, depth_ctx, funding_ctx = results
-
-        if isinstance(raw_klines, Exception) or not raw_klines:
-            logger.error(f"Failed to fetch market klines: {raw_klines}")
-            raise HTTPException(status_code=500, detail="Failed to fetch market klines from exchange")
-
-        latest, laya_decision, signal = await _run_analysis(
-            raw_klines, symbol, interval, context=(htf_ctx, depth_ctx, funding_ctx)
-        )
+        if isinstance(analysis, Exception):
+            raise analysis
+        state, laya_decision, signal = analysis
+        latest = dict(state)
+        _attach_context(latest, {"depth": depth_ctx, "funding": funding_ctx})
 
         # Broadcast signal to WebSocket clients
         await ws_manager.broadcast({
@@ -531,9 +529,7 @@ async def get_toobit_suggestions(symbol: Optional[str] = Query(None)):
 
     if not analysis or latest_analysis_cache.get("symbol") != target_sym.upper():
         try:
-            interval = market_service.current_interval
-            raw_klines = await market_service.fetch_klines(symbol=target_sym, interval=interval, limit=100)
-            _, laya_dec, analysis = await _run_analysis(raw_klines, target_sym, interval)
+            _, laya_dec, analysis = await _run_analysis(target_sym, market_service.current_interval)
         except Exception as e:
             logger.warning(f"Could not compute fresh analysis for suggestion: {e}")
 
